@@ -414,8 +414,9 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 .badge-credito  { background: #e3f2fd; color: #1565c0; }
 .badge-debito   { background: #e8f5e9; color: #2e7d32; }
-.badge-fisica   { background: #f3e5f5; color: #6a1b9a; }
-.badge-digital  { background: #e8eaf6; color: #283593; }
+.badge-fisica    { background: #f3e5f5; color: #6a1b9a; }
+.badge-digital   { background: #e8eaf6; color: #283593; }
+.badge-prestamo  { background: #fff3e0; color: #e65100; }
 .badge-pagado   { background: #e8f5e9; color: #2e7d32; }
 .badge-pendiente{ background: #fff8e1; color: #e65100; }
 .badge-vencido  { background: #ffebee; color: #c62828; }
@@ -708,6 +709,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   padding: 2px 9px;
   font-weight: 500;
 }
+.credit-chip.prestamo-chip { color: #e65100; background: #fff3e0; }
 
 .btn-copy-data {
   display: inline-flex;

@@ -41,7 +41,7 @@ async function renderView(container) {
           <p>No hay instituciones registradas.<br>Agrega una para comenzar.</p>
         </div>` : `
         <div class="row g-3" id="inst-list">
-          ${Object.values(byInst).map(({ inst, cards }) => renderInstCard(inst, cards)).join('')}
+          ${Object.values(byInst).sort((a, b) => a.inst.nombre.localeCompare(b.inst.nombre, 'es')).map(({ inst, cards }) => renderInstCard(inst, cards)).join('')}
         </div>`
       }`;
 
@@ -117,7 +117,7 @@ function renderInstCard(inst, cards) {
         <div class="inst-cards-body">
           ${cards.length === 0
             ? `<p class="text-muted small mb-2 px-1">Sin tarjetas registradas</p>`
-            : cards.map(c => renderCardRow(c)).join('')
+            : [...cards].sort((a, b) => TIPO_ORDER[a.tipo] - TIPO_ORDER[b.tipo]).map(c => renderCardRow(c)).join('')
           }
           <button class="btn btn-sm btn-outline-secondary w-100 mt-2 btn-nueva-tarjeta" data-inst-id="${inst.id}">
             <i class="bi bi-plus me-1"></i>Agregar Tarjeta
@@ -127,15 +127,25 @@ function renderInstCard(inst, cards) {
     </div>`;
 }
 
+const TIPO_ORDER = { debito: 0, credito: 1, prestamo: 2 };
+
+const TIPO_BADGE = {
+  credito:  { cls: 'badge-credito',  label: 'Crédito'  },
+  debito:   { cls: 'badge-debito',   label: 'Débito'   },
+  prestamo: { cls: 'badge-prestamo', label: 'Préstamo' },
+};
+
 function renderCardRow(c) {
-  const isCred = c.tipo === 'credito';
-  const numeros = Array.isArray(c.numeros) ? c.numeros : [];
+  const isCred    = c.tipo === 'credito';
+  const isPrest   = c.tipo === 'prestamo';
+  const tipoBadge = TIPO_BADGE[c.tipo] ?? TIPO_BADGE.debito;
+  const numeros   = (Array.isArray(c.numeros) ? c.numeros : []).filter(n => n.numero || n.fechaVencimiento);
   return `
     <div class="card-row">
       <div class="card-row-header">
         <div class="card-row-title">
           <span class="fw-600">${c.nombre}</span>
-          <span class="badge-tipo ${isCred ? 'badge-credito' : 'badge-debito'}">${isCred ? 'Crédito' : 'Débito'}</span>
+          <span class="badge-tipo ${tipoBadge.cls}">${tipoBadge.label}</span>
         </div>
         <div class="d-flex gap-1 flex-shrink-0">
           <button class="btn-icon btn-edit-card" data-id="${c.id}" data-inst-id="${c.institucionId}" title="Editar"><i class="bi bi-pencil"></i></button>
@@ -159,7 +169,19 @@ function renderCardRow(c) {
         ${c.diaPago    ? `<span class="credit-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
       </div>` : ''}
 
-      ${numeros.length > 0 ? `
+      ${isPrest && (c.limite || c.numeroPago || c.fechaCorte || c.fechaPago) ? `
+      <div class="card-row-credit mt-1">
+        ${c.limite      ? `<span class="credit-chip prestamo-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limite))}</span>` : ''}
+        ${c.numeroPago  ? `<div class="card-row-numbers mt-1"><div class="card-number-item">
+          <span class="card-number-label">No. Pago</span>
+          <span class="fw-mono">${c.numeroPago}</span>
+          <button class="btn-copy-data" data-value="${c.numeroPago}" title="Copiar"><i class="bi bi-copy"></i></button>
+        </div></div>` : ''}
+        ${c.diaCorte  ? `<span class="credit-chip prestamo-chip"><i class="bi bi-scissors me-1"></i>Corte ${c.diaCorte}</span>` : ''}
+        ${c.diaPago   ? `<span class="credit-chip prestamo-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
+      </div>` : ''}
+
+      ${!isPrest && numeros.length > 0 ? `
       <div class="card-numeros mt-2">
         ${numeros.map(n => `
         <div class="card-numero-row">
@@ -228,8 +250,9 @@ function showCardModal(card, instId, instituciones, container) {
           <div class="col-auto">
             <label class="form-label">Tipo *</label>
             <select class="form-select" name="tipo" id="card-tipo" required>
-              <option value="credito" ${(card?.tipo ?? 'credito') === 'credito' ? 'selected' : ''}>Crédito</option>
-              <option value="debito"  ${card?.tipo === 'debito' ? 'selected' : ''}>Débito</option>
+              <option value="credito"  ${(card?.tipo ?? 'credito') === 'credito'  ? 'selected' : ''}>Crédito</option>
+              <option value="debito"   ${card?.tipo === 'debito'                  ? 'selected' : ''}>Débito</option>
+              <option value="prestamo" ${card?.tipo === 'prestamo'                ? 'selected' : ''}>Préstamo</option>
             </select>
           </div>
         </div>
@@ -239,14 +262,12 @@ function showCardModal(card, instId, instituciones, container) {
           <input type="text" class="form-control fw-mono" name="clabe" value="${card?.clabe || ''}" placeholder="18 dígitos" maxlength="18">
         </div>
 
-        <div id="credit-fields" ${card?.tipo === 'debito' ? 'style="display:none"' : ''}>
+        <div id="credit-fields" ${card?.tipo !== 'credito' && card ? 'style="display:none"' : ''}>
           <hr class="my-2">
           <p class="form-text fw-600 mb-2" style="color:var(--text)">Crédito</p>
-          <div class="row g-2 mb-3">
-            <div class="col-12">
-              <label class="form-label">Límite total</label>
-              <input type="number" class="form-control" name="limiteTotal" value="${card?.limiteTotal || ''}" placeholder="Ej: 50000" min="0" step="0.01">
-            </div>
+          <div class="mb-3">
+            <label class="form-label">Límite total</label>
+            <input type="number" class="form-control" name="limiteTotal" value="${card?.limiteTotal || ''}" placeholder="Ej: 50000" min="0" step="0.01">
           </div>
           <div class="row g-2 mb-3">
             <div class="col">
@@ -260,14 +281,39 @@ function showCardModal(card, instId, instituciones, container) {
           </div>
         </div>
 
-        <hr class="my-2">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <p class="form-text fw-600 mb-0" style="color:var(--text)">Números</p>
-          <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-numero">
-            <i class="bi bi-plus me-1"></i>Agregar
-          </button>
+        <div id="loan-fields" ${card?.tipo !== 'prestamo' ? 'style="display:none"' : ''}>
+          <hr class="my-2">
+          <p class="form-text fw-600 mb-2" style="color:var(--text)">Préstamo</p>
+          <div class="mb-3">
+            <label class="form-label">Límite</label>
+            <input type="number" class="form-control" name="limite" value="${card?.limite || ''}" placeholder="Monto del préstamo" min="0" step="0.01">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Número de pago</label>
+            <input type="text" class="form-control fw-mono" name="numeroPago" value="${card?.numeroPago || ''}" placeholder="Referencia de pago (opcional)">
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col">
+              <label class="form-label">Día de corte</label>
+              <input type="number" class="form-control" name="diaCorte" value="${card?.diaCorte || ''}" placeholder="1-31" min="1" max="31">
+            </div>
+            <div class="col">
+              <label class="form-label">Día de pago</label>
+              <input type="number" class="form-control" name="diaPago" value="${card?.diaPago || ''}" placeholder="1-31" min="1" max="31">
+            </div>
+          </div>
         </div>
-        <div id="numeros-list"></div>
+
+        <div id="numeros-section" ${card?.tipo === 'prestamo' ? 'style="display:none"' : ''}>
+          <hr class="my-2">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <p class="form-text fw-600 mb-0" style="color:var(--text)">Números</p>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-numero">
+              <i class="bi bi-plus me-1"></i>Agregar
+            </button>
+          </div>
+          <div id="numeros-list"></div>
+        </div>
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
@@ -282,11 +328,23 @@ function showCardModal(card, instId, instituciones, container) {
 
   document.getElementById('btn-add-numero').addEventListener('click', () => addNumeroRow(numerosList));
 
-  const tipoSelect = document.getElementById('card-tipo');
-  const creditFields = document.getElementById('credit-fields');
-  tipoSelect.addEventListener('change', () => {
-    creditFields.style.display = tipoSelect.value === 'credito' ? '' : 'none';
-  });
+  const tipoSelect     = document.getElementById('card-tipo');
+  const creditFields   = document.getElementById('credit-fields');
+  const loanFields     = document.getElementById('loan-fields');
+  const numerosSection = document.getElementById('numeros-section');
+  const setFieldsDisabled = (section, disabled) => {
+    section.querySelectorAll('input, select').forEach(el => el.disabled = disabled);
+  };
+  const toggleTipo = () => {
+    const t = tipoSelect.value;
+    creditFields.style.display   = t === 'credito'  ? '' : 'none';
+    loanFields.style.display     = t === 'prestamo' ? '' : 'none';
+    numerosSection.style.display = t === 'prestamo' ? 'none' : '';
+    setFieldsDisabled(creditFields, t !== 'credito');
+    setFieldsDisabled(loanFields,   t !== 'prestamo');
+  };
+  toggleTipo();
+  tipoSelect.addEventListener('change', toggleTipo);
 
   document.getElementById('btn-save-card').addEventListener('click', async () => {
     const form = document.getElementById('card-form');
@@ -301,6 +359,17 @@ function showCardModal(card, instId, instituciones, container) {
       delete data.diaCorte;
       delete data.diaPago;
     }
+    if (data.tipo === 'credito') {
+      delete data.limite;
+      delete data.numeroPago;
+    }
+    if (data.tipo !== 'prestamo') {
+      delete data.limite;
+      delete data.numeroPago;
+    }
+    if (data.tipo === 'prestamo') {
+      data.numeros = [];
+    }
     // Collect numeros array
     data.numeros = [];
     document.querySelectorAll('.numero-row').forEach(row => {
@@ -310,7 +379,7 @@ function showCardModal(card, instId, instituciones, container) {
       const entry   = { formato };
       if (numero) entry.numero = numero;
       if (fv)     entry.fechaVencimiento = fv;
-      data.numeros.push(entry);
+      if (entry.numero || entry.fechaVencimiento) data.numeros.push(entry);
     });
     try {
       if (isEdit) await update('tarjetas', card.id, data);
@@ -335,5 +404,15 @@ function addNumeroRow(container, n = null) {
     <button type="button" class="btn-icon danger flex-shrink-0" title="Eliminar"><i class="bi bi-x-lg"></i></button>
   `;
   row.querySelector('.btn-icon').addEventListener('click', () => row.remove());
+
+  const numeroInput = row.querySelector('.n-numero');
+  numeroInput.addEventListener('paste', e => {
+    e.preventDefault();
+    const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\s/g, '');
+    const { selectionStart: s, selectionEnd: e2, value } = numeroInput;
+    numeroInput.value = (value.slice(0, s) + pasted + value.slice(e2)).slice(0, 16);
+    numeroInput.setSelectionRange(s + pasted.length, s + pasted.length);
+  });
+
   container.appendChild(row);
 }
