@@ -171,19 +171,48 @@ Instituciones financieras registradas.
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nombre` | string | Nombre de la institución (ej. Banamex) |
-| `clabe` | string | CLABE interbancaria (18 dígitos) |
+| `numeroCliente` | string? | Número de cliente en la institución (opcional) |
 | `color` | string | Color hex para la UI (ej. `#e31837`) |
 
 ### `tarjetas/{id}`
-Tarjetas asociadas a cada institución.
+Tarjetas asociadas a cada institución. Cada tarjeta tiene un tipo y puede tener uno o más números físicos o digitales.
+
+**Campos comunes a todos los tipos:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `institucionId` | string | ID de la institución padre |
 | `nombre` | string | Nombre de la tarjeta (ej. Clásica, Oro) |
-| `tipo` | string | `credito` o `debito` |
-| `numeroFisico` | string | Número de tarjeta física (16 dígitos) |
-| `numeroDigital` | string | Número de tarjeta digital |
+| `tipo` | string | `credito`, `debito` o `prestamo` |
+| `clabe` | string? | CLABE interbancaria (18 dígitos), opcional |
+| `numeros` | array | Números de tarjeta (ver estructura abajo) |
+
+**Campos exclusivos de `credito`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `limiteTotal` | number? | Límite total de crédito |
+| `diaCorte` | number? | Día del mes de corte (1-31) |
+| `diaPago` | number? | Día del mes límite de pago (1-31) |
+
+**Campos exclusivos de `prestamo`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `limite` | number? | Monto del préstamo |
+| `numeroPago` | string? | Referencia de pago (opcional) |
+| `diaCorte` | number? | Día del mes de corte (1-31) |
+| `diaPago` | number? | Día del mes límite de pago (1-31) |
+
+**Estructura de cada elemento en `numeros`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `formato` | string | `fisica` o `digital` |
+| `numero` | string? | 4 dígitos (últimos) o número completo de 16 dígitos |
+| `fechaVencimiento` | string? | Fecha de vencimiento en formato `MM/AA` |
+
+> Los préstamos no tienen `numeros`. El array se guarda vacío (`[]`) para este tipo.
 
 ### `msi/{id}`
 Compras a meses sin intereses.
@@ -319,10 +348,14 @@ Vista de inicio con:
 
 ### Tarjetas (`#/tarjetas`)
 Administración del catálogo de cuentas bancarias:
-- Vista en tarjetas agrupadas por institución
-- CRUD completo para instituciones (nombre, CLABE, color)
-- CRUD completo para tarjetas (nombre, tipo, número físico, número digital)
-- Los números de tarjeta se muestran enmascarados (`**** 9093`)
+- Instituciones ordenadas alfabéticamente; dentro de cada una, tarjetas ordenadas: Débito → Crédito → Préstamo
+- CRUD completo para instituciones (nombre, número de cliente, color)
+- CRUD completo para tarjetas con tres tipos: **Crédito**, **Débito**, **Préstamo**
+- Cada tarjeta agrupa uno o más números (físico/digital), cada uno con su propio vencimiento
+- Los préstamos no tienen números de tarjeta; usan CLABE y/o número de pago como referencia
+- Los números se muestran como **tarjetas visuales** con gradiente del color institucional: chip dorado para físicas, ícono wifi para digitales
+- Botón de copiar en hover sobre cada tile; también copiable: CLABE, número de cliente
+- Al pegar un número de tarjeta se eliminan automáticamente los espacios
 
 ### MSI (`#/msi`)
 Gestión de compras a meses sin intereses:
@@ -499,4 +532,4 @@ Se puede agregar cualquier otra institución desde el módulo Tarjetas — el co
 
 ---
 
-*Generado el 2026-05-26*
+*Generado el 2026-05-26 · Última actualización: 2026-05-26*
