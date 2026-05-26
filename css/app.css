@@ -625,37 +625,110 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 .inst-cards-body { padding: 12px 16px; }
 
-.card-row {
-  padding: 10px 0;
-  border-bottom: 1px solid #f3f3f3;
+/* Card section (per tarjeta within institution) */
+.card-section {
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
 }
-.card-row:last-of-type { border-bottom: none; }
+.card-section:last-of-type { border-bottom: none; }
 
-.card-row-header {
+.card-section-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-bottom: 10px;
 }
-.card-row-title {
+
+/* Bank card tiles */
+.bank-cards-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.bank-card-tile {
+  width: 168px;
+  height: 106px;
+  border-radius: 10px;
+  color: #fff;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 4px 14px rgba(0,0,0,.2), 0 1px 4px rgba(0,0,0,.1);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.bank-card-tile::before {
+  content: '';
+  position: absolute;
+  top: -24px; right: -24px;
+  width: 96px; height: 96px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.08);
+  pointer-events: none;
+}
+.bank-card-tile::after {
+  content: '';
+  position: absolute;
+  top: 14px; right: 26px;
+  width: 62px; height: 62px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.05);
+  pointer-events: none;
+}
+.bct-top { position: relative; z-index: 1; }
+.bct-chip {
+  width: 26px;
+  height: 19px;
+  background: linear-gradient(135deg, #c8a84b 0%, #f0d060 45%, #c8a84b 100%);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+.bct-wifi {
+  font-size: 1.1rem;
+  opacity: .85;
+}
+.bct-bottom { position: relative; z-index: 1; }
+.bct-number {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.bct-num-text {
+  font-family: 'Courier New', monospace;
+  font-size: 0.88rem;
+  letter-spacing: 1.5px;
+}
+.bct-no-num { opacity: .4; }
+.bct-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.66rem;
+  opacity: .8;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+
+/* Copy button inside tile — hidden until hover */
+.bct-copy {
+  opacity: 0;
+  color: rgba(255,255,255,.9) !important;
+  transition: opacity .15s;
+}
+.bct-copy:hover { background: rgba(255,255,255,.2) !important; }
+.bct-copy.copied { color: #a5d6a7 !important; opacity: 1; }
+.bank-card-tile:hover .bct-copy { opacity: 1; }
+
+/* Card section info row (CLABE, chips) */
+.card-section-info {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-}
-.card-vencimiento {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  display: inline-flex;
-  align-items: center;
-}
-
-.card-row-numbers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  margin-top: 7px;
 }
 .card-number-item {
   display: inline-flex;
@@ -666,7 +739,6 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   padding: 3px 8px 3px 6px;
   font-size: 0.8rem;
 }
-.card-number-icon { color: var(--text-muted); font-size: 0.85rem; }
 .card-number-label {
   font-size: 0.68rem;
   font-weight: 600;
@@ -674,30 +746,11 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
-
 .card-row-credit {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin-top: 7px;
-}
-.card-numeros {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
-  border-top: 1px dashed #eaeaea;
-}
-.card-numero-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.card-numero-val {
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
+  width: 100%;
 }
 .credit-chip {
   display: inline-flex;
@@ -724,7 +777,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   cursor: pointer;
   padding: 0;
   font-size: 0.78rem;
-  transition: color 0.15s, background 0.15s;
+  transition: color .15s, background .15s;
 }
 .btn-copy-data:hover { color: var(--primary); background: #e8f0fe; }
 .btn-copy-data.copied { color: #2e7d32; background: #e8f5e9; }

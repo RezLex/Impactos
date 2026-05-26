@@ -90,8 +90,24 @@ async function renderView(container) {
   }
 }
 
+const TIPO_ORDER = { debito: 0, credito: 1, prestamo: 2 };
+const TIPO_BADGE  = {
+  credito:  { cls: 'badge-credito',  label: 'Crédito'  },
+  debito:   { cls: 'badge-debito',   label: 'Débito'   },
+  prestamo: { cls: 'badge-prestamo', label: 'Préstamo' },
+};
+
+function darkenHex(hex, amount = 45) {
+  const h = (hex || '#607d8b').replace('#', '');
+  const r = Math.max(0, parseInt(h.slice(0, 2), 16) - amount);
+  const g = Math.max(0, parseInt(h.slice(2, 4), 16) - amount);
+  const b = Math.max(0, parseInt(h.slice(4, 6), 16) - amount);
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
 function renderInstCard(inst, cards) {
-  const color = inst.color || INSTITUCIONES_DEFAULT_COLORS[inst.nombre] || '#607d8b';
+  const color  = inst.color || INSTITUCIONES_DEFAULT_COLORS[inst.nombre] || '#607d8b';
+  const sorted = [...cards].sort((a, b) => TIPO_ORDER[a.tipo] - TIPO_ORDER[b.tipo]);
   return `
     <div class="col-12 col-xl-6">
       <div class="data-card">
@@ -111,15 +127,15 @@ function renderInstCard(inst, cards) {
         <div class="inst-meta-row">
           <span class="inst-meta-label"><i class="bi bi-person-badge me-1"></i>No. Cliente</span>
           <span class="inst-meta-value fw-mono">${inst.numeroCliente}</span>
-          <button class="btn-copy-data" data-value="${inst.numeroCliente}" title="Copiar No. Cliente"><i class="bi bi-copy"></i></button>
+          <button class="btn-copy-data" data-value="${inst.numeroCliente}" title="Copiar"><i class="bi bi-copy"></i></button>
         </div>` : ''}
 
         <div class="inst-cards-body">
-          ${cards.length === 0
+          ${sorted.length === 0
             ? `<p class="text-muted small mb-2 px-1">Sin tarjetas registradas</p>`
-            : [...cards].sort((a, b) => TIPO_ORDER[a.tipo] - TIPO_ORDER[b.tipo]).map(c => renderCardRow(c)).join('')
+            : sorted.map(c => renderCardRow(c, color)).join('')
           }
-          <button class="btn btn-sm btn-outline-secondary w-100 mt-2 btn-nueva-tarjeta" data-inst-id="${inst.id}">
+          <button class="btn btn-sm btn-outline-secondary w-100 mt-3 btn-nueva-tarjeta" data-inst-id="${inst.id}">
             <i class="bi bi-plus me-1"></i>Agregar Tarjeta
           </button>
         </div>
@@ -127,23 +143,15 @@ function renderInstCard(inst, cards) {
     </div>`;
 }
 
-const TIPO_ORDER = { debito: 0, credito: 1, prestamo: 2 };
-
-const TIPO_BADGE = {
-  credito:  { cls: 'badge-credito',  label: 'Crédito'  },
-  debito:   { cls: 'badge-debito',   label: 'Débito'   },
-  prestamo: { cls: 'badge-prestamo', label: 'Préstamo' },
-};
-
-function renderCardRow(c) {
+function renderCardRow(c, color) {
   const isCred    = c.tipo === 'credito';
   const isPrest   = c.tipo === 'prestamo';
   const tipoBadge = TIPO_BADGE[c.tipo] ?? TIPO_BADGE.debito;
   const numeros   = (Array.isArray(c.numeros) ? c.numeros : []).filter(n => n.numero || n.fechaVencimiento);
   return `
-    <div class="card-row">
-      <div class="card-row-header">
-        <div class="card-row-title">
+    <div class="card-section">
+      <div class="card-section-header">
+        <div class="d-flex align-items-center gap-2">
           <span class="fw-600">${c.nombre}</span>
           <span class="badge-tipo ${tipoBadge.cls}">${tipoBadge.label}</span>
         </div>
@@ -153,45 +161,60 @@ function renderCardRow(c) {
         </div>
       </div>
 
-      ${c.clabe ? `
-      <div class="card-row-numbers mt-1">
+      ${!isPrest && numeros.length > 0 ? `
+      <div class="bank-cards-row">
+        ${numeros.map(n => renderNumeroTile(n, color)).join('')}
+      </div>` : ''}
+
+      <div class="card-section-info">
+        ${c.clabe ? `
         <div class="card-number-item">
           <span class="card-number-label">CLABE</span>
           <span class="fw-mono">${maskCard(c.clabe)}</span>
           <button class="btn-copy-data" data-value="${c.clabe}" title="Copiar CLABE"><i class="bi bi-copy"></i></button>
-        </div>
-      </div>` : ''}
-
-      ${isCred && (c.limiteTotal || c.diaCorte || c.diaPago) ? `
-      <div class="card-row-credit mt-1">
-        ${c.limiteTotal ? `<span class="credit-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>` : ''}
-        ${c.diaCorte   ? `<span class="credit-chip"><i class="bi bi-scissors me-1"></i>Corte ${c.diaCorte}</span>` : ''}
-        ${c.diaPago    ? `<span class="credit-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
-      </div>` : ''}
-
-      ${isPrest && (c.limite || c.numeroPago || c.fechaCorte || c.fechaPago) ? `
-      <div class="card-row-credit mt-1">
-        ${c.limite      ? `<span class="credit-chip prestamo-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limite))}</span>` : ''}
-        ${c.numeroPago  ? `<div class="card-row-numbers mt-1"><div class="card-number-item">
+        </div>` : ''}
+        ${isPrest && c.numeroPago ? `
+        <div class="card-number-item">
           <span class="card-number-label">No. Pago</span>
           <span class="fw-mono">${c.numeroPago}</span>
           <button class="btn-copy-data" data-value="${c.numeroPago}" title="Copiar"><i class="bi bi-copy"></i></button>
-        </div></div>` : ''}
-        ${c.diaCorte  ? `<span class="credit-chip prestamo-chip"><i class="bi bi-scissors me-1"></i>Corte ${c.diaCorte}</span>` : ''}
-        ${c.diaPago   ? `<span class="credit-chip prestamo-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
-      </div>` : ''}
+        </div>` : ''}
+        ${isCred && (c.limiteTotal || c.diaCorte || c.diaPago) ? `
+        <div class="card-row-credit">
+          ${c.limiteTotal ? `<span class="credit-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>` : ''}
+          ${c.diaCorte   ? `<span class="credit-chip"><i class="bi bi-scissors me-1"></i>Corte ${c.diaCorte}</span>` : ''}
+          ${c.diaPago    ? `<span class="credit-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
+        </div>` : ''}
+        ${isPrest && (c.limite || c.diaCorte || c.diaPago) ? `
+        <div class="card-row-credit">
+          ${c.limite   ? `<span class="credit-chip prestamo-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limite))}</span>` : ''}
+          ${c.diaCorte ? `<span class="credit-chip prestamo-chip"><i class="bi bi-scissors me-1"></i>Corte ${c.diaCorte}</span>` : ''}
+          ${c.diaPago  ? `<span class="credit-chip prestamo-chip"><i class="bi bi-calendar-check me-1"></i>Pago ${c.diaPago}</span>` : ''}
+        </div>` : ''}
+      </div>
+    </div>`;
+}
 
-      ${!isPrest && numeros.length > 0 ? `
-      <div class="card-numeros mt-2">
-        ${numeros.map(n => `
-        <div class="card-numero-row">
-          <span class="badge-tipo ${n.formato === 'digital' ? 'badge-digital' : 'badge-fisica'}">${n.formato === 'digital' ? 'Digital' : 'Física'}</span>
-          ${n.numero ? `
-          <span class="fw-mono card-numero-val">${maskCard(n.numero)}</span>
-          <button class="btn-copy-data" data-value="${n.numero}" title="Copiar número"><i class="bi bi-copy"></i></button>` : ''}
-          ${n.fechaVencimiento ? `<span class="card-vencimiento"><i class="bi bi-calendar3 me-1"></i>${n.fechaVencimiento}</span>` : ''}
-        </div>`).join('')}
-      </div>` : ''}
+function renderNumeroTile(n, color) {
+  const dark     = darkenHex(color, 45);
+  const isFisica = n.formato === 'fisica';
+  return `
+    <div class="bank-card-tile" style="background:linear-gradient(135deg,${color} 0%,${dark} 100%)">
+      <div class="bct-top">
+        ${isFisica ? '<div class="bct-chip"></div>' : '<i class="bi bi-wifi bct-wifi"></i>'}
+      </div>
+      <div class="bct-bottom">
+        <div class="bct-number">
+          ${n.numero
+            ? `<span class="bct-num-text">${maskCard(n.numero)}</span>
+               <button class="btn-copy-data bct-copy" data-value="${n.numero}" title="Copiar número"><i class="bi bi-copy"></i></button>`
+            : `<span class="bct-num-text bct-no-num">— — — —</span>`}
+        </div>
+        <div class="bct-meta">
+          <span>${isFisica ? 'Física' : 'Digital'}</span>
+          ${n.fechaVencimiento ? `<span>${n.fechaVencimiento}</span>` : ''}
+        </div>
+      </div>
     </div>`;
 }
 
