@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IMPACTOS — Finanzas Personales</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <link href="css/app.css" rel="stylesheet">
+</head>
+<body>
+
+<!-- ==================== AUTH OVERLAY ==================== -->
+<div id="auth-overlay" class="auth-overlay">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <i class="bi bi-bank2"></i>
+    </div>
+    <h1>IMPACTOS</h1>
+    <p>Gestión de Finanzas Personales</p>
+    <button id="btn-google-login" class="btn-google">
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20" alt="Google">
+      Iniciar sesión con Google
+    </button>
+    <p class="auth-note">Acceso privado — solo para uso personal</p>
+  </div>
+</div>
+
+<!-- ==================== APP LAYOUT ==================== -->
+<div id="app-layout" class="d-none">
+
+  <!-- Sidebar Desktop -->
+  <nav id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <i class="bi bi-bank2 sidebar-logo"></i>
+      <span class="sidebar-title">IMPACTOS</span>
+      <button class="btn btn-link sidebar-toggle" id="sidebar-toggle" title="Colapsar">
+        <i class="bi bi-layout-sidebar"></i>
+      </button>
+    </div>
+
+    <div class="sidebar-section-label">Principal</div>
+    <ul class="sidebar-nav">
+      <li>
+        <a href="#/" class="nav-link" data-route="/">
+          <i class="bi bi-speedometer2"></i><span>Dashboard</span>
+        </a>
+      </li>
+      <li>
+        <a href="#/tarjetas" class="nav-link" data-route="/tarjetas">
+          <i class="bi bi-credit-card-2-front"></i><span>Tarjetas</span>
+        </a>
+      </li>
+      <li>
+        <a href="#/msi" class="nav-link" data-route="/msi">
+          <i class="bi bi-calendar-range"></i><span>MSI</span>
+        </a>
+      </li>
+      <li>
+        <a href="#/fijos" class="nav-link" data-route="/fijos">
+          <i class="bi bi-receipt-cutoff"></i><span>Gastos Fijos</span>
+        </a>
+      </li>
+      <li>
+        <a href="#/impacto" class="nav-link" data-route="/impacto">
+          <i class="bi bi-bar-chart-line"></i><span>Impacto Mensual</span>
+        </a>
+      </li>
+    </ul>
+
+    <div class="sidebar-section-label">Eventos</div>
+    <ul class="sidebar-nav">
+      <li>
+        <a href="#/eventos" class="nav-link" data-route="/eventos">
+          <i class="bi bi-tag-fill"></i><span>Eventos de Ofertas</span>
+        </a>
+      </li>
+    </ul>
+
+    <div class="sidebar-footer">
+      <a href="#/migracion" class="nav-link" data-route="/migracion">
+        <i class="bi bi-cloud-upload"></i><span>Importar Datos</span>
+      </a>
+      <button id="btn-signout" class="btn btn-link nav-link w-100 text-start p-0">
+        <i class="bi bi-box-arrow-right"></i><span>Cerrar Sesión</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <div id="main-content" class="main-content">
+
+    <!-- Mobile Header -->
+    <header class="mobile-header d-flex d-lg-none align-items-center px-3">
+      <button class="btn btn-link text-white p-0 me-3" id="mobile-menu-btn">
+        <i class="bi bi-list fs-4"></i>
+      </button>
+      <i class="bi bi-bank2 me-2 text-white"></i>
+      <span class="fw-bold text-white" id="mobile-page-title">Dashboard</span>
+    </header>
+
+    <!-- Content Area -->
+    <main id="app-content" class="content-area">
+      <div class="loading-overlay">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Cargando...</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Mobile Bottom Nav -->
+  <nav class="bottom-nav d-lg-none">
+    <a href="#/" class="bottom-nav-item" data-route="/"><i class="bi bi-speedometer2"></i><span>Inicio</span></a>
+    <a href="#/tarjetas" class="bottom-nav-item" data-route="/tarjetas"><i class="bi bi-credit-card-2-front"></i><span>Tarjetas</span></a>
+    <a href="#/msi" class="bottom-nav-item" data-route="/msi"><i class="bi bi-calendar-range"></i><span>MSI</span></a>
+    <a href="#/impacto" class="bottom-nav-item" data-route="/impacto"><i class="bi bi-bar-chart-line"></i><span>Impacto</span></a>
+    <a href="#/eventos" class="bottom-nav-item" data-route="/eventos"><i class="bi bi-tag-fill"></i><span>Eventos</span></a>
+  </nav>
+
+</div>
+
+<!-- Sidebar Overlay (Mobile) -->
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+<!-- Toast Container -->
+<div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999"></div>
+
+<!-- Modal Container -->
+<div id="modal-container"></div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module" src="js/app.js"></script>
+
+</body>
+</html>
