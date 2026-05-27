@@ -37,27 +37,30 @@ function setupRouter() {
     if (pts[1]) load('evento-detalle', pts[1]);
     else        load('eventos');
   });
-  register('/migracion', ()       => load('migracion'));
+  register('/exportar',  ()       => load('exportar'));
+  register('/festivos',  ()       => load('festivos'));
+  register('/admin',     ()       => load('admin-tarjetas'));
   initRouter(content);
 }
 
 // ── Navigation toggles ────────────────────────────────────────────────────────
 function setupNav() {
-  // Mobile hamburger
-  document.getElementById('mobile-menu-btn').addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('mobile-open');
-    document.getElementById('sidebar-overlay').classList.toggle('show');
-  });
-  document.getElementById('sidebar-overlay').addEventListener('click', () => {
+  const openSidebar  = () => {
+    document.getElementById('sidebar').classList.add('mobile-open');
+    document.getElementById('sidebar-overlay').classList.add('show');
+  };
+  const closeSidebar = () => {
     document.getElementById('sidebar').classList.remove('mobile-open');
     document.getElementById('sidebar-overlay').classList.remove('show');
-  });
-  // Close mobile menu on nav click
-  document.querySelectorAll('.sidebar-nav .nav-link').forEach(a =>
-    a.addEventListener('click', () => {
-      document.getElementById('sidebar').classList.remove('mobile-open');
-      document.getElementById('sidebar-overlay').classList.remove('show');
-    })
+  };
+
+  document.getElementById('mobile-menu-btn').addEventListener('click', openSidebar);
+  document.getElementById('bottom-menu-btn').addEventListener('click', openSidebar);
+  document.getElementById('sidebar-overlay').addEventListener('click', closeSidebar);
+
+  // Close sidebar on nav link click (mobile)
+  document.querySelectorAll('.sidebar-nav .nav-link, .sidebar-footer .nav-link').forEach(a =>
+    a.addEventListener('click', closeSidebar)
   );
 
   // Desktop collapse

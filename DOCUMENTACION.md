@@ -14,10 +14,11 @@
 6. [Modelo de Datos — Firestore](#modelo-de-datos--firestore)
 7. [Módulos de la Aplicación](#módulos-de-la-aplicación)
 8. [Navegación y Routing](#navegación-y-routing)
-9. [Ejecución Local](#ejecución-local)
-10. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-11. [Importación de Datos desde Excel](#importación-de-datos-desde-excel)
-12. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+9. [Ciclo de Facturación](#ciclo-de-facturación)
+10. [Cálculo de Nómina](#cálculo-de-nómina)
+11. [Ejecución Local](#ejecución-local)
+12. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+13. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -26,13 +27,14 @@
 IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de gestión financiera personal. Permite administrar:
 
 - Cuentas y tarjetas bancarias de múltiples instituciones
-- Compras a Meses Sin Intereses (MSI) con seguimiento de progreso
+- Compras a Meses Sin Intereses (MSI) con seguimiento de progreso y cálculo automático de fechas de pago
 - Gastos fijos mensuales recurrentes
 - Estado mensual de todas las tarjetas (impacto)
 - Planeación y comparación de compras en eventos de ofertas (Hot Sale, Buen Fin, etc.)
+- Catálogo de días festivos oficiales de México
 
 **Características principales:**
-- Interfaz responsiva: sidebar en desktop, bottom navigation en móvil
+- Interfaz responsiva: sidebar en desktop, bottom navigation en móvil; en móvil las tarjetas se muestran en stack con efecto de superposición
 - Autenticación exclusiva con Google (usuario único)
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
@@ -49,7 +51,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 | Lógica | JavaScript ES6+ (Vanilla, sin framework) | — |
 | Base de datos | Firebase Firestore | 11.8.1 |
 | Autenticación | Firebase Auth (Google Sign-In) | 11.8.1 |
-| Parseo Excel | SheetJS (XLSX) | 0.18.5 |
+| Exportación Excel | SheetJS (XLSX) | 0.18.5 |
 | Gráficas | Chart.js | 4.4.0 |
 | Hosting | GitHub Pages | — |
 
@@ -73,17 +75,20 @@ impactos/
     │
     ├── modules/
     │   ├── dashboard.js        # Vista principal con métricas y resumen
-    │   ├── tarjetas.js         # CRUD de instituciones y tarjetas
+    │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
+    │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
     │   ├── msi.js              # CRUD de compras a meses sin intereses
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
     │   ├── impacto.js          # Estado mensual por tarjeta + nómina
     │   ├── eventos.js          # Lista de eventos de ofertas
     │   ├── evento-detalle.js   # Detalle de evento: planeación, realizadas, promos
-    │   └── migracion.js        # Importación de IMPACTOS.xlsx a Firestore
+    │   ├── festivos.js         # CRUD de días festivos oficiales MX
+    │   └── exportar.js         # Exportación de datos a Excel o JSON
     │
     └── utils/
         ├── db.js               # CRUD genérico para Firestore
         ├── formatters.js       # Formateo de moneda, fechas, seriales Excel, etc.
+        ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
 
@@ -166,71 +171,61 @@ service cloud.firestore {
 Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que garantiza aislamiento por usuario.
 
 ### `instituciones/{id}`
-Instituciones financieras registradas.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nombre` | string | Nombre de la institución (ej. Banamex) |
-| `numeroCliente` | string? | Número de cliente en la institución (opcional) |
+| `numeroCliente` | string? | Número de cliente en la institución |
 | `color` | string | Color hex para la UI (ej. `#e31837`) |
 
 ### `tarjetas/{id}`
-Tarjetas asociadas a cada institución. Cada tarjeta tiene un tipo y puede tener uno o más números físicos o digitales.
 
-**Campos comunes a todos los tipos:**
+**Campos comunes:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `institucionId` | string | ID de la institución padre |
-| `nombre` | string | Nombre de la tarjeta (ej. Clásica, Oro) |
+| `nombre` | string | Alias de la tarjeta (ej. Clásica, Oro) |
 | `tipo` | string | `credito`, `debito` o `prestamo` |
-| `clabe` | string? | CLABE interbancaria (18 dígitos), opcional |
+| `clabe` | string? | CLABE interbancaria (18 dígitos) |
 | `numeros` | array | Números de tarjeta (ver estructura abajo) |
 
-**Campos exclusivos de `credito`:**
+**Campos de `credito` y `prestamo`:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `limiteTotal` | number? | Límite total de crédito |
-| `diaCorte` | number? | Día del mes de corte (1-31) |
-| `diaPago` | number? | Día del mes límite de pago (1-31) |
+| `limiteTotal` | number? | Límite de crédito o monto del préstamo |
+| `ciclo` | object? | Configuración del ciclo de facturación (ver sección [Ciclo de Facturación](#ciclo-de-facturación)) |
 
 **Campos exclusivos de `prestamo`:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `limite` | number? | Monto del préstamo |
-| `numeroPago` | string? | Referencia de pago (opcional) |
-| `diaCorte` | number? | Día del mes de corte (1-31) |
-| `diaPago` | number? | Día del mes límite de pago (1-31) |
+| `numeroPago` | string? | Referencia/número de pago |
 
 **Estructura de cada elemento en `numeros`:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `formato` | string | `fisica` o `digital` |
-| `numero` | string? | 4 dígitos (últimos) o número completo de 16 dígitos |
-| `fechaVencimiento` | string? | Fecha de vencimiento en formato `MM/AA` |
-
-> Los préstamos no tienen `numeros`. El array se guarda vacío (`[]`) para este tipo.
+| `numero` | string? | Número completo de la tarjeta |
+| `fechaVencimiento` | string? | Vencimiento en formato `MM/AA` |
 
 ### `msi/{id}`
-Compras a meses sin intereses.
+Compras a meses sin intereses. Las fechas de primer y último pago **no se almacenan** — se calculan dinámicamente a partir del ciclo de la tarjeta y la fecha de compra.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `tarjetaId` | string | ID de la tarjeta usada |
+| `tarjetaId` | string | ID de la tarjeta de crédito usada |
 | `compra` | string | Descripción de la compra |
+| `fechaCompra` | string | Fecha ISO de la compra (`YYYY-MM-DD`) |
 | `total` | number | Monto total de la compra |
 | `mensualidad` | number | Monto mensual a pagar |
 | `mesesTotal` | number | Total de meses del plan |
 | `mesesPagados` | number | Meses ya pagados |
-| `restante` | number | Monto pendiente por pagar |
-| `primerPago` | string | Fecha ISO del primer pago |
-| `ultimoPago` | string | Fecha ISO del último pago |
+| `restante` | number | Monto pendiente (`total - mensualidad × mesesPagados`) |
 
-### `gastosFijos/{id}`
-Gastos recurrentes mensuales.
+### `fijos/{id}`
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -239,13 +234,21 @@ Gastos recurrentes mensuales.
 | `diaCobro` | string | Día del mes o descripción (ej. `8`, `1er Martes`) |
 | `importe` | number | Monto mensual |
 
+### `festivosMX/{id}`
+Días festivos oficiales de México usados para ajustar fechas de corte y pago a días hábiles.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `fecha` | string | Fecha ISO del festivo (`YYYY-MM-DD`) |
+| `nombre` | string | Nombre del festivo (ej. Día de la Independencia) |
+
 ### `impactoMensual/{YYYY-MM}`
-Estado mensual de todas las tarjetas. El ID del documento es el mes en formato `YYYY-MM` (ej. `2026-05`).
+Estado mensual. El ID del documento es el mes en formato `YYYY-MM`.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nomina` | number | Ingreso de nómina del mes |
-| `registros` | array | Lista de registros por tarjeta (ver abajo) |
+| `registros` | array | Lista de registros por tarjeta |
 | `pagosDebito` | array | Pagos realizados desde cuentas débito |
 | `total` | number | Suma total a pagar |
 | `restante` | number | `nomina - total` |
@@ -264,15 +267,7 @@ Estado mensual de todas las tarjetas. El ID del documento es el mes en formato `
 | `aPagar` | number | Monto a pagar este mes |
 | `pagado` | boolean | Si ya se realizó el pago |
 
-**Estructura de cada elemento en `pagosDebito`:**
-
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `banco` | string | Nombre del banco débito |
-| `importe` | number | Monto pagado desde esa cuenta |
-
 ### `eventos/{id}`
-Eventos de ofertas (Hot Sale, Buen Fin, etc.).
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -280,57 +275,11 @@ Eventos de ofertas (Hot Sale, Buen Fin, etc.).
 | `tipo` | string | `Hot Sale`, `Buen Fin`, `Cyber Monday`, etc. |
 | `fechaInicio` | string | Fecha ISO de inicio |
 | `fechaFin` | string | Fecha ISO de fin |
-| `planCompras` | array | Productos planeados (ver abajo) |
+| `planCompras` | array | Productos planeados |
 | `comprasRealizadas` | array | Compras ya realizadas |
 | `promociones` | array | Promociones por institución |
 
-**Estructura de cada elemento en `planCompras`:**
-
-```json
-{
-  "producto": "ROG Destrier Ergo",
-  "opcionSeleccionada": 2,
-  "opciones": [
-    {
-      "tienda": "DDTech",
-      "enlace": "https://...",
-      "precio": 11499,
-      "descuento": 0.15,
-      "banco": "Banamex",
-      "msi": 18
-    }
-  ]
-}
-```
-
-**Estructura de cada elemento en `comprasRealizadas`:**
-
-```json
-{
-  "producto": "ROG Destrier Ergo",
-  "tienda": "DDTech",
-  "precioCompra": 11499,
-  "descuento": 0.15,
-  "precioFinal": 9774.15,
-  "banco": "Banamex",
-  "msi": 18,
-  "rastreo": "8055898550781780705642",
-  "seguimientoUrl": "https://...",
-  "promodescuentosUrl": "https://..."
-}
-```
-
-**Estructura de cada elemento en `promociones`:**
-
-```json
-{
-  "institucion": "Banamex",
-  "url": "https://..."
-}
-```
-
 ### `_config/owner` *(fuera del namespace de usuario)*
-Documento de control de acceso.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -347,23 +296,31 @@ Vista de inicio con:
 - **MSI activos:** compras vigentes con barra de progreso y fecha de término
 
 ### Tarjetas (`#/tarjetas`)
-Administración del catálogo de cuentas bancarias:
-- Instituciones ordenadas alfabéticamente; dentro de cada una, tarjetas ordenadas: Débito → Crédito → Préstamo
-- CRUD completo para instituciones (nombre, número de cliente, color)
-- CRUD completo para tarjetas con tres tipos: **Crédito**, **Débito**, **Préstamo**
-- Cada tarjeta agrupa uno o más números (físico/digital), cada uno con su propio vencimiento
-- Los préstamos no tienen números de tarjeta; usan CLABE y/o número de pago como referencia
-- Los números se muestran como **tarjetas visuales** con gradiente del color institucional: chip dorado para físicas, ícono wifi para digitales
-- Botón de copiar en hover sobre cada tile; también copiable: CLABE, número de cliente
-- Al pegar un número de tarjeta se eliminan automáticamente los espacios
+Vista de cartera (wallet) de todas las tarjetas registradas:
+- Tarjetas visuales con gradiente del color institucional y volteo 3D para ver datos al reverso
+- **En desktop:** cuadrícula de tarjetas (flip al hacer clic)
+- **En móvil:** stack vertical con efecto de superposición — la tarjeta activa se expande, las demás se colapsan mostrando institución y alias en una línea
+- Filtros por tipo (Todas / Débito / Crédito / Préstamo) y por institución
+- Ordenamiento: institución → tipo (Débito → Crédito → Préstamo) → alias
+- Reverso de cada tarjeta muestra: CLABE, números (físico/digital con últimos 4 dígitos enmascarados) y botones de copiado
+- Para crédito y préstamo: chips con límite total y fechas de corte/pago del ciclo activo
+
+### Administración (`#/admin`)
+CRUD completo de instituciones y tarjetas:
+- Tabla agrupada por institución con encabezado coloreado
+- Número de cliente de la institución visible y copiable
+- Por tarjeta: tipo, red (Visa/Mastercard/etc.), números (F/D), CLABE, límite y ciclo
+- Detección automática de red al pegar número de tarjeta (IIN/BIN)
+- Modal de tarjeta con secciones dinámicas según tipo: límite para crédito y préstamo, ciclo de facturación para crédito y préstamo, número de pago para préstamo
 
 ### MSI (`#/msi`)
 Gestión de compras a meses sin intereses:
-- Vista en acordeón agrupada por tarjeta de crédito
-- Barra de progreso visual por compra (meses pagados / meses totales)
+- Vista en acordeón **agrupada por institución**
+- Por compra: descripción, tarjeta (alias + últimos 4 dígitos), meses pagados/total, mensualidad, restante, primer pago y último pago
+- **Primer y último pago calculados dinámicamente** a partir de la fecha de compra y el ciclo de la tarjeta (ver [Ciclo de Facturación](#ciclo-de-facturación))
+- Las fechas mostradas corresponden al **depósito de nómina anterior** al pago calculado (ver [Cálculo de Nómina](#cálculo-de-nómina))
 - Cálculo automático de mensualidad al ingresar total y número de meses
-- Cálculo automático de restante = `total - (mensualidad × mesesPagados)`
-- Totales de deuda global y mensualidad combinada
+- Totales de deuda global y mensualidad combinada en tarjetas de métricas
 
 ### Gastos Fijos (`#/fijos`)
 Registro de gastos recurrentes:
@@ -389,24 +346,26 @@ Vista con 3 pestañas:
 **Planeación:**
 - Lista de productos que se desean comprar
 - Por cada producto: tabla de opciones (tienda × banco/promoción)
-- Columnas calculadas automáticamente: precio con descuento, mensualidad con MSI
-- Resaltado automático de la **mejor opción** (menor mensualidad o menor precio)
+- Columnas calculadas: precio con descuento, mensualidad con MSI
+- Resaltado automático de la mejor opción (menor mensualidad o menor precio)
 - Botón "Elegir" para marcar la opción seleccionada
 
 **Compras Realizadas:**
-- Registro de lo que ya se compró
-- Campos: tienda, precio, descuento, banco, MSI, número de rastreo, URL de seguimiento, URL de Promodescuentos
-- Tabla con totales: precio de lista vs. precio final pagado
+- Registro de lo que ya se compró con campos de rastreo y seguimiento
 
 **Promociones:**
 - Tabla de enlaces a las publicaciones de cada institución para el evento
 
-### Importar Datos (`#/migracion`)
-Herramienta de migración desde Excel:
-- Zona de carga con drag & drop o selección de archivo
-- Vista previa de datos detectados antes de importar
-- Log en tiempo real del proceso de importación
-- Importa: instituciones, tarjetas, MSI, gastos fijos, impacto mensual (todos los meses), eventos
+### Días Festivos (`#/festivos`)
+CRUD del catálogo de días festivos oficiales de México:
+- Tabla con fecha y nombre del festivo
+- Usado por el motor de cálculo de ciclos para ajustar fechas de corte y pago a días hábiles
+
+### Exportar Datos (`#/exportar`)
+Exportación completa de los datos del usuario:
+- **Excel:** un archivo `.xlsx` con una hoja por colección (Instituciones, Tarjetas, MSI, Gastos Fijos, Eventos, Festivos MX)
+- **JSON:** archivo `.json` con todas las colecciones en un solo objeto
+- El nombre del archivo incluye la fecha actual (`IMPACTOS_YYYY-MM-DD`)
 
 ---
 
@@ -417,22 +376,91 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 | Ruta | Módulo | Descripción |
 |---|---|---|
 | `#/` | dashboard.js | Dashboard principal |
-| `#/tarjetas` | tarjetas.js | Gestión de tarjetas |
+| `#/tarjetas` | tarjetas.js | Vista wallet de tarjetas |
 | `#/msi` | msi.js | Compras MSI |
 | `#/fijos` | fijos.js | Gastos fijos |
 | `#/impacto` | impacto.js | Mes actual |
 | `#/impacto/2026-05` | impacto.js | Mes específico |
 | `#/eventos` | eventos.js | Lista de eventos |
 | `#/eventos/{id}` | evento-detalle.js | Detalle de evento |
-| `#/migracion` | migracion.js | Importación Excel |
+| `#/admin` | admin-tarjetas.js | CRUD instituciones y tarjetas |
+| `#/festivos` | festivos.js | Catálogo de festivos MX |
+| `#/exportar` | exportar.js | Exportación de datos |
 
-Los módulos se cargan de forma **lazy** (`import()` dinámico) — solo se descarga el código del módulo cuando se navega a él.
+Los módulos se cargan de forma **lazy** (`import()` dinámico).
+
+**Navegación (sidebar desktop / bottom nav móvil):**
+- **Principal:** Dashboard, Tarjetas, MSI, Impacto Mensual
+- **Ajustes:** Administración, Días Festivos, Exportar Datos
+- En móvil, los ítems duplicados en bottom nav se ocultan del sidebar (`data-hide-mobile`)
+
+---
+
+## Ciclo de Facturación
+
+El módulo `js/utils/ciclo.js` calcula las fechas de corte y pago de cada tarjeta de crédito/préstamo, ajustando automáticamente a días hábiles usando el catálogo de festivos MX.
+
+### Estructura del objeto `ciclo`
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `metodoCiclo` | string | `a`, `b` o `c` (ver modos abajo) |
+| `diaCorte` | number? | Día de corte (modos A y B) |
+| `diaPago` | number? | Día de pago fijo (modos A y C) |
+| `diasAlPago` | number? | Días desde el corte hasta el pago (modo B) |
+| `diasAlCorte` | number? | Días antes del pago que ocurre el corte (modo C) |
+| `ajusteCorte` | string | `siguiente` o `anterior` — dirección del ajuste a día hábil |
+| `ajustePago` | string | `siguiente` o `anterior` — dirección del ajuste a día hábil |
+| `baseCalculo` | string? | `original` o `ajustado` — base para calcular el otro extremo |
+
+### Modos de cálculo
+
+**Modo A — Días fijos:**
+- Corte: día fijo del mes (`diaCorte`)
+- Pago: día fijo del mes (`diaPago`); si `diaPago ≤ diaCorte`, el pago cae el mes siguiente
+
+**Modo B — Días desde el corte:**
+- Corte: día fijo del mes (`diaCorte`)
+- Pago: `diaCorte + diasAlPago` días
+
+**Modo C — Días antes del pago:**
+- Pago: día fijo del mes (`diaPago`)
+- Corte: `diaPago - diasAlCorte` días antes del pago
+
+### Ajuste a día hábil
+Si la fecha calculada cae en fin de semana o festivo, se mueve al día hábil `siguiente` o `anterior` según la configuración de cada tarjeta. Se aplica por separado a corte y pago.
+
+### API pública de `ciclo.js`
+
+```javascript
+// Fechas de corte y pago para un mes específico
+calcularMes(ciclo, year, month, festivosMX) → { fechaCorte: Date, fechaPago: Date }
+
+// Período actual abierto (avanza al siguiente mes si hoy ya pasó el corte)
+periodoActual(ciclo, festivosMX) → { fechaCorte: Date, fechaPago: Date }
+
+// Depósito de nómina anterior a una fecha dada
+anteriorNomina(date, festivosMX) → Date
+
+// Convierte Date a string 'YYYY-MM-DD'
+toISODate(date) → string
+```
+
+---
+
+## Cálculo de Nómina
+
+Los depósitos de nómina ocurren los días **15 y 30** de cada mes (en febrero se usa el último día del mes). Si el día nominal cae en fin de semana o festivo, se recorre al **día hábil anterior**.
+
+La función `anteriorNomina(date, festivosMX)` devuelve el depósito de nómina más reciente anterior o igual a `date`. Se usa en el módulo MSI para mostrar con qué nómina se cubriría cada pago:
+
+**Ejemplo:** Si el primer pago calculado es el 09/07/2026, se muestra **30/06/2026** (el depósito de nómina de fin de junio es el que precede a ese pago).
 
 ---
 
 ## Ejecución Local
 
-La app usa módulos ES6 (`type="module"`) y requiere un servidor HTTP. No se puede abrir `index.html` directamente desde el explorador de archivos.
+La app usa módulos ES6 (`type="module"`) y requiere un servidor HTTP.
 
 **VS Code — Live Server (recomendado):**
 1. Instalar extensión **Live Server** de Ritwick Dey
@@ -454,22 +482,15 @@ python -m http.server 8080
 ### Primera vez
 
 ```bash
-cd C:\Users\gabito\impactos
-
-# Inicializar repositorio
 git init
 git add .
 git commit -m "Initial commit — IMPACTOS app"
-
-# Crear repo en GitHub y conectar
 git remote add origin https://github.com/TU_USUARIO/impactos.git
 git branch -M main
 git push -u origin main
 ```
 
 En GitHub: **Settings → Pages → Branch: main → / (root) → Save**
-
-La app quedará disponible en `https://TU_USUARIO.github.io/impactos/`
 
 ### Agregar dominio a Firebase Auth
 
@@ -486,50 +507,23 @@ git commit -m "Descripción del cambio"
 git push
 ```
 
-GitHub Pages se actualiza automáticamente en ~1 minuto.
-
----
-
-## Importación de Datos desde Excel
-
-El módulo de migración (`#/migracion`) lee el archivo `IMPACTOS.xlsx` y lo importa a Firestore. El archivo debe tener la estructura original con las siguientes hojas:
-
-| Hoja | Datos importados |
-|---|---|
-| `Tarjetas` | Instituciones y tarjetas (columnas B-G) |
-| `MSI` | Compras MSI agrupadas por tarjeta |
-| `Fijos` | Gastos fijos mensuales |
-| `Impacto MES-AÑO` | Estado mensual (todas las hojas que inicien con "Impacto") |
-| `Hot Sale YYYY` / `Buen Fin YYYY` | Productos planeados del evento |
-
-**Proceso:**
-1. Ir a `#/migracion`
-2. Arrastrar el archivo `.xlsx` o usar el botón de selección
-3. Revisar la vista previa de datos detectados
-4. Confirmar con **"Importar a Firebase"**
-5. Esperar el log de progreso — el proceso es por lotes para respetar los límites de Firestore
-
-> **Nota:** Los registros de impacto mensual se sobreescriben si ya existen (upsert). El resto de los datos se agregan sin duplicar (cada importación crea registros nuevos, por lo que se recomienda importar solo una vez o limpiar primero las colecciones desde Firebase Console).
-
 ---
 
 ## Instituciones Bancarias Soportadas
 
-La app incluye estilos y colores predefinidos para las siguientes instituciones:
+La app incluye colores predefinidos para las siguientes instituciones. Se puede agregar cualquier otra desde `#/admin` con color personalizable.
 
-| Institución | Color | Clase CSS |
-|---|---|---|
-| Banamex | `#e31837` | `bank-banamex` |
-| Banorte | `#da1c2b` | `bank-banorte` |
-| BBVA | `#004481` | `bank-bbva` |
-| Mercado Pago | `#009ee3` | `bank-mercadopago` |
-| NU | `#820ad1` | `bank-nu` |
-| Rappi | `#ff441f` | `bank-rappi` |
-| Revolut | `#0075eb` | `bank-revolut` |
-| Santander | `#ec0000` | `bank-santander` |
-
-Se puede agregar cualquier otra institución desde el módulo Tarjetas — el color es configurable por el usuario.
+| Institución | Color |
+|---|---|
+| Banamex | `#e31837` |
+| Banorte | `#da1c2b` |
+| BBVA | `#004481` |
+| Mercado Pago | `#009ee3` |
+| NU | `#820ad1` |
+| Rappi | `#ff441f` |
+| Revolut | `#0075eb` |
+| Santander | `#ec0000` |
 
 ---
 
-*Generado el 2026-05-26 · Última actualización: 2026-05-26*
+*Última actualización: 2026-05-27*

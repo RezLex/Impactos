@@ -29,40 +29,40 @@
 <!-- ==================== APP LAYOUT ==================== -->
 <div id="app-layout" class="d-none">
 
-  <!-- Sidebar Desktop -->
+  <!-- Sidebar -->
   <nav id="sidebar" class="sidebar">
     <div class="sidebar-header">
-      <i class="bi bi-bank2 sidebar-logo"></i>
-      <span class="sidebar-title">IMPACTOS</span>
-      <button class="btn btn-link sidebar-toggle" id="sidebar-toggle" title="Colapsar">
+      <button class="btn btn-link sidebar-toggle" id="sidebar-toggle" title="Colapsar/Expandir">
         <i class="bi bi-layout-sidebar"></i>
       </button>
+      <i class="bi bi-bank2 sidebar-logo"></i>
+      <span class="sidebar-title">IMPACTOS</span>
     </div>
 
-    <div class="sidebar-section-label">Principal</div>
+    <div class="sidebar-section-label sidebar-section-primary">Principal</div>
     <ul class="sidebar-nav">
-      <li>
-        <a href="#/" class="nav-link" data-route="/">
+      <li data-hide-mobile>
+        <a href="#/" class="nav-link" data-route="/" title="Dashboard">
           <i class="bi bi-speedometer2"></i><span>Dashboard</span>
         </a>
       </li>
-      <li>
-        <a href="#/tarjetas" class="nav-link" data-route="/tarjetas">
+      <li data-hide-mobile>
+        <a href="#/tarjetas" class="nav-link" data-route="/tarjetas" title="Tarjetas">
           <i class="bi bi-credit-card-2-front"></i><span>Tarjetas</span>
         </a>
       </li>
-      <li>
-        <a href="#/msi" class="nav-link" data-route="/msi">
+      <li data-hide-mobile>
+        <a href="#/msi" class="nav-link" data-route="/msi" title="MSI">
           <i class="bi bi-calendar-range"></i><span>MSI</span>
         </a>
       </li>
       <li>
-        <a href="#/fijos" class="nav-link" data-route="/fijos">
+        <a href="#/fijos" class="nav-link" data-route="/fijos" title="Gastos Fijos">
           <i class="bi bi-receipt-cutoff"></i><span>Gastos Fijos</span>
         </a>
       </li>
-      <li>
-        <a href="#/impacto" class="nav-link" data-route="/impacto">
+      <li data-hide-mobile>
+        <a href="#/impacto" class="nav-link" data-route="/impacto" title="Impacto Mensual">
           <i class="bi bi-bar-chart-line"></i><span>Impacto Mensual</span>
         </a>
       </li>
@@ -71,17 +71,33 @@
     <div class="sidebar-section-label">Eventos</div>
     <ul class="sidebar-nav">
       <li>
-        <a href="#/eventos" class="nav-link" data-route="/eventos">
+        <a href="#/eventos" class="nav-link" data-route="/eventos" title="Eventos de Ofertas">
           <i class="bi bi-tag-fill"></i><span>Eventos de Ofertas</span>
         </a>
       </li>
     </ul>
 
+    <div class="sidebar-section-label sidebar-section-settings">
+      <i class="bi bi-gear-fill"></i><span>Ajustes</span>
+    </div>
+    <ul class="sidebar-nav">
+      <li>
+        <a href="#/admin" class="nav-link" data-route="/admin" title="Instituciones y Tarjetas">
+          <i class="bi bi-building"></i><span>Instituciones y Tarjetas</span>
+        </a>
+      </li>
+      <li>
+        <a href="#/festivos" class="nav-link" data-route="/festivos" title="Días Festivos">
+          <i class="bi bi-calendar-x"></i><span>Días Festivos</span>
+        </a>
+      </li>
+    </ul>
+
     <div class="sidebar-footer">
-      <a href="#/migracion" class="nav-link" data-route="/migracion">
-        <i class="bi bi-cloud-upload"></i><span>Importar Datos</span>
+      <a href="#/exportar" class="nav-link" data-route="/exportar" title="Exportar Datos">
+        <i class="bi bi-download"></i><span>Exportar Datos</span>
       </a>
-      <button id="btn-signout" class="btn btn-link nav-link w-100 text-start p-0">
+      <button id="btn-signout" class="btn btn-link nav-link" title="Cerrar Sesión">
         <i class="bi bi-box-arrow-right"></i><span>Cerrar Sesión</span>
       </button>
     </div>
@@ -115,7 +131,7 @@
     <a href="#/tarjetas" class="bottom-nav-item" data-route="/tarjetas"><i class="bi bi-credit-card-2-front"></i><span>Tarjetas</span></a>
     <a href="#/msi" class="bottom-nav-item" data-route="/msi"><i class="bi bi-calendar-range"></i><span>MSI</span></a>
     <a href="#/impacto" class="bottom-nav-item" data-route="/impacto"><i class="bi bi-bar-chart-line"></i><span>Impacto</span></a>
-    <a href="#/eventos" class="bottom-nav-item" data-route="/eventos"><i class="bi bi-tag-fill"></i><span>Eventos</span></a>
+    <button class="bottom-nav-item" id="bottom-menu-btn"><i class="bi bi-grid-3x3-gap"></i><span>Menú</span></button>
   </nav>
 
 </div>

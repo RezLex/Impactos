@@ -37,7 +37,9 @@ function _updateNav(base) {
     '/fijos':     'Gastos Fijos',
     '/impacto':   'Impacto Mensual',
     '/eventos':   'Eventos de Ofertas',
-    '/migracion': 'Importar Datos',
+    '/exportar':  'Exportar Datos',
+    '/festivos':  'Días Festivos',
+    '/admin':     'Instituciones y Tarjetas',
   };
 
   document.querySelectorAll('[data-route]').forEach(el => {
