@@ -33,7 +33,7 @@ function _updateNav(base) {
   const titles = {
     '/':          'Dashboard',
     '/tarjetas':  'Tarjetas',
-    '/msi':       'MSI',
+    '/compras':   'Compras y Gastos',
     '/fijos':     'Gastos Fijos',
     '/impacto':   'Impacto Mensual',
     '/eventos':   'Eventos de Ofertas',

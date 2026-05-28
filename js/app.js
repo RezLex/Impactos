@@ -30,7 +30,8 @@ function setupRouter() {
   const content = document.getElementById('app-content');
   register('/',          ()       => load('dashboard'));
   register('/tarjetas',  ()       => load('tarjetas'));
-  register('/msi',       ()       => load('msi'));
+  register('/compras',   ()       => load('msi'));
+  register('/msi',       ()       => navigate('/compras'));
   register('/fijos',     ()       => load('fijos'));
   register('/impacto',   (p, pts) => load('impacto', pts[1] || null));
   register('/eventos',   (p, pts) => {

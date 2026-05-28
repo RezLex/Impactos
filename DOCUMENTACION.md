@@ -77,7 +77,7 @@ impactos/
     │   ├── dashboard.js        # Vista principal con métricas y resumen
     │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
     │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
-    │   ├── msi.js              # CRUD de compras a meses sin intereses
+    │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
     │   ├── impacto.js          # Estado mensual por tarjeta + nómina
     │   ├── eventos.js          # Lista de eventos de ofertas
@@ -211,12 +211,44 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `numero` | string? | Número completo de la tarjeta |
 | `fechaVencimiento` | string? | Vencimiento en formato `MM/AA` |
 
+### `contado/{id}`
+Compras de contado (sin meses) con cualquier tipo de tarjeta.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `tarjetaId` | string | ID de la tarjeta usada |
+| `numeroTarjeta` | string | Número específico de tarjeta usado (física o digital) |
+| `compra` | string | Descripción de la compra |
+| `fechaCompra` | string | Fecha ISO de la compra (`YYYY-MM-DD`) |
+| `total` | number | Monto total de la compra |
+| `enlaceCompra` | string? | URL al comprobante o página de la compra |
+
+> La **fecha de pago** no se almacena — para tarjetas de crédito se calcula dinámicamente a partir del ciclo configurado en la tarjeta.
+
+### `gastos/{id}`
+Gastos registrados por mes. Incluye dos orígenes: gastos fijos confirmados (tarjetas de crédito) y entradas manuales de retiro/transferencia (tarjetas de débito).
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `tipo` | string | `gastaFijo` (confirmado desde Gastos Fijos) o `manual` (entrada directa) |
+| `mes` | string | Mes al que pertenece el gasto (`YYYY-MM`) |
+| `nombre` | string | Descripción del gasto |
+| `tarjetaId` | string | ID de la tarjeta usada |
+| `numeroTarjeta` | string? | Número específico de tarjeta (física o digital) |
+| `formaPago` | string | `automatico`, `retiro` o `transferencia` |
+| `fechaPago` | string | Fecha ISO en que se realizó el pago (`YYYY-MM-DD`) |
+| `importe` | number | Monto del gasto |
+| `gastaFijoId` | string? | ID del gasto fijo origen (solo cuando `tipo = 'gastaFijo'`) |
+
+> Los gastos fijos pendientes de confirmar **no se almacenan** — se calculan dinámicamente cada vez que se abre el tab Gastos. Solo al confirmar se crea un documento en esta colección.
+
 ### `msi/{id}`
-Compras a meses sin intereses. Las fechas de primer y último pago **no se almacenan** — se calculan dinámicamente a partir del ciclo de la tarjeta y la fecha de compra.
+Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no se almacenan** — se calculan dinámicamente a partir del ciclo de la tarjeta y la fecha de compra.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `tarjetaId` | string | ID de la tarjeta de crédito usada |
+| `numeroTarjeta` | string | Número específico de tarjeta usado (física o digital) |
 | `compra` | string | Descripción de la compra |
 | `fechaCompra` | string | Fecha ISO de la compra (`YYYY-MM-DD`) |
 | `total` | number | Monto total de la compra |
@@ -224,15 +256,28 @@ Compras a meses sin intereses. Las fechas de primer y último pago **no se almac
 | `mesesTotal` | number | Total de meses del plan |
 | `mesesPagados` | number | Meses ya pagados |
 | `restante` | number | Monto pendiente (`total - mensualidad × mesesPagados`) |
+| `enlaceCompra` | string? | URL al comprobante o página de la compra |
+| `liquidado` | boolean? | `true` cuando la compra está completamente saldada |
+| `fechaLiquidacion` | string? | Fecha ISO en que se marcó como liquidada (`YYYY-MM-DD`) |
 
-### `fijos/{id}`
+### `gastosFijos/{id}`
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nombre` | string | Nombre del gasto (ej. Netflix) |
-| `tarjetaId` | string | ID de la tarjeta de cobro |
-| `diaCobro` | string | Día del mes o descripción (ej. `8`, `1er Martes`) |
+| `tarjetaId` | string? | ID de la tarjeta de cobro |
+| `numeroTarjeta` | string? | Número específico de tarjeta (física o digital) |
+| `diaCobro` | string? | Texto libre de referencia (ej. `8`, `1ra Quincena`) |
 | `importe` | number | Monto mensual |
+| `fechaInicio` | string? | Fecha ISO de inicio para cobros por intervalo (`YYYY-MM-DD`) |
+| `diasIntervalo` | number? | Días entre cobros (ej. `30`). Requiere `fechaInicio` |
+| `semanaDelMes` | number? | Semana del mes: `1`, `2`, `3`, `4` o `-1` (última) |
+| `diaSemana` | number? | Día de la semana: `1`=Lunes … `7`=Domingo. Requiere `semanaDelMes` |
+| `formaPago` | string? | `automatico`, `retiro` o `transferencia` |
+
+> **Configuraciones de cobro recurrente** (mutuamente excluyentes por registro):
+> - **Intervalo fijo:** `fechaInicio` + `diasIntervalo` — ej. cada 30 días desde el 20/12/2024
+> - **Día de semana del mes:** `semanaDelMes` + `diaSemana` — ej. 1er Martes de cada mes
 
 ### `festivosMX/{id}`
 Días festivos oficiales de México usados para ajustar fechas de corte y pago a días hábiles.
@@ -313,20 +358,45 @@ CRUD completo de instituciones y tarjetas:
 - Detección automática de red al pegar número de tarjeta (IIN/BIN)
 - Modal de tarjeta con secciones dinámicas según tipo: límite para crédito y préstamo, ciclo de facturación para crédito y préstamo, número de pago para préstamo
 
-### MSI (`#/msi`)
-Gestión de compras a meses sin intereses:
+### Compras y Gastos (`#/compras`)
+Gestión de compras y gastos, organizada en tres pestañas:
+
+**Pestaña De Contado** (colección `contado`)
+- Vista en acordeón agrupada por institución
+- Tabla: descripción + enlace, tarjeta (alias + últimos 4 dígitos), fecha de compra, fecha de pago, total
+- **Fecha de pago:** muestra dos líneas — nómina anterior (icono billetera) y límite de pago del ciclo (icono tarjeta)
+- Para tarjetas de débito: columna de fecha de pago vacía
+
+**Pestaña A Plazos** (colección `msi`)
 - Vista en acordeón **agrupada por institución**
-- Por compra: descripción, tarjeta (alias + últimos 4 dígitos), meses pagados/total, mensualidad, restante, primer pago y último pago
-- **Primer y último pago calculados dinámicamente** a partir de la fecha de compra y el ciclo de la tarjeta (ver [Ciclo de Facturación](#ciclo-de-facturación))
-- Las fechas mostradas corresponden al **depósito de nómina anterior** al pago calculado (ver [Cálculo de Nómina](#cálculo-de-nómina))
+- Filtros: **En curso** (default) / **Liquidados** / **Todos**
+- Por compra: descripción + enlace, tarjeta (alias + últimos 4 dígitos), meses pagados/total, mensualidad, restante/total, primer pago y último pago
+- **Primer y último pago:** dos líneas — nómina anterior (icono billetera) y límite de pago del ciclo (icono tarjeta)
+- Calculados dinámicamente a partir de la fecha de compra y el ciclo de la tarjeta (ver [Ciclo de Facturación](#ciclo-de-facturación))
 - Cálculo automático de mensualidad al ingresar total y número de meses
-- Totales de deuda global y mensualidad combinada en tarjetas de métricas
+- **Acción Liquidar:** marca la compra como saldada, registra `fechaLiquidacion`, ajusta `mesesPagados` al total
+- Al guardar con `mesesPagados = mesesTotal` se ofrece liquidar automáticamente
+- Vista "En curso": métricas de deuda total + mensualidad combinada
+- Vista "Liquidados"/"Todos": métricas de total de compras + cantidad
+
+**Pestaña Gastos** (colección `gastos`)
+- **Sección "Pendientes de confirmar":** gastos fijos con tarjeta de crédito que aún no se han registrado este mes. Se calculan dinámicamente (no se persisten). La fecha de cobro se muestra en rojo si ya venció.
+- Al pulsar **Confirmar**: abre modal pre-cargado con nombre, tarjeta (solo lectura), forma de pago, fecha calculada e importe — todos ajustables para ese mes. Al guardar crea un registro en `gastos` con `tipo = 'gastaFijo'`.
+- **Sección "Gastos registrados":** tabla del mes actual con todos los gastos confirmados y manuales.
+- **Nueva entrada manual:** solo tarjetas de débito; forma de pago limitada a Retiro o Transferencia. Crea registro con `tipo = 'manual'`.
+
+> **Regla de tipos:** los registros de tarjeta de crédito en `gastos` solo provienen de confirmar un gasto fijo. Las entradas manuales usan únicamente tarjetas de débito.
 
 ### Gastos Fijos (`#/fijos`)
-Registro de gastos recurrentes:
-- Tabla con totalizador al pie
-- Asociación a tarjeta específica
-- Campo de día de cobro libre (número, texto o descripción)
+Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
+- Tabla ordenada por institución → nombre del gasto, con totalizador al pie
+- Asociación a tarjeta y número específico (física o digital)
+- Tres modos de configuración de cobro (se muestra como texto en tabla):
+  - **Texto libre:** campo `diaCobro` (ej. "15", "1ra Quincena")
+  - **Intervalo fijo:** "Cada N días desde [fecha]" — se ajusta a siguiente día hábil
+  - **Día de semana del mes:** "1er Martes de cada mes" — se ajusta a siguiente día hábil
+- Los gastos fijos con tarjeta de crédito se precargan automáticamente en el tab Gastos cada mes
+- Los gastos fijos con `diaCobro` de texto no parseable como número no se precargan automáticamente
 
 ### Impacto Mensual (`#/impacto` o `#/impacto/YYYY-MM`)
 Estado financiero mensual:
@@ -377,7 +447,8 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 |---|---|---|
 | `#/` | dashboard.js | Dashboard principal |
 | `#/tarjetas` | tarjetas.js | Vista wallet de tarjetas |
-| `#/msi` | msi.js | Compras MSI |
+| `#/compras` | msi.js | Compras y Gastos (De Contado + A Plazos + Gastos) |
+| `#/msi` | — | Redirige a `#/compras` (compatibilidad) |
 | `#/fijos` | fijos.js | Gastos fijos |
 | `#/impacto` | impacto.js | Mes actual |
 | `#/impacto/2026-05` | impacto.js | Mes específico |
@@ -390,8 +461,10 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
 **Navegación (sidebar desktop / bottom nav móvil):**
-- **Principal:** Dashboard, Tarjetas, MSI, Impacto Mensual
-- **Ajustes:** Administración, Días Festivos, Exportar Datos
+- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Impacto Mensual
+- **Eventos:** Eventos de Ofertas
+- **Ajustes:** Administración, Gastos Fijos, Días Festivos
+- **Footer sidebar:** Exportar Datos, Cerrar Sesión
 - En móvil, los ítems duplicados en bottom nav se ocultan del sidebar (`data-hide-mobile`)
 
 ---
@@ -509,6 +582,59 @@ git push
 
 ---
 
+## Mantenimiento de Datos — Firestore
+
+Con el tiempo pueden acumularse campos obsoletos en los documentos de Firestore (residuos de rediseños anteriores). Los scripts siguientes se ejecutan desde la **consola del navegador (DevTools)** mientras la app está abierta y autenticada — no se necesitan credenciales adicionales.
+
+### Inspeccionar campos activos en una colección
+
+```javascript
+// Sustituir 'gastosFijos' por la colección a inspeccionar
+const uid  = firebase.auth().currentUser.uid;
+const snap = await firebase.firestore()
+  .collection(`users/${uid}/gastosFijos`).get();
+
+const campos = new Set();
+snap.forEach(d => Object.keys(d.data()).forEach(k => campos.add(k)));
+console.log('Campos encontrados:', [...campos].sort());
+console.log('Documentos:', snap.size);
+```
+
+### Eliminar un campo obsoleto de todos los documentos
+
+```javascript
+const uid    = firebase.auth().currentUser.uid;
+const colRef = firebase.firestore().collection(`users/${uid}/gastosFijos`);
+const snap   = await colRef.get();
+const del    = firebase.firestore.FieldValue.delete();
+
+// Procesar en lotes de 500 (límite de Firestore)
+const chunks = [];
+const docs   = snap.docs;
+for (let i = 0; i < docs.length; i += 500) chunks.push(docs.slice(i, i + 500));
+
+for (const chunk of chunks) {
+  const batch = firebase.firestore().batch();
+  chunk.forEach(d => batch.update(d.ref, { campoObsoleto: del }));
+  await batch.commit();
+}
+console.log('Listo — campo eliminado de', snap.size, 'documentos');
+```
+
+### Campos que pueden existir como obsoletos
+
+Los siguientes campos existieron en versiones anteriores y pueden estar presentes en documentos antiguos:
+
+| Colección | Campo obsoleto | Reemplazado por |
+|---|---|---|
+| `msi` | `primerPago` | Calculado dinámicamente desde `fechaCompra` + ciclo |
+| `msi` | `ultimoPago` | Calculado dinámicamente desde `fechaCompra` + ciclo |
+| `gastosFijos` | `tarjetaNombre` | `tarjetaId` + `numeroTarjeta` |
+
+> Las colecciones `contado` y `gastos` son nuevas — no tienen campos obsoletos.
+
+---
+
 ## Instituciones Bancarias Soportadas
 
 La app incluye colores predefinidos para las siguientes instituciones. Se puede agregar cualquier otra desde `#/admin` con color personalizable.
@@ -526,4 +652,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-05-27*
+*Última actualización: 2026-05-28 — Módulo Compras y Gastos: nueva tab Gastos, colección `gastos`, Gastos Fijos movido a Ajustes*
