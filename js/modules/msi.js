@@ -9,7 +9,7 @@ export async function render(container) {
   await renderView(container);
 }
 
-async function renderView(container) {
+async function renderView(container, initialTab = 'contado') {
   try {
     const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems] = await Promise.all([
       getAll('contado'),
@@ -24,8 +24,65 @@ async function renderView(container) {
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
 
-    let tabActivo = 'contado';
+    // ── Auto-crear / migrar pendientes para gastos fijos cuya fecha ya pasó ──
+    {
+      const _now   = new Date();
+      const _year  = _now.getFullYear();
+      const _month = _now.getMonth();
+      const _mes   = toISODate(_now).slice(0, 7);
+      const _hoy   = toISODate(_now);
+
+      // Mapa de registros existentes para este mes por gastaFijoId
+      const existeMap = new Map(
+        gastosItems
+          .filter(g => g.mes === _mes && g.gastaFijoId)
+          .map(g => [g.gastaFijoId, g])
+      );
+
+      const nuevos   = [];
+      const migrar   = []; // registros sin estado → actualizar a 'pendiente'
+
+      gastosFijosItems.forEach(gasto => {
+        const existente = existeMap.get(gasto.id);
+
+        if (existente) {
+          if (!existente.estado) {
+            migrar.push(existente.id);
+            existente.estado = 'pendiente';
+          }
+          return;
+        }
+
+        const fecha = calcularFechaGastoMes(gasto, _year, _month, festivosMX);
+        if (!fecha) return;
+        const fechaISO = toISODate(fecha);
+        if (!fechaISO.startsWith(_mes) || fechaISO > _hoy) return;
+
+        nuevos.push({
+          tipo: 'gastaFijo', estado: 'pendiente', mes: _mes,
+          gastaFijoId: gasto.id, nombre: gasto.nombre,
+          tarjetaId: gasto.tarjetaId || '',
+          ...(gasto.numeroTarjeta ? { numeroTarjeta: gasto.numeroTarjeta } : {}),
+          formaPago: gasto.formaPago || '',
+          fechaPago: fechaISO,
+          importe: Number(gasto.importe) || 0,
+        });
+      });
+
+      await Promise.all([
+        ...migrar.map(id => update('gastos', id, { estado: 'pendiente' })),
+        ...nuevos.map(d => create('gastos', d).then(id => gastosItems.push({ ...d, id }))),
+      ]);
+    }
+
+    let tabActivo = initialTab;
     let filtroMsi = 'curso';
+
+    const _mesActualStr   = toISODate(new Date()).slice(0, 7);
+    let filtroContadoMes  = _mesActualStr;
+    let filtroContadoTipo = 'pago';
+    let filtroGastosMes   = _mesActualStr;
+    let filtroGastosTipo  = 'pago';
 
     container.innerHTML = `
       <div class="page-header">
@@ -53,24 +110,50 @@ async function renderView(container) {
     // ── De Contado ──────────────────────────────────────────────────────────────
 
     const renderContado = () => {
+      const contadoCollapsed = localStorage.getItem('impactos-contado-collapsed') === 'true';
+
+      const filtered = contadoItems.filter(c => {
+        if (filtroContadoTipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
+        const tc = cardMap[c.tarjetaId];
+        if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
+          const compra = new Date(c.fechaCompra + 'T12:00:00');
+          let y = compra.getFullYear(), m = compra.getMonth();
+          let p = calcularMes(tc.ciclo, y, m, festivosMX);
+          if (p.fechaCorte < compra) { const nx = new Date(y, m + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
+          if (p.fechaPago) return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago).slice(0, 7) === filtroContadoMes;
+        }
+        return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
+      });
+
       const byInst = {};
-      contadoItems.forEach(c => {
+      filtered.forEach(c => {
         const card   = cardMap[c.tarjetaId];
         const instId = card?.institucionId || '__sin_inst__';
         if (!byInst[instId]) byInst[instId] = { inst: instMap[instId] || null, items: [] };
         byInst[instId].items.push(c);
       });
 
-      const totalCompras = contadoItems.reduce((s, c) => s + (Number(c.total) || 0), 0);
+      const totalCompras = filtered.reduce((s, c) => s + (Number(c.total) || 0), 0);
       const groups       = Object.values(byInst)
         .filter(g => g.items.length > 0)
         .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'));
 
       const subtitle = document.getElementById('compras-subtitle');
       if (subtitle) subtitle.textContent =
-        `${contadoItems.length} compra${contadoItems.length !== 1 ? 's' : ''} de contado`;
+        `${filtered.length} compra${filtered.length !== 1 ? 's' : ''} · ${_labelMes(filtroContadoMes)}`;
 
       document.getElementById('compras-tab-content').innerHTML = `
+        <div class="filter-bar d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+          <div class="d-flex align-items-center gap-1">
+            <button class="btn-icon" id="contado-mes-prev"><i class="bi bi-chevron-left"></i></button>
+            <span class="fw-500" style="min-width:130px;text-align:center;text-transform:capitalize">${_labelMes(filtroContadoMes)}</span>
+            <button class="btn-icon" id="contado-mes-next"><i class="bi bi-chevron-right"></i></button>
+          </div>
+          <div class="filter-chips">
+            <button class="filter-chip ${filtroContadoTipo === 'compra' ? 'active' : ''}" data-tipo="compra">Fecha Compra</button>
+            <button class="filter-chip ${filtroContadoTipo === 'pago'   ? 'active' : ''}" data-tipo="pago">Fecha Pago</button>
+          </div>
+        </div>
         <div class="row g-3 mb-4">
           <div class="col-6">
             <div class="metric-card">
@@ -89,20 +172,45 @@ async function renderView(container) {
                 <i class="bi bi-receipt" style="color:#6a1b9a"></i>
               </div>
               <div class="metric-info">
-                <div class="metric-value">${contadoItems.length}</div>
+                <div class="metric-value">${filtered.length}</div>
                 <div class="metric-label">Compras registradas</div>
               </div>
             </div>
           </div>
         </div>
         ${groups.length === 0
-          ? `<div class="empty-state"><i class="bi bi-bag"></i><p>Sin compras de contado registradas</p></div>`
-          : `<div class="accordion" id="contado-accordion">
-              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX)).join('')}
+          ? `<div class="empty-state"><i class="bi bi-bag"></i><p>Sin compras de contado para este período</p></div>`
+          : `<div class="d-flex justify-content-end mb-2">
+              <button class="btn btn-link btn-sm p-0 text-muted" id="btn-toggle-contado">
+                <i class="bi bi-arrows-${contadoCollapsed ? 'expand' : 'collapse'} me-1"></i>${contadoCollapsed ? 'Expandir todo' : 'Colapsar todo'}
+              </button>
+            </div>
+            <div class="accordion" id="contado-accordion">
+              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed)).join('')}
             </div>`
         }`;
 
       const content = document.getElementById('compras-tab-content');
+
+      content.querySelector('#contado-mes-prev')?.addEventListener('click', () => { filtroContadoMes = _mesAnterior(filtroContadoMes); renderContado(); });
+      content.querySelector('#contado-mes-next')?.addEventListener('click', () => { filtroContadoMes = _mesSiguiente(filtroContadoMes); renderContado(); });
+      content.querySelectorAll('.filter-chips .filter-chip[data-tipo]').forEach(btn =>
+        btn.addEventListener('click', () => { filtroContadoTipo = btn.dataset.tipo; renderContado(); }));
+
+      const btnToggleContado = content.querySelector('#btn-toggle-contado');
+      if (btnToggleContado) {
+        btnToggleContado.addEventListener('click', () => {
+          const panels = content.querySelectorAll('#contado-accordion .accordion-collapse');
+          const allOpen = [...panels].every(el => el.classList.contains('show'));
+          panels.forEach(el => {
+            bootstrap.Collapse.getOrCreateInstance(el, { toggle: false })[allOpen ? 'hide' : 'show']();
+          });
+          localStorage.setItem('impactos-contado-collapsed', allOpen ? 'true' : 'false');
+          btnToggleContado.innerHTML = allOpen
+            ? `<i class="bi bi-arrows-expand me-1"></i>Expandir todo`
+            : `<i class="bi bi-arrows-collapse me-1"></i>Colapsar todo`;
+        });
+      }
 
       content.querySelectorAll('.btn-edit-contado').forEach(btn =>
         btn.addEventListener('click', e => {
@@ -110,7 +218,7 @@ async function renderView(container) {
           showModalContado(
             contadoItems.find(c => c.id === btn.dataset.id),
             instituciones, tarjetas,
-            () => renderView(container)
+            () => renderView(container, 'contado')
           );
         }));
 
@@ -129,6 +237,7 @@ async function renderView(container) {
     // ── A Plazos ────────────────────────────────────────────────────────────────
 
     const renderPlazos = (filtro) => {
+      const plazosCollapsed = localStorage.getItem('impactos-plazos-collapsed') === 'true';
       const filtered = msiItems.filter(m => {
         if (filtro === 'curso')      return !m.liquidado;
         if (filtro === 'liquidados') return !!m.liquidado;
@@ -218,17 +327,76 @@ async function renderView(container) {
         <div class="row g-3 mb-4">${metricsHtml}</div>
         ${groups.length === 0
           ? `<div class="empty-state"><i class="bi bi-calendar-x"></i><p>${emptyMsg}</p></div>`
-          : `<div class="accordion" id="msi-accordion">
-              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro)).join('')}
+          : `<div class="d-flex justify-content-end mb-2">
+              <button class="btn btn-link btn-sm p-0 text-muted" id="btn-toggle-plazos">
+                <i class="bi bi-arrows-${plazosCollapsed ? 'expand' : 'collapse'} me-1"></i>${plazosCollapsed ? 'Expandir todo' : 'Colapsar todo'}
+              </button>
+            </div>
+            <div class="accordion" id="msi-accordion">
+              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro, plazosCollapsed)).join('')}
             </div>`
         }`;
 
       const content = document.getElementById('compras-tab-content');
 
+      const btnTogglePlazos = content.querySelector('#btn-toggle-plazos');
+      if (btnTogglePlazos) {
+        btnTogglePlazos.addEventListener('click', () => {
+          const panels = content.querySelectorAll('#msi-accordion .accordion-collapse');
+          const allOpen = [...panels].every(el => el.classList.contains('show'));
+          panels.forEach(el => {
+            bootstrap.Collapse.getOrCreateInstance(el, { toggle: false })[allOpen ? 'hide' : 'show']();
+          });
+          localStorage.setItem('impactos-plazos-collapsed', allOpen ? 'true' : 'false');
+          btnTogglePlazos.innerHTML = allOpen
+            ? `<i class="bi bi-arrows-expand me-1"></i>Expandir todo`
+            : `<i class="bi bi-arrows-collapse me-1"></i>Colapsar todo`;
+        });
+      }
+
       content.querySelectorAll('#filtro-msi [data-filtro]').forEach(btn =>
         btn.addEventListener('click', () => {
           filtroMsi = btn.dataset.filtro;
           renderPlazos(filtroMsi);
+        }));
+
+      content.querySelectorAll('.btn-pagar-msi').forEach(btn =>
+        btn.addEventListener('click', async e => {
+          e.stopPropagation();
+          const m = msiItems.find(x => x.id === btn.dataset.id);
+          if (!m) return;
+          const nuevosMeses   = (Number(m.mesesPagados) || 0) + 1;
+          const restanteBase  = m.restante != null
+            ? Number(m.restante)
+            : Math.max(0, (Number(m.total) || 0) - (Number(m.mensualidad) || 0) * (Number(m.mesesPagados) || 0));
+          const nuevoRestante = Math.max(0, restanteBase - (Number(m.mensualidad) || 0));
+          const mensualidad   = Number(m.mensualidad) || 0;
+
+          const ops = [update('msi', m.id, { mesesPagados: nuevosMeses, restante: nuevoRestante })];
+
+          // Sumar mensualidad al saldo disponible de la tarjeta (sin tocar fechaActualizacionSaldo)
+          const tc = cardMap[m.tarjetaId];
+          if (tc && tc.saldoDisponible != null && mensualidad > 0) {
+            const nuevoSaldo = Number(tc.saldoDisponible) + mensualidad;
+            ops.push(update('tarjetas', tc.id, { saldoDisponible: nuevoSaldo }));
+            tc.saldoDisponible = nuevoSaldo; // actualizar en memoria
+          }
+
+          await Promise.all(ops);
+          Object.assign(m, { mesesPagados: nuevosMeses, restante: nuevoRestante });
+          toast('Mensualidad registrada');
+          if (nuevosMeses >= Number(m.mesesTotal) && !m.liquidado) {
+            setTimeout(() => {
+              if (confirm(`"${m.compra}" tiene todos sus meses pagados.\n¿Marcarla como liquidada?`)) {
+                const fechaLiquidacion = toISODate(new Date());
+                update('msi', m.id, { liquidado: true, restante: 0, fechaLiquidacion })
+                  .then(() => { Object.assign(m, { liquidado: true, restante: 0, fechaLiquidacion }); toast('Compra liquidada'); renderPlazos(filtroMsi); })
+                  .catch(err => toast('Error: ' + err.message, 'danger'));
+              } else { renderPlazos(filtroMsi); }
+            }, 300);
+          } else {
+            renderPlazos(filtroMsi);
+          }
         }));
 
       content.querySelectorAll('.btn-edit-msi').forEach(btn =>
@@ -237,7 +405,7 @@ async function renderView(container) {
           showModalMsi(
             msiItems.find(m => m.id === btn.dataset.id),
             instituciones, tarjetas,
-            () => renderView(container)
+            () => renderView(container, 'plazos')
           );
         }));
 
@@ -287,48 +455,44 @@ async function renderView(container) {
 
     document.getElementById('btn-nueva-compra').addEventListener('click', () => {
       if (tabActivo === 'contado')
-        showModalContado(null, instituciones, tarjetas, () => renderView(container));
+        showModalContado(null, instituciones, tarjetas, () => renderView(container, 'contado'));
       else if (tabActivo === 'plazos')
-        showModalMsi(null, instituciones, tarjetas, () => renderView(container));
+        showModalMsi(null, instituciones, tarjetas, () => renderView(container, 'plazos'));
       else
-        showModalNuevoGasto(null, instituciones, tarjetas, () => renderView(container));
+        showModalNuevoGasto(null, instituciones, tarjetas, () => renderView(container, 'gastos'));
     });
 
     // ── Gastos ──────────────────────────────────────────────────────────────────
 
     const renderGastos = () => {
-      const now   = new Date();
-      const year  = now.getFullYear();
-      const month = now.getMonth();
+      const now       = new Date();
       const mesActual = toISODate(now).slice(0, 7);
       const hoy       = toISODate(now);
 
-      const confirmedSet = new Set(
-        gastosItems.filter(g => g.mes === mesActual && g.gastaFijoId).map(g => g.gastaFijoId)
-      );
-
-      const fijosPendientes = [];
-      gastosFijosItems.forEach(gasto => {
-        if (confirmedSet.has(gasto.id)) return;
-        const card = cardMap[gasto.tarjetaId];
-        if (!card || card.tipo !== 'credito') return;
-        const fecha = calcularFechaGastoMes(gasto, year, month, festivosMX);
-        if (!fecha) return;
-        const fechaISO = toISODate(fecha);
-        if (!fechaISO.startsWith(mesActual)) return;
-        fijosPendientes.push({ gasto, card, fecha: fechaISO });
-      });
-      fijosPendientes.sort((a, b) => a.fecha.localeCompare(b.fecha));
+      const pendientes = [...gastosItems]
+        .filter(g => g.mes === mesActual && g.estado === 'pendiente')
+        .sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
 
       const registrados = [...gastosItems]
-        .filter(g => g.mes === mesActual)
+        .filter(g => {
+          if (g.estado !== 'registrado') return false;
+          if (filtroGastosTipo === 'gasto') return (g.fechaPago || '').slice(0, 7) === filtroGastosMes;
+          const tc = cardMap[g.tarjetaId];
+          if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
+            const base = new Date(g.fechaPago + 'T12:00:00');
+            let yr = base.getFullYear(), mo = base.getMonth();
+            let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
+            if (p.fechaCorte < base) { const nx = new Date(yr, mo + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
+            if (p.fechaPago) return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago).slice(0, 7) === filtroGastosMes;
+          }
+          return (g.fechaPago || '').slice(0, 7) === filtroGastosMes;
+        })
         .sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
 
       const totalRegistrado = registrados.reduce((s, g) => s + (Number(g.importe) || 0), 0);
 
-      const mesLabel = now.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
       const subtitle = document.getElementById('compras-subtitle');
-      if (subtitle) subtitle.textContent = `Gastos de ${mesLabel}`;
+      if (subtitle) subtitle.textContent = `Gastos · ${_labelMes(filtroGastosMes)}`;
 
       const lastFourOf = (g, tc) => g.numeroTarjeta
         ? String(g.numeroTarjeta).replace(/\s/g, '').slice(-4)
@@ -339,6 +503,17 @@ async function renderView(container) {
           })();
 
       document.getElementById('compras-tab-content').innerHTML = `
+        <div class="filter-bar d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+          <div class="d-flex align-items-center gap-1">
+            <button class="btn-icon" id="gastos-mes-prev"><i class="bi bi-chevron-left"></i></button>
+            <span class="fw-500" style="min-width:130px;text-align:center;text-transform:capitalize">${_labelMes(filtroGastosMes)}</span>
+            <button class="btn-icon" id="gastos-mes-next"><i class="bi bi-chevron-right"></i></button>
+          </div>
+          <div class="filter-chips">
+            <button class="filter-chip ${filtroGastosTipo === 'gasto' ? 'active' : ''}" data-gtipo="gasto">Fecha Gasto</button>
+            <button class="filter-chip ${filtroGastosTipo === 'pago'  ? 'active' : ''}" data-gtipo="pago">Fecha Pago</button>
+          </div>
+        </div>
         <div class="row g-3 mb-4">
           <div class="col-6">
             <div class="metric-card">
@@ -347,7 +522,7 @@ async function renderView(container) {
               </div>
               <div class="metric-info">
                 <div class="metric-value">${currency(totalRegistrado)}</div>
-                <div class="metric-label">Total del mes</div>
+                <div class="metric-label">Total del período</div>
               </div>
             </div>
           </div>
@@ -364,28 +539,34 @@ async function renderView(container) {
           </div>
         </div>
 
-        ${fijosPendientes.length > 0 ? `
+        ${pendientes.length > 0 ? `
         <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
           <i class="bi bi-hourglass-split me-1 text-warning"></i>Gastos Fijos — Pendientes de confirmar
         </p>
         <div class="list-group mb-4" id="gastos-pendientes">
-          ${fijosPendientes.map(({ gasto, card, fecha }) => {
-            const lf = lastFourOf(gasto, card);
-            const vencido = fecha <= hoy;
+          ${pendientes.map(g => {
+            const tc = cardMap[g.tarjetaId];
+            const lf = lastFourOf(g, tc);
+            const vencido = g.fechaPago <= hoy;
             return `
               <div class="list-group-item d-flex align-items-center gap-3 py-2">
                 <div class="flex-grow-1">
-                  <div class="fw-500">${gasto.nombre}</div>
-                  <small class="text-muted">${card.nombre}${lf ? ' ···' + lf : ''} · ${FORMA_PAGO[gasto.formaPago] || '—'}</small>
+                  <div class="fw-500">${g.nombre}</div>
+                  <small class="text-muted">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''} · ${FORMA_PAGO[g.formaPago] || '—'}</small>
                 </div>
                 <div class="text-center" style="min-width:76px">
                   <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:.04em;color:#aaa">Cobro</div>
-                  <div class="${vencido ? 'text-danger fw-bold' : 'text-muted'}" style="font-size:0.82rem">${fmtDate(fecha)}</div>
+                  <div class="${vencido ? 'text-danger fw-bold' : 'text-muted'}" style="font-size:0.82rem">${fmtDate(g.fechaPago)}</div>
                 </div>
-                <div class="fw-bold text-end" style="min-width:80px">${currency(gasto.importe)}</div>
-                <button class="btn btn-sm btn-outline-primary btn-confirmar-gasto" data-id="${gasto.id}" style="white-space:nowrap">
-                  <i class="bi bi-check-lg me-1"></i>Confirmar
-                </button>
+                <div class="fw-bold text-end" style="min-width:80px">${currency(g.importe)}</div>
+                <div class="d-flex gap-1">
+                  <button class="btn btn-sm btn-outline-primary btn-confirmar-gasto" data-id="${g.id}" style="white-space:nowrap">
+                    <i class="bi bi-check-lg me-1"></i>Confirmar
+                  </button>
+                  <button class="btn-icon btn-descartar-gasto" data-id="${g.id}" title="Descartar este mes">
+                    <i class="bi bi-x-lg"></i>
+                  </button>
+                </div>
               </div>`;
           }).join('')}
         </div>` : ''}
@@ -399,12 +580,30 @@ async function renderView(container) {
               <table class="table">
                 <thead><tr>
                   <th>Nombre</th><th>Tarjeta</th><th>Forma de Pago</th>
-                  <th>Fecha Pago</th><th class="text-end">Importe</th><th></th>
+                  <th>Fecha Gasto</th><th>Fecha Pago</th><th class="text-end">Importe</th><th></th>
                 </tr></thead>
                 <tbody>
                   ${registrados.map(g => {
                     const tc = cardMap[g.tarjetaId];
                     const lf = lastFourOf(g, tc);
+
+                    let fechaPagoCell = g.fechaPago ? fmtDate(g.fechaPago) : '—';
+                    if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
+                      const base = new Date(g.fechaPago + 'T12:00:00');
+                      let yr = base.getFullYear(), mo = base.getMonth();
+                      let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
+                      if (p.fechaCorte < base) {
+                        const next = new Date(yr, mo + 1, 1);
+                        p = calcularMes(tc.ciclo, next.getFullYear(), next.getMonth(), festivosMX);
+                      }
+                      if (p.fechaPago) {
+                        const nom = anteriorNomina(p.fechaPago, festivosMX);
+                        fechaPagoCell = `
+                          ${nom ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>` : ''}
+                          <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(p.fechaPago))}</small>`;
+                      }
+                    }
+
                     return `<tr>
                       <td>
                         <div class="fw-500">${g.nombre}</div>
@@ -413,6 +612,7 @@ async function renderView(container) {
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''}</td>
                       <td>${FORMA_PAGO[g.formaPago] || '—'}</td>
                       <td style="white-space:nowrap">${g.fechaPago ? fmtDate(g.fechaPago) : '—'}</td>
+                      <td style="white-space:nowrap">${fechaPagoCell}</td>
                       <td class="text-end fw-bold">${currency(g.importe)}</td>
                       <td>
                         <div class="d-flex gap-1">
@@ -429,18 +629,31 @@ async function renderView(container) {
 
       const content = document.getElementById('compras-tab-content');
 
+      content.querySelector('#gastos-mes-prev')?.addEventListener('click', () => { filtroGastosMes = _mesAnterior(filtroGastosMes); renderGastos(); });
+      content.querySelector('#gastos-mes-next')?.addEventListener('click', () => { filtroGastosMes = _mesSiguiente(filtroGastosMes); renderGastos(); });
+      content.querySelectorAll('[data-gtipo]').forEach(btn =>
+        btn.addEventListener('click', () => { filtroGastosTipo = btn.dataset.gtipo; renderGastos(); }));
+
       content.querySelectorAll('.btn-confirmar-gasto').forEach(btn =>
         btn.addEventListener('click', () => {
-          const gasto = gastosFijosItems.find(g => g.id === btn.dataset.id);
-          if (!gasto) return;
-          const fecha = calcularFechaGastoMes(gasto, year, month, festivosMX);
-          showModalConfirmarGasto(gasto, fecha, mesActual, instituciones, tarjetas, () => renderView(container));
+          const g = gastosItems.find(x => x.id === btn.dataset.id);
+          if (!g) return;
+          showModalConfirmarGasto(g, instituciones, tarjetas, () => renderView(container, 'gastos'));
+        }));
+
+      content.querySelectorAll('.btn-descartar-gasto').forEach(btn =>
+        btn.addEventListener('click', async () => {
+          const g = gastosItems.find(x => x.id === btn.dataset.id);
+          if (!g) return;
+          await update('gastos', g.id, { estado: 'descartado' });
+          Object.assign(g, { estado: 'descartado' });
+          renderGastos();
         }));
 
       content.querySelectorAll('.btn-edit-gasto').forEach(btn =>
         btn.addEventListener('click', () => {
           const g = gastosItems.find(x => x.id === btn.dataset.id);
-          showModalNuevoGasto(g, instituciones, tarjetas, () => renderView(container));
+          showModalNuevoGasto(g, instituciones, tarjetas, () => renderView(container, 'gastos'));
         }));
 
       content.querySelectorAll('.btn-del-gasto').forEach(btn =>
@@ -462,7 +675,7 @@ async function renderView(container) {
 
 // ── Render helpers ──────────────────────────────────────────────────────────────
 
-function renderGroupContado({ inst, items }, idx, cardMap, festivosMX) {
+function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false) {
   const label      = inst?.nombre || 'Sin institución';
   const color      = inst?.color  || '#607d8b';
   const totalGrupo = items.reduce((s, c) => s + (Number(c.total) || 0), 0);
@@ -470,7 +683,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX) {
   return `
     <div class="accordion-item mb-2">
       <h2 class="accordion-header">
-        <button class="accordion-button" type="button"
+        <button class="accordion-button${collapsed ? ' collapsed' : ''}" type="button"
                 data-bs-toggle="collapse" data-bs-target="#acc-c-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
@@ -479,7 +692,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX) {
           </span>
         </button>
       </h2>
-      <div id="acc-c-${idx}" class="accordion-collapse collapse show">
+      <div id="acc-c-${idx}" class="accordion-collapse collapse${collapsed ? '' : ' show'}">
         <div class="accordion-body p-0">
           <div class="table-wrapper">
             <table class="table">
@@ -527,7 +740,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX) {
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
                       <td style="white-space:nowrap">
-                        ${nominaPagoDisplay ? `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${nominaPagoDisplay}</span><br>` : ''}
+                        ${nominaPagoDisplay ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${nominaPagoDisplay}</span><br>` : ''}
                         ${limitePagoDisplay !== '—' ? `<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${limitePagoDisplay}</small>` : '—'}
                       </td>
                       <td class="text-end fw-bold">${currency(c.total)}</td>
@@ -568,10 +781,10 @@ function calcularPagos(ciclo, fechaCompra, mesesTotal, festivosMX) {
   const lastDate    = new Date(year, month + (mesesTotal - 1), 1);
   const lastPeriodo = calcularMes(ciclo, lastDate.getFullYear(), lastDate.getMonth(), festivosMX);
 
-  return { primerPago, ultimoPago: lastPeriodo.fechaPago };
+  return { primerPago, ultimoPago: lastPeriodo.fechaPago, cicloYear: year, cicloMonth: month };
 }
 
-function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
+function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, collapsed = false) {
   const label        = inst?.nombre || 'Sin institución';
   const color        = inst?.color  || '#607d8b';
   const mostrarTotal = filtro !== 'curso';
@@ -590,7 +803,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
   return `
     <div class="accordion-item mb-2">
       <h2 class="accordion-header">
-        <button class="accordion-button" type="button"
+        <button class="accordion-button${collapsed ? ' collapsed' : ''}" type="button"
                 data-bs-toggle="collapse" data-bs-target="#acc-m-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
@@ -599,7 +812,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
           </span>
         </button>
       </h2>
-      <div id="acc-m-${idx}" class="accordion-collapse collapse show">
+      <div id="acc-m-${idx}" class="accordion-collapse collapse${collapsed ? '' : ' show'}">
         <div class="accordion-body p-0">
           <div class="table-wrapper">
             <table class="table">
@@ -608,6 +821,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
                 <th class="text-end">Mensualidad</th>
                 <th class="text-end">${thRestante}</th>
                 <th>Primer Pago</th>
+                ${filtro === 'curso' ? `<th>Próximo Pago</th>` : ''}
                 <th>${thUltimo}</th>
                 <th></th>
               </tr></thead>
@@ -620,7 +834,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
                   })
                   .map(m => {
                     const tc = cardMap[m.tarjetaId];
-                    const { primerPago, ultimoPago } = calcularPagos(
+                    const { primerPago, ultimoPago, cicloYear, cicloMonth } = calcularPagos(
                       tc?.ciclo, m.fechaCompra, Number(m.mesesTotal) || 0, festivosMX
                     );
                     const nomPrimero = primerPago ? anteriorNomina(primerPago, festivosMX) : null;
@@ -634,28 +848,44 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
                           return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
                         })();
 
-                    const done = m.liquidado || Number(m.restante) <= 0;
+                    const restanteEfectivo = m.restante != null
+                      ? Number(m.restante)
+                      : Math.max(0, (Number(m.total) || 0) - (Number(m.mensualidad) || 0) * (Number(m.mesesPagados) || 0));
+
+                    const done = m.liquidado || restanteEfectivo <= 0;
                     const pct  = m.liquidado ? 100
                       : Math.round((Number(m.mesesPagados) || 0) / (Number(m.mesesTotal) || 1) * 100);
 
                     const restanteVal = mostrarTotal
                       ? currency(m.total)
-                      : (m.liquidado ? '✓ Liquidado' : done ? '✓ Pagado' : currency(m.restante));
+                      : (m.liquidado ? '✓ Liquidado' : done ? '✓ Pagado' : currency(restanteEfectivo));
                     const restanteCls = mostrarTotal ? '' : done ? 'text-success' : 'fw-bold';
 
                     const isLiquidado = (filtro === 'liquidados' || m.liquidado) && m.fechaLiquidacion;
 
-                    const primerPagoCell = nomPrimero
-                      ? `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${fmtDate(toISODate(nomPrimero))}</span><br>
-                         <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(primerPago))}</small>`
-                      : '—';
+                    const _pagoMuted = (nom, limite) =>
+                      `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${fmtDate(toISODate(nom))}</span><br>
+                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
+
+                    const _pagoHighlight = (nom, limite) =>
+                      `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>
+                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
+
+                    const primerPagoCell = nomPrimero ? _pagoMuted(nomPrimero, primerPago) : '—';
 
                     const ultimoPagoCell = isLiquidado
                       ? fmtDate(m.fechaLiquidacion)
-                      : nomUltimo
-                        ? `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${fmtDate(toISODate(nomUltimo))}</span><br>
-                           <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(ultimoPago))}</small>`
-                        : '—';
+                      : nomUltimo ? _pagoMuted(nomUltimo, ultimoPago) : '—';
+
+                    let proximoPagoCell = '—';
+                    if (!m.liquidado && primerPago && tc?.ciclo && cicloYear != null && Number(m.mesesPagados) < Number(m.mesesTotal)) {
+                      const nx = new Date(cicloYear, cicloMonth + (Number(m.mesesPagados) || 0), 1);
+                      const pp = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+                      if (pp?.fechaPago) {
+                        const nomPx = anteriorNomina(pp.fechaPago, festivosMX);
+                        proximoPagoCell = nomPx ? _pagoHighlight(nomPx, pp.fechaPago) : fmtDate(toISODate(pp.fechaPago));
+                      }
+                    }
 
                     return `<tr class="${done ? 'table-success' : ''}">
                       <td>
@@ -672,9 +902,11 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro) {
                       <td class="text-end">${currency(m.mensualidad)}</td>
                       <td class="text-end ${restanteCls}">${restanteVal}</td>
                       <td style="white-space:nowrap">${primerPagoCell}</td>
+                      ${filtro === 'curso' ? `<td style="white-space:nowrap">${proximoPagoCell}</td>` : ''}
                       <td style="white-space:nowrap">${ultimoPagoCell}</td>
                       <td>
                         <div class="d-flex gap-1">
+                          ${!m.liquidado && Number(m.mesesPagados) < Number(m.mesesTotal) ? `<button class="btn-icon btn-pagar-msi" data-id="${m.id}" title="Registrar pago de mensualidad"><i class="bi bi-coin"></i></button>` : ''}
                           ${!m.liquidado ? `<button class="btn-icon btn-liquidar-msi" data-id="${m.id}" title="Liquidar"><i class="bi bi-check-circle"></i></button>` : ''}
                           <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
                           <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
@@ -830,13 +1062,22 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-3">
             <label class="form-label">Meses pagados</label>
-            <input type="number" class="form-control" name="mesesPagados" value="${msi?.mesesPagados || 0}" min="0">
+            <input type="number" class="form-control" name="mesesPagados" value="${msi?.mesesPagados || 0}" min="0" id="msi-meses-pagados">
           </div>
           <div class="col-md-6">
             <label class="form-label">Mensualidad *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
               <input type="number" class="form-control" name="mensualidad" value="${msi?.mensualidad || ''}" required min="0" step="0.01">
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Restante</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="restante" id="msi-restante"
+                     value="${msi != null ? (msi.restante != null ? msi.restante : Math.max(0, (Number(msi.total)||0) - (Number(msi.mensualidad)||0) * (Number(msi.mesesPagados)||0))) : ''}"
+                     min="0" step="0.01">
             </div>
           </div>
           <div class="col-12">
@@ -850,12 +1091,25 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${isEdit ? 'Guardar' : 'Crear'}</button>`
   });
 
+  const _recalcMsi = () => {
+    const total    = Number(document.querySelector('#msi-form [name=total]').value)    || 0;
+    const meses    = Number(document.querySelector('#msi-form [name=mesesTotal]').value) || 0;
+    const mens     = Number(document.querySelector('#msi-form [name=mensualidad]').value) || 0;
+    const pagados  = Number(document.querySelector('#msi-form [name=mesesPagados]').value) || 0;
+    if (total > 0 && meses > 0)
+      document.querySelector('#msi-form [name=mensualidad]').value = (total / meses).toFixed(2);
+    const mensUsada = Number(document.querySelector('#msi-form [name=mensualidad]').value) || 0;
+    document.getElementById('msi-restante').value = Math.max(0, total - mensUsada * pagados).toFixed(2);
+  };
   ['total', 'mesesTotal'].forEach(name => {
-    document.querySelector(`[name="${name}"]`).addEventListener('input', () => {
-      const total = Number(document.querySelector('[name=total]').value);
-      const meses = Number(document.querySelector('[name=mesesTotal]').value);
-      if (total > 0 && meses > 0)
-        document.querySelector('[name=mensualidad]').value = (total / meses).toFixed(2);
+    document.querySelector(`#msi-form [name="${name}"]`).addEventListener('input', _recalcMsi);
+  });
+  ['mensualidad', 'mesesPagados'].forEach(name => {
+    document.querySelector(`#msi-form [name="${name}"]`).addEventListener('input', () => {
+      const total   = Number(document.querySelector('#msi-form [name=total]').value) || 0;
+      const mens    = Number(document.querySelector('#msi-form [name=mensualidad]').value) || 0;
+      const pagados = Number(document.querySelector('#msi-form [name=mesesPagados]').value) || 0;
+      document.getElementById('msi-restante').value = Math.max(0, total - mens * pagados).toFixed(2);
     });
   });
 
@@ -870,7 +1124,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     data.mensualidad   = Number(data.mensualidad);
     data.mesesTotal    = Number(data.mesesTotal);
     data.mesesPagados  = Number(data.mesesPagados);
-    data.restante      = Math.max(0, data.total - data.mensualidad * data.mesesPagados);
+    data.restante      = data.restante !== '' ? Number(data.restante) : Math.max(0, data.total - data.mensualidad * data.mesesPagados);
     if (!data.enlaceCompra) delete data.enlaceCompra;
     try {
       let savedId;
@@ -960,16 +1214,15 @@ function calcularFechaGastoMes(gasto, year, month, festivosMX) {
 
 // ── Modal Confirmar Gasto Fijo ──────────────────────────────────────────────────
 
-function showModalConfirmarGasto(gastaFijo, fechaCalculada, mes, instituciones, tarjetas, onSaved) {
-  const tc = tarjetas.find(t => t.id === gastaFijo.tarjetaId);
-  const lastFour = gastaFijo.numeroTarjeta
-    ? String(gastaFijo.numeroTarjeta).replace(/\s/g, '').slice(-4)
+function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
+  const tc = tarjetas.find(t => t.id === pendiente.tarjetaId);
+  const lastFour = pendiente.numeroTarjeta
+    ? String(pendiente.numeroTarjeta).replace(/\s/g, '').slice(-4)
     : (() => {
         const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
         const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
         return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
       })();
-  const fechaISO = fechaCalculada ? toISODate(fechaCalculada) : '';
 
   openModal({
     title: 'Confirmar Gasto Fijo',
@@ -978,31 +1231,29 @@ function showModalConfirmarGasto(gastaFijo, fechaCalculada, mes, instituciones, 
         <div class="row g-3">
           <div class="col-12">
             <label class="form-label">Nombre</label>
-            <input type="text" class="form-control" name="nombre" value="${gastaFijo.nombre}" required>
+            <input type="text" class="form-control" name="nombre" value="${pendiente.nombre}" required>
           </div>
           <div class="col-12">
             <label class="form-label">Tarjeta</label>
             <input type="text" class="form-control" value="${tc ? tc.nombre + (lastFour ? ' ···' + lastFour : '') : '—'}" disabled>
-            <input type="hidden" name="tarjetaId"     value="${gastaFijo.tarjetaId    || ''}">
-            <input type="hidden" name="numeroTarjeta" value="${gastaFijo.numeroTarjeta || ''}">
           </div>
           <div class="col-md-6">
             <label class="form-label">Forma de Pago</label>
             <select class="form-select" name="formaPago">
-              <option value="automatico"    ${gastaFijo.formaPago === 'automatico'    ? 'selected' : ''}>Automático</option>
-              <option value="retiro"        ${gastaFijo.formaPago === 'retiro'        ? 'selected' : ''}>Retiro</option>
-              <option value="transferencia" ${gastaFijo.formaPago === 'transferencia' ? 'selected' : ''}>Transferencia</option>
+              <option value="automatico"    ${pendiente.formaPago === 'automatico'    ? 'selected' : ''}>Automático</option>
+              <option value="retiro"        ${pendiente.formaPago === 'retiro'        ? 'selected' : ''}>Retiro</option>
+              <option value="transferencia" ${pendiente.formaPago === 'transferencia' ? 'selected' : ''}>Transferencia</option>
             </select>
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de Pago *</label>
-            <input type="date" class="form-control" name="fechaPago" value="${fechaISO}" required>
+            <input type="date" class="form-control" name="fechaPago" value="${pendiente.fechaPago || ''}" required>
           </div>
           <div class="col-12">
             <label class="form-label">Importe *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="importe" value="${gastaFijo.importe || ''}" required min="0" step="0.01">
+              <input type="number" class="form-control" name="importe" value="${pendiente.importe || ''}" required min="0" step="0.01">
             </div>
           </div>
         </div>
@@ -1016,13 +1267,10 @@ function showModalConfirmarGasto(gastaFijo, fechaCalculada, mes, instituciones, 
     const form = document.getElementById('confirmar-gasto-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const data = Object.fromEntries(new FormData(form));
-    data.importe     = Number(data.importe);
-    data.mes         = mes;
-    data.gastaFijoId = gastaFijo.id;
-    data.tipo        = 'gastaFijo';
-    if (!data.numeroTarjeta) delete data.numeroTarjeta;
+    data.importe = Number(data.importe);
+    data.estado  = 'registrado';
     try {
-      await create('gastos', data);
+      await update('gastos', pendiente.id, data);
       closeModal();
       toast('Gasto registrado');
       onSaved();
@@ -1092,6 +1340,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
     data.numeroTarjeta = numeroTarjeta || '';
     data.importe       = Number(data.importe);
     data.tipo          = 'manual';
+    data.estado        = 'registrado';
     data.mes           = gasto?.mes || toISODate(new Date()).slice(0, 7);
     if (!data.numeroTarjeta) delete data.numeroTarjeta;
     try {
@@ -1102,4 +1351,21 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
       onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
+}
+
+// ── Helpers de navegación de mes ───────────────────────────────────────────────
+
+function _mesAnterior(mes) {
+  const [y, m] = mes.split('-').map(Number);
+  return toISODate(new Date(y, m - 2, 1)).slice(0, 7);
+}
+
+function _mesSiguiente(mes) {
+  const [y, m] = mes.split('-').map(Number);
+  return toISODate(new Date(y, m, 1)).slice(0, 7);
+}
+
+function _labelMes(mes) {
+  const [y, m] = mes.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
 }

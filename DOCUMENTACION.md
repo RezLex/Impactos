@@ -15,10 +15,11 @@
 7. [Módulos de la Aplicación](#módulos-de-la-aplicación)
 8. [Navegación y Routing](#navegación-y-routing)
 9. [Ciclo de Facturación](#ciclo-de-facturación)
-10. [Cálculo de Nómina](#cálculo-de-nómina)
-11. [Ejecución Local](#ejecución-local)
-12. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-13. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+10. [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)
+11. [Cálculo de Nómina](#cálculo-de-nómina)
+12. [Ejecución Local](#ejecución-local)
+13. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+14. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -89,6 +90,7 @@ impactos/
         ├── db.js               # CRUD genérico para Firestore
         ├── formatters.js       # Formateo de moneda, fechas, seriales Excel, etc.
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
+        ├── saldo.js            # Cálculo de saldo disponible/usado con ajuste por compras
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
 
@@ -196,6 +198,10 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 |---|---|---|
 | `limiteTotal` | number? | Límite de crédito o monto del préstamo |
 | `ciclo` | object? | Configuración del ciclo de facturación (ver sección [Ciclo de Facturación](#ciclo-de-facturación)) |
+| `saldoDisponible` | number? | Saldo disponible en el momento de la última actualización manual |
+| `fechaActualizacionSaldo` | string? | Fecha ISO de la última actualización de saldo (`YYYY-MM-DD`) |
+
+> `saldoDisponible` es el dato base guardado manualmente. El saldo real se obtiene restando las compras y gastos registrados con `fechaCompra`/`fechaPago` posterior a `fechaActualizacionSaldo` (ver [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)).
 
 **Campos exclusivos de `prestamo`:**
 
@@ -231,16 +237,21 @@ Gastos registrados por mes. Incluye dos orígenes: gastos fijos confirmados (tar
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `tipo` | string | `gastaFijo` (confirmado desde Gastos Fijos) o `manual` (entrada directa) |
+| `estado` | string | `pendiente` · `registrado` · `descartado` |
 | `mes` | string | Mes al que pertenece el gasto (`YYYY-MM`) |
 | `nombre` | string | Descripción del gasto |
 | `tarjetaId` | string | ID de la tarjeta usada |
 | `numeroTarjeta` | string? | Número específico de tarjeta (física o digital) |
 | `formaPago` | string | `automatico`, `retiro` o `transferencia` |
-| `fechaPago` | string | Fecha ISO en que se realizó el pago (`YYYY-MM-DD`) |
+| `fechaPago` | string | Fecha ISO del gasto ("Fecha Gasto", `YYYY-MM-DD`) |
 | `importe` | number | Monto del gasto |
 | `gastaFijoId` | string? | ID del gasto fijo origen (solo cuando `tipo = 'gastaFijo'`) |
 
-> Los gastos fijos pendientes de confirmar **no se almacenan** — se calculan dinámicamente cada vez que se abre el tab Gastos. Solo al confirmar se crea un documento en esta colección.
+**Ciclo de vida de un gasto fijo:**
+1. Al abrir el módulo, los gastos fijos cuya fecha calculada ≤ hoy y sin registro en `gastos` para ese mes se crean con `estado: 'pendiente'`
+2. Al confirmar → `estado: 'registrado'` (el usuario puede ajustar nombre, forma de pago, fecha e importe)
+3. Al descartar → `estado: 'descartado'` (no se muestra ni se recrea)
+4. Entradas manuales se crean directamente con `estado: 'registrado'`
 
 ### `msi/{id}`
 Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no se almacenan** — se calculan dinámicamente a partir del ciclo de la tarjeta y la fecha de compra.
@@ -255,7 +266,7 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 | `mensualidad` | number | Monto mensual a pagar |
 | `mesesTotal` | number | Total de meses del plan |
 | `mesesPagados` | number | Meses ya pagados |
-| `restante` | number | Monto pendiente (`total - mensualidad × mesesPagados`) |
+| `restante` | number? | Monto pendiente; si no está en BD se calcula como `total - mensualidad × mesesPagados` |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
 | `liquidado` | boolean? | `true` cuando la compra está completamente saldada |
 | `fechaLiquidacion` | string? | Fecha ISO en que se marcó como liquidada (`YYYY-MM-DD`) |
@@ -347,45 +358,57 @@ Vista de cartera (wallet) de todas las tarjetas registradas:
 - **En móvil:** stack vertical con efecto de superposición — la tarjeta activa se expande, las demás se colapsan mostrando institución y alias en una línea
 - Filtros por tipo (Todas / Débito / Crédito / Préstamo) y por institución
 - Ordenamiento: institución → tipo (Débito → Crédito → Préstamo) → alias
-- Reverso de cada tarjeta muestra: CLABE, números (físico/digital con últimos 4 dígitos enmascarados) y botones de copiado
-- Para crédito y préstamo: chips con límite total y fechas de corte/pago del ciclo activo
+- **Frente** (crédito/préstamo): chip de saldo usado calculado (`bi-bar-chart-fill`) + chips de fechas de ciclo activo
+- **Reverso** (crédito/préstamo): chips de Límite total y Saldo disponible en la franja negra superior; CLABE y números en el cuerpo
+- El saldo disponible se muestra en verde si no hay compras posteriores a la última actualización, o en blanco si fue ajustado (ver [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible))
 
 ### Administración (`#/admin`)
 CRUD completo de instituciones y tarjetas:
 - Tabla agrupada por institución con encabezado coloreado
 - Número de cliente de la institución visible y copiable
-- Por tarjeta: tipo, red (Visa/Mastercard/etc.), números (F/D), CLABE, límite y ciclo
+- Por tarjeta: tipo, red, números (F/D), CLABE, límite, **saldo disponible calculado**, **saldo usado**, ciclo
+- Saldo disponible: verde si coincide con el valor en BD, negro si hay compras/gastos posteriores que lo redujeron
 - Detección automática de red al pegar número de tarjeta (IIN/BIN)
-- Modal de tarjeta con secciones dinámicas según tipo: límite para crédito y préstamo, ciclo de facturación para crédito y préstamo, número de pago para préstamo
+- Modal de tarjeta con secciones dinámicas según tipo:
+  - Crédito y préstamo: sección "Saldo disponible" con campos Disponible y Usado (se calculan mutuamente a partir del límite); guarda `saldoDisponible` + `fechaActualizacionSaldo` automáticamente
+  - Crédito y préstamo: límite total
+  - Crédito: ciclo de facturación
+  - Préstamo: número de pago
 
 ### Compras y Gastos (`#/compras`)
-Gestión de compras y gastos, organizada en tres pestañas:
+Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
 
 **Pestaña De Contado** (colección `contado`)
-- Vista en acordeón agrupada por institución
-- Tabla: descripción + enlace, tarjeta (alias + últimos 4 dígitos), fecha de compra, fecha de pago, total
-- **Fecha de pago:** muestra dos líneas — nómina anterior (icono billetera) y límite de pago del ciclo (icono tarjeta)
-- Para tarjetas de débito: columna de fecha de pago vacía
+- Filtro de período: navegación mes/año (`‹ Mayo 2026 ›`) + toggle **Fecha Compra | Fecha Pago**
+  - *Fecha Pago*: filtra por la nómina anterior al límite de pago del ciclo (mismo ajuste que en A Plazos)
+- Vista en acordeón agrupada por institución; botón **Colapsar/Expandir todo**
+- Tabla: descripción + enlace, tarjeta (alias + últimos 4), fecha de compra, fecha de pago, total
+- **Fecha de pago:** nómina anterior en azul (icono billetera) + límite del ciclo en gris (icono tarjeta)
+- Para tarjetas de débito la columna de fecha de pago queda vacía
 
 **Pestaña A Plazos** (colección `msi`)
-- Vista en acordeón **agrupada por institución**
+- Vista en acordeón **agrupada por institución**; botón **Colapsar/Expandir todo**
 - Filtros: **En curso** (default) / **Liquidados** / **Todos**
-- Por compra: descripción + enlace, tarjeta (alias + últimos 4 dígitos), meses pagados/total, mensualidad, restante/total, primer pago y último pago
-- **Primer y último pago:** dos líneas — nómina anterior (icono billetera) y límite de pago del ciclo (icono tarjeta)
-- Calculados dinámicamente a partir de la fecha de compra y el ciclo de la tarjeta (ver [Ciclo de Facturación](#ciclo-de-facturación))
-- Cálculo automático de mensualidad al ingresar total y número de meses
-- **Acción Liquidar:** marca la compra como saldada, registra `fechaLiquidacion`, ajusta `mesesPagados` al total
-- Al guardar con `mesesPagados = mesesTotal` se ofrece liquidar automáticamente
+- Por compra: descripción + enlace, tarjeta, meses pagados/total, mensualidad, restante, primer pago, **próximo pago** (solo "En curso"), último pago
+- **Próximo Pago:** calculado como el ciclo del mes `primerCicloMes + mesesPagados`; se muestra resaltado en azul (icono billetera + icono tarjeta)
+- Primer y Último pago: mismas dos líneas pero sin resalte
+- `restante`: se usa el valor almacenado en BD; si no existe se calcula. Campo editable en el modal, se recalcula automáticamente al cambiar total/mensualidad/mesesPagados
+- **Acción Pagar mensualidad** (`bi-coin`): incrementa `mesesPagados + 1`, reduce `restante - mensualidad`, y suma la mensualidad al `saldoDisponible` de la tarjeta (sin actualizar `fechaActualizacionSaldo`)
+- **Acción Liquidar:** marca la compra como saldada, registra `fechaLiquidacion`
+- Al pagar la última mensualidad o guardar con `mesesPagados = mesesTotal` se ofrece liquidar automáticamente
 - Vista "En curso": métricas de deuda total + mensualidad combinada
 - Vista "Liquidados"/"Todos": métricas de total de compras + cantidad
 
 **Pestaña Gastos** (colección `gastos`)
-- **Sección "Pendientes de confirmar":** gastos fijos con tarjeta de crédito que aún no se han registrado este mes. Se calculan dinámicamente (no se persisten). La fecha de cobro se muestra en rojo si ya venció.
-- Al pulsar **Confirmar**: abre modal pre-cargado con nombre, tarjeta (solo lectura), forma de pago, fecha calculada e importe — todos ajustables para ese mes. Al guardar crea un registro en `gastos` con `tipo = 'gastaFijo'`.
-- **Sección "Gastos registrados":** tabla del mes actual con todos los gastos confirmados y manuales.
-- **Nueva entrada manual:** solo tarjetas de débito; forma de pago limitada a Retiro o Transferencia. Crea registro con `tipo = 'manual'`.
+- Filtro de período: navegación mes/año + toggle **Fecha Gasto | Fecha Pago**
+  - *Fecha Pago*: para crédito filtra por nómina anterior al ciclo; para débito usa la fecha de gasto
+- **Sección "Pendientes de confirmar"** (siempre mes actual): gastos fijos cuya fecha calculada ≤ hoy y no confirmados/descartados este mes. Se persisten en BD con `estado: 'pendiente'` al abrir el módulo
+  - Botón **Confirmar**: modal pre-cargado (nombre, tarjeta solo lectura, forma pago, fecha, importe); guarda con `estado: 'registrado'`
+  - Botón **Descartar** (×): guarda `estado: 'descartado'`; no reaparece ni se recrea
+- **Sección "Gastos registrados"**: tabla filtrada por período con Nombre, Tarjeta, Forma de Pago, Fecha Gasto, **Fecha Pago** (ciclo calculado para crédito), Importe
+- **Nueva entrada manual**: solo tarjetas de débito; forma de pago Retiro o Transferencia; `estado: 'registrado'`
 
-> **Regla de tipos:** los registros de tarjeta de crédito en `gastos` solo provienen de confirmar un gasto fijo. Las entradas manuales usan únicamente tarjetas de débito.
+> **Regla:** registros de tarjeta de crédito en `gastos` provienen únicamente de confirmar un gasto fijo. Las entradas manuales usan solo tarjetas de débito.
 
 ### Gastos Fijos (`#/fijos`)
 Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
@@ -395,8 +418,8 @@ Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
   - **Texto libre:** campo `diaCobro` (ej. "15", "1ra Quincena")
   - **Intervalo fijo:** "Cada N días desde [fecha]" — se ajusta a siguiente día hábil
   - **Día de semana del mes:** "1er Martes de cada mes" — se ajusta a siguiente día hábil
-- Los gastos fijos con tarjeta de crédito se precargan automáticamente en el tab Gastos cada mes
-- Los gastos fijos con `diaCobro` de texto no parseable como número no se precargan automáticamente
+- Al abrir el tab Gastos, los gastos fijos con fecha calculada ≤ hoy y sin registro en `gastos` ese mes se crean automáticamente como `pendiente`
+- Los gastos fijos con `diaCobro` como texto no numérico no se precargan automáticamente
 
 ### Impacto Mensual (`#/impacto` o `#/impacto/YYYY-MM`)
 Estado financiero mensual:
@@ -518,6 +541,31 @@ anteriorNomina(date, festivosMX) → Date
 // Convierte Date a string 'YYYY-MM-DD'
 toISODate(date) → string
 ```
+
+---
+
+## Cálculo de Saldo Disponible
+
+El módulo `js/utils/saldo.js` exporta `calcularSaldo` para obtener el saldo real de una tarjeta de crédito o préstamo aplicando las compras y gastos posteriores a la última actualización manual.
+
+```javascript
+calcularSaldo(tarjeta, contado, msi, gastos)
+→ { disponible: number, usado: number|null, ajustado: boolean, gastoPosterior: number } | null
+```
+
+**Lógica:**
+1. Toma `tarjeta.saldoDisponible` como base
+2. Suma todos los items de `contado`, `msi` y `gastos` (`estado: 'registrado'`) donde:
+   - `tarjetaId === tarjeta.id`
+   - `fechaCompra` / `fechaPago` > `tarjeta.fechaActualizacionSaldo`
+3. `disponible = max(0, saldoDisponible - gastoPosterior)`
+4. `usado = limiteTotal - disponible`
+5. `ajustado = gastoPosterior > 0`
+
+**Usos:**
+- `admin-tarjetas.js`: columnas Saldo disponible (verde/negro) y Saldo usado en la tabla
+- `tarjetas.js`: chip "Usado" en el frente del plástico; chips "Límite" y "Disponible" en la franja del reverso
+- La acción **Pagar mensualidad** en A Plazos suma la mensualidad a `saldoDisponible` en Firestore sin tocar `fechaActualizacionSaldo`
 
 ---
 
@@ -652,4 +700,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-05-28 — Módulo Compras y Gastos: nueva tab Gastos, colección `gastos`, Gastos Fijos movido a Ajustes*
+*Última actualización: 2026-05-29 — Saldo disponible/usado en tarjetas, util `saldo.js`, Gastos con estado persistido, filtros por período en De Contado y Gastos, Próximo Pago y Pagar mensualidad en A Plazos*

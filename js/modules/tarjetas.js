@@ -1,6 +1,7 @@
 import { getAll } from '../utils/db.js';
 import { maskCard, currency, fmtShortDate } from '../utils/formatters.js';
 import { calcularMes, toISODate } from '../utils/ciclo.js';
+import { calcularSaldo } from '../utils/saldo.js';
 
 const COLORS = {
   'Banamex':'#e31837','Banorte':'#da1c2b','BBVA':'#004481',
@@ -49,11 +50,18 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas, festivosMX] = await Promise.all([
+    const [instituciones, tarjetas, festivosMX, contado, msi, gastos] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('festivosMX'),
+      getAll('contado'),
+      getAll('msi'),
+      getAll('gastos'),
     ]);
+
+    const saldoMap = new Map(
+      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos)])
+    );
 
     const instMap = {};
     instituciones.forEach(i => { instMap[i.id] = i; });
@@ -110,7 +118,7 @@ async function renderView(container) {
         return;
       }
 
-      grid.innerHTML = filtered.map(t => renderWalletCard(t, instMap[t.institucionId], festivosMX)).join('');
+      grid.innerHTML = filtered.map(t => renderWalletCard(t, instMap[t.institucionId], festivosMX, saldoMap.get(t.id))).join('');
 
       const shells = [...grid.querySelectorAll('.wcard-shell')];
       const mobile = window.innerWidth < 992;
@@ -216,7 +224,7 @@ async function renderView(container) {
   }
 }
 
-function renderWalletCard(c, inst, festivosMX) {
+function renderWalletCard(c, inst, festivosMX, saldo = null) {
   const color  = inst?.color || COLORS[inst?.nombre] || '#607d8b';
   const dark   = darkenHex(color, 45);
   const badge  = TIPO_BADGE[c.tipo] ?? TIPO_BADGE.debito;
@@ -226,7 +234,10 @@ function renderWalletCard(c, inst, festivosMX) {
 
   const chips = [];
   if (c.tipo === 'credito' || c.tipo === 'prestamo') {
-    if (c.limiteTotal) chips.push(`<span class="wcard-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>`);
+    if (saldo?.usado != null)
+      chips.push(`<span class="wcard-chip"><i class="bi bi-bar-chart-fill me-1"></i>${currency(saldo.usado)}</span>`);
+    else if (c.limiteTotal)
+      chips.push(`<span class="wcard-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>`);
     if (c.ciclo?.diaCorte || (c.ciclo?.diasAlCorte && c.ciclo?.diaPago)) {
       const hoy = new Date(); hoy.setHours(0,0,0,0);
       const p  = calcularMes(c.ciclo, hoy.getFullYear(), hoy.getMonth(), festivosMX);
@@ -262,6 +273,12 @@ function renderWalletCard(c, inst, festivosMX) {
       </div>
     </div>`;
 
+  const isCredPrest = c.tipo === 'credito' || c.tipo === 'prestamo';
+  const backChips = isCredPrest ? [
+    c.limiteTotal ? `<span class="wcard-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>` : '',
+    saldo ? `<span class="wcard-chip" style="${saldo.ajustado ? '' : 'color:#4caf50'}"><i class="bi bi-credit-card me-1"></i>${currency(saldo.disponible)}</span>` : '',
+  ].filter(Boolean).join('') : '';
+
   const backRows = [
     c.clabe ? renderWcardField('CLABE', maskCard(c.clabe), c.clabe) : '',
     c.tipo === 'prestamo' && c.numeroPago ? renderWcardField('No. Pago', c.numeroPago, c.numeroPago) : '',
@@ -271,7 +288,7 @@ function renderWalletCard(c, inst, festivosMX) {
 
   const back = `
     <div class="wcard-back">
-      <div class="wcard-stripe"></div>
+      <div class="wcard-stripe" style="display:flex;align-items:center">${backChips ? `<div class="wcard-chips px-3">${backChips}</div>` : ''}</div>
       <div class="wcard-back-body">
         ${backRows || '<p class="opacity-50 small text-center mt-2">Sin datos registrados</p>'}
       </div>

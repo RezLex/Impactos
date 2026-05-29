@@ -1,5 +1,6 @@
 import { getAll, create, update, remove } from '../utils/db.js';
-import { maskCard, currency } from '../utils/formatters.js';
+import { maskCard, currency, fmtDate } from '../utils/formatters.js';
+import { calcularSaldo } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 
 const REDES = ['Visa', 'Mastercard', 'Maestro', 'Amex', 'Carnet', 'Discover'];
@@ -59,10 +60,17 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas] = await Promise.all([
+    const [instituciones, tarjetas, contado, msi, gastos] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
+      getAll('contado'),
+      getAll('msi'),
+      getAll('gastos'),
     ]);
+
+    const saldoMap = new Map(
+      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos)])
+    );
 
     instituciones.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
 
@@ -129,6 +137,8 @@ async function renderView(container) {
                     <th>Números</th>
                     <th>CLABE</th>
                     <th>Límite</th>
+                    <th>Saldo disponible</th>
+                    <th>Saldo usado</th>
                     <th>Ciclo</th>
                     <th style="width:72px"></th>
                   </tr>
@@ -146,6 +156,17 @@ async function renderView(container) {
                         <button class="btn-copy-data" data-value="${c.clabe}" title="Copiar CLABE"><i class="bi bi-copy"></i></button>
                       </div>` : '<span class="text-muted">—</span>'}</td>
                     <td style="white-space:nowrap">${c.limiteTotal ? currency(Number(c.limiteTotal)) : '—'}</td>
+                    <td style="white-space:nowrap">${(() => {
+                      const s = saldoMap.get(c.id);
+                      if (!s) return '<span class="text-muted">—</span>';
+                      const cls = s.ajustado ? '' : 'text-success';
+                      return `<span class="fw-semibold ${cls}">${currency(s.disponible)}</span>`;
+                    })()}</td>
+                    <td style="white-space:nowrap">${(() => {
+                      const s = saldoMap.get(c.id);
+                      if (!s || s.usado == null) return '<span class="text-muted">—</span>';
+                      return `<span>${currency(s.usado)}</span>`;
+                    })()}</td>
                     <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap">${fmtCiclo(c)}</td>
                     <td>
                       <div class="d-flex gap-1">
@@ -342,6 +363,34 @@ function showCardModal(container, instituciones, preInstId, card = null) {
           <input type="number" class="form-control" name="limiteTotal" value="${card?.limiteTotal || ''}" min="0" step="0.01" placeholder="0.00">
         </div>
 
+        <!-- Saldo disponible (crédito y préstamo) -->
+        <div class="mb-3 d-none" id="sec-saldo">
+          <hr class="my-2">
+          <label class="form-label fw-semibold">Saldo disponible</label>
+          <div class="row g-2">
+            <div class="col-sm-6">
+              <label class="form-label small text-muted">Disponible</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="saldo-disponible" name="saldoDisponible"
+                       value="${card?.saldoDisponible ?? ''}" min="0" step="0.01" placeholder="0.00">
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label small text-muted">Usado <span class="text-muted">(calcula disponible)</span></label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="saldo-usado" min="0" step="0.01" placeholder="0.00"
+                       value="${card?.saldoDisponible != null && card?.limiteTotal ? Math.max(0, Number(card.limiteTotal) - Number(card.saldoDisponible)).toFixed(2) : ''}">
+              </div>
+            </div>
+            ${card?.fechaActualizacionSaldo ? `
+            <div class="col-12">
+              <small class="text-muted"><i class="bi bi-clock me-1"></i>Última actualización: ${fmtDate(card.fechaActualizacionSaldo)}</small>
+            </div>` : ''}
+          </div>
+        </div>
+
         <!-- Ciclo (solo crédito) -->
         <div class="d-none" id="sec-credito">
           <hr>
@@ -441,6 +490,7 @@ function showCardModal(container, instituciones, preInstId, card = null) {
     document.getElementById('sec-numeros').classList.toggle('d-none', isPrestamo);
     document.getElementById('sec-prestamo').classList.toggle('d-none', !isPrestamo);
     document.getElementById('sec-limite').classList.toggle('d-none', tipo === 'debito');
+    document.getElementById('sec-saldo').classList.toggle('d-none', tipo === 'debito');
     document.getElementById('sec-credito').classList.toggle('d-none', tipo !== 'credito');
   };
 
@@ -453,6 +503,27 @@ function showCardModal(container, instituciones, preInstId, card = null) {
   metodoCiclo.addEventListener('change', () => setCicloMode(metodoCiclo.value));
   setTipo(tipoVal);
   setCicloMode(metodoCicloVal);
+
+  const saldoDispEl  = document.getElementById('saldo-disponible');
+  const saldoUsadoEl = document.getElementById('saldo-usado');
+  const limiteEl     = document.querySelector('#card-form [name="limiteTotal"]');
+
+  const _getLimite = () => Number(limiteEl?.value) || 0;
+
+  saldoUsadoEl.addEventListener('input', () => {
+    const lim = _getLimite();
+    if (lim) saldoDispEl.value = Math.max(0, lim - (Number(saldoUsadoEl.value) || 0)).toFixed(2);
+  });
+  saldoDispEl.addEventListener('input', () => {
+    const lim = _getLimite();
+    if (lim) saldoUsadoEl.value = Math.max(0, lim - (Number(saldoDispEl.value) || 0)).toFixed(2);
+  });
+  limiteEl?.addEventListener('input', () => {
+    if (saldoUsadoEl.value !== '') {
+      const lim = _getLimite();
+      saldoDispEl.value = Math.max(0, lim - (Number(saldoUsadoEl.value) || 0)).toFixed(2);
+    }
+  });
 
   document.getElementById('btn-save-card').addEventListener('click', async () => {
     const form = document.getElementById('card-form');
@@ -481,6 +552,16 @@ function showCardModal(container, instituciones, preInstId, card = null) {
 
     // Límite (crédito y préstamo)
     if (raw.limiteTotal) data.limiteTotal = Number(raw.limiteTotal);
+
+    // Saldo disponible (crédito y préstamo)
+    if (raw.tipo !== 'debito') {
+      const dispVal = document.getElementById('saldo-disponible')?.value;
+      if (dispVal !== '' && dispVal != null) {
+        data.saldoDisponible = Number(dispVal);
+        const hoy = new Date();
+        data.fechaActualizacionSaldo = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-${String(hoy.getDate()).padStart(2,'0')}`;
+      }
+    }
 
     // Ciclo (solo crédito)
     if (raw.tipo === 'credito') {
