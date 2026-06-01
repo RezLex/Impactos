@@ -110,7 +110,7 @@ async function renderView(container, initialTab = 'contado') {
     // ── De Contado ──────────────────────────────────────────────────────────────
 
     const renderContado = () => {
-      const contadoCollapsed = localStorage.getItem('impactos-contado-collapsed') === 'true';
+      const contadoCollapsed = true;
 
       const filtered = contadoItems.filter(c => {
         if (filtroContadoTipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
@@ -205,7 +205,6 @@ async function renderView(container, initialTab = 'contado') {
           panels.forEach(el => {
             bootstrap.Collapse.getOrCreateInstance(el, { toggle: false })[allOpen ? 'hide' : 'show']();
           });
-          localStorage.setItem('impactos-contado-collapsed', allOpen ? 'true' : 'false');
           btnToggleContado.innerHTML = allOpen
             ? `<i class="bi bi-arrows-expand me-1"></i>Expandir todo`
             : `<i class="bi bi-arrows-collapse me-1"></i>Colapsar todo`;
@@ -237,7 +236,7 @@ async function renderView(container, initialTab = 'contado') {
     // ── A Plazos ────────────────────────────────────────────────────────────────
 
     const renderPlazos = (filtro) => {
-      const plazosCollapsed = localStorage.getItem('impactos-plazos-collapsed') === 'true';
+      const plazosCollapsed = true;
       const filtered = msiItems.filter(m => {
         if (filtro === 'curso')      return !m.liquidado;
         if (filtro === 'liquidados') return !!m.liquidado;
@@ -347,7 +346,6 @@ async function renderView(container, initialTab = 'contado') {
           panels.forEach(el => {
             bootstrap.Collapse.getOrCreateInstance(el, { toggle: false })[allOpen ? 'hide' : 'show']();
           });
-          localStorage.setItem('impactos-plazos-collapsed', allOpen ? 'true' : 'false');
           btnTogglePlazos.innerHTML = allOpen
             ? `<i class="bi bi-arrows-expand me-1"></i>Expandir todo`
             : `<i class="bi bi-arrows-collapse me-1"></i>Colapsar todo`;
@@ -1013,6 +1011,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
     data.numeroTarjeta = numeroTarjeta || '';
     data.total         = Number(data.total);
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (data.fechaCompra?.length === 10) { const _n = new Date(); data.fechaCompra += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
     try {
       if (isEdit) await update('contado', compra.id, data);
       else        await create('contado', data);
@@ -1126,6 +1125,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     data.mesesPagados  = Number(data.mesesPagados);
     data.restante      = data.restante !== '' ? Number(data.restante) : Math.max(0, data.total - data.mensualidad * data.mesesPagados);
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (data.fechaCompra?.length === 10) { const _n = new Date(); data.fechaCompra += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
     try {
       let savedId;
       if (isEdit) {
@@ -1269,6 +1269,7 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
     const data = Object.fromEntries(new FormData(form));
     data.importe = Number(data.importe);
     data.estado  = 'registrado';
+    if (data.fechaPago?.length === 10) { const _n = new Date(); data.fechaPago += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
     try {
       await update('gastos', pendiente.id, data);
       closeModal();
@@ -1341,7 +1342,8 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
     data.importe       = Number(data.importe);
     data.tipo          = 'manual';
     data.estado        = 'registrado';
-    data.mes           = gasto?.mes || toISODate(new Date()).slice(0, 7);
+    if (data.fechaPago?.length === 10) { const _n = new Date(); data.fechaPago += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
+    data.mes           = (data.fechaPago || '').slice(0, 7) || (gasto?.mes || toISODate(new Date()).slice(0, 7));
     if (!data.numeroTarjeta) delete data.numeroTarjeta;
     try {
       if (isEdit) await update('gastos', gasto.id, data);

@@ -13,13 +13,16 @@ async function load(name, ...args) {
 function onLogin() {
   document.getElementById('auth-overlay').classList.add('d-none');
   document.getElementById('app-layout').classList.remove('d-none');
+  document.getElementById('quick-add-fab').classList.remove('d-none');
   setupNav();
   setupRouter();
+  setupFab();
 }
 
 function onLogout() {
   document.getElementById('auth-overlay').classList.remove('d-none');
   document.getElementById('app-layout').classList.add('d-none');
+  document.getElementById('quick-add-fab').classList.add('d-none');
   const btn = document.getElementById('btn-google-login');
   btn.disabled = false;
   btn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20" alt="Google"> Iniciar sesión con Google`;
@@ -75,6 +78,34 @@ function setupNav() {
       localStorage.setItem('sidebar-collapsed', s.classList.contains('collapsed'));
     });
   }
+}
+
+// ── Floating Action Button ────────────────────────────────────────────────────
+function setupFab() {
+  const fab  = document.getElementById('fab-btn');
+  const menu = document.getElementById('fab-menu');
+
+  fab.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !menu.hidden;
+    menu.hidden = open;
+    fab.classList.toggle('open', !open);
+  });
+
+  document.addEventListener('click', () => {
+    menu.hidden = true;
+    fab.classList.remove('open');
+  });
+
+  document.querySelectorAll('.fab-item').forEach(btn =>
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      menu.hidden = true;
+      fab.classList.remove('open');
+      const { openQuickAdd } = await import('./modules/quick-add.js');
+      openQuickAdd(btn.dataset.action);
+    })
+  );
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────

@@ -86,9 +86,14 @@ async function renderView(container) {
           <h2>Instituciones y Tarjetas</h2>
           <p>${instituciones.length} instituciones · ${tarjetas.length} tarjetas</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="btn-nueva-inst">
-          <i class="bi bi-plus-lg me-1"></i>Nueva Institución
-        </button>
+        <div class="d-flex gap-2">
+          <button class="btn btn-link btn-sm p-0 text-muted" id="btn-toggle-all-inst">
+            <i class="bi bi-arrows-expand me-1"></i>Expandir todo
+          </button>
+          <button class="btn btn-primary btn-sm" id="btn-nueva-inst">
+            <i class="bi bi-plus-lg me-1"></i>Nueva Institución
+          </button>
+        </div>
       </div>
       <div id="inst-list">
         ${instituciones.length === 0 ? `
@@ -100,7 +105,9 @@ async function renderView(container) {
           const color = inst.color || '#607d8b';
           return `
           <div class="data-card mb-3">
-            <div class="admin-inst-header" style="background:${color};border-radius:8px 8px 0 0;">
+            <div class="admin-inst-header" style="background:${color};border-radius:8px 8px 0 0;cursor:pointer"
+                 data-bs-toggle="collapse" data-bs-target="#inst-body-${inst.id}" aria-expanded="false">
+              <i class="bi bi-chevron-right me-2" style="font-size:0.75rem;transition:transform 0.2s" id="inst-chev-${inst.id}"></i>
               <span class="fw-semibold text-white">${inst.nombre}</span>
               ${inst.numeroCliente ? `
                 <span class="admin-client-num">
@@ -125,6 +132,7 @@ async function renderView(container) {
                 </button>
               </div>
             </div>
+            <div class="collapse" id="inst-body-${inst.id}">
             ${cards.length === 0 ? `
             <div class="p-3 text-center" style="font-size:0.85rem;color:var(--text-muted)">Sin tarjetas registradas.</div>` : `
             <div class="table-wrapper">
@@ -178,11 +186,39 @@ async function renderView(container) {
                 </tbody>
               </table>
             </div>`}
+            </div>
           </div>`;
         }).join('')}
       </div>`;
 
     wireCopyButtons(container);
+
+    // Rotar chevron al abrir/cerrar
+    container.querySelectorAll('.collapse').forEach(el => {
+      el.addEventListener('show.bs.collapse', () => {
+        const chev = container.querySelector(`#inst-chev-${el.id.replace('inst-body-', '')}`);
+        if (chev) chev.style.transform = 'rotate(90deg)';
+      });
+      el.addEventListener('hide.bs.collapse', () => {
+        const chev = container.querySelector(`#inst-chev-${el.id.replace('inst-body-', '')}`);
+        if (chev) chev.style.transform = 'rotate(0deg)';
+      });
+    });
+
+    // Expandir/Colapsar todo
+    const btnToggleAll = document.getElementById('btn-toggle-all-inst');
+    if (btnToggleAll) {
+      btnToggleAll.addEventListener('click', () => {
+        const panels = container.querySelectorAll('#inst-list .collapse');
+        const allOpen = [...panels].every(el => el.classList.contains('show'));
+        panels.forEach(el => {
+          bootstrap.Collapse.getOrCreateInstance(el, { toggle: false })[allOpen ? 'hide' : 'show']();
+        });
+        btnToggleAll.innerHTML = allOpen
+          ? `<i class="bi bi-arrows-expand me-1"></i>Expandir todo`
+          : `<i class="bi bi-arrows-collapse me-1"></i>Colapsar todo`;
+      });
+    }
 
     document.getElementById('btn-nueva-inst').addEventListener('click', () => showInstModal(container));
 
@@ -557,9 +593,8 @@ function showCardModal(container, instituciones, preInstId, card = null) {
     if (raw.tipo !== 'debito') {
       const dispVal = document.getElementById('saldo-disponible')?.value;
       if (dispVal !== '' && dispVal != null) {
-        data.saldoDisponible = Number(dispVal);
-        const hoy = new Date();
-        data.fechaActualizacionSaldo = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-${String(hoy.getDate()).padStart(2,'0')}`;
+        data.saldoDisponible         = Number(dispVal);
+        data.fechaActualizacionSaldo = new Date().toISOString();
       }
     }
 

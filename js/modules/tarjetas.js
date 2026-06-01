@@ -1,7 +1,8 @@
 import { getAll } from '../utils/db.js';
-import { maskCard, currency, fmtShortDate } from '../utils/formatters.js';
-import { calcularMes, toISODate } from '../utils/ciclo.js';
+import { maskCard, currency, fmtShortDate, currentYYYYMM, nextMonth } from '../utils/formatters.js';
+import { toISODate } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
+import { calcularCicloParaMes } from '../utils/impacto-calc.js';
 
 const COLORS = {
   'Banamex':'#e31837','Banorte':'#da1c2b','BBVA':'#004481',
@@ -238,22 +239,15 @@ function renderWalletCard(c, inst, festivosMX, saldo = null) {
       chips.push(`<span class="wcard-chip"><i class="bi bi-bar-chart-fill me-1"></i>${currency(saldo.usado)}</span>`);
     else if (c.limiteTotal)
       chips.push(`<span class="wcard-chip"><i class="bi bi-wallet2 me-1"></i>${currency(Number(c.limiteTotal))}</span>`);
-    if (c.ciclo?.diaCorte || (c.ciclo?.diasAlCorte && c.ciclo?.diaPago)) {
-      const hoy = new Date(); hoy.setHours(0,0,0,0);
-      const p  = calcularMes(c.ciclo, hoy.getFullYear(), hoy.getMonth(), festivosMX);
-      if (p.fechaCorte <= hoy) {
-        const nd = new Date(hoy.getFullYear(), hoy.getMonth()+1, 1);
-        const ps = calcularMes(c.ciclo, nd.getFullYear(), nd.getMonth(), festivosMX);
-        if (p.fechaPago && p.fechaPago <= hoy) {
-          chips.push(`<span class="wcard-chip"><i class="bi bi-scissors me-1"></i>${fmtShortDate(toISODate(ps.fechaCorte))}</span>`);
-          if (ps.fechaPago) chips.push(`<span class="wcard-chip"><i class="bi bi-calendar-check me-1"></i>${fmtShortDate(toISODate(ps.fechaPago))}</span>`);
-        } else {
-          if (p.fechaPago) chips.push(`<span class="wcard-chip"><i class="bi bi-calendar-check me-1"></i>${fmtShortDate(toISODate(p.fechaPago))}</span>`);
-          chips.push(`<span class="wcard-chip"><i class="bi bi-scissors me-1"></i>${fmtShortDate(toISODate(ps.fechaCorte))}</span>`);
-        }
-      } else {
-        chips.push(`<span class="wcard-chip"><i class="bi bi-scissors me-1"></i>${fmtShortDate(toISODate(p.fechaCorte))}</span>`);
-        if (p.fechaPago) chips.push(`<span class="wcard-chip"><i class="bi bi-calendar-check me-1"></i>${fmtShortDate(toISODate(p.fechaPago))}</span>`);
+    if (c.ciclo) {
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      let p = calcularCicloParaMes(c.ciclo, currentYYYYMM(), festivosMX);
+      if (!p || (p.fechaPago && p.fechaPago <= hoy)) {
+        p = calcularCicloParaMes(c.ciclo, nextMonth(currentYYYYMM()), festivosMX);
+      }
+      if (p) {
+        if (p.fechaCorte) chips.push(`<span class="wcard-chip"><i class="bi bi-scissors me-1"></i>${fmtShortDate(toISODate(p.fechaCorte))}</span>`);
+        if (p.fechaPago)  chips.push(`<span class="wcard-chip"><i class="bi bi-calendar-check me-1"></i>${fmtShortDate(toISODate(p.fechaPago))}</span>`);
       }
     }
   }

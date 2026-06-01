@@ -75,22 +75,24 @@ impactos/
     ├── router.js               # Hash router con lazy loading de módulos
     │
     ├── modules/
-    │   ├── dashboard.js        # Vista principal con métricas y resumen
+    │   ├── dashboard.js        # Vista principal — métricas, impacto del mes, A Plazos, gastos
     │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
     │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
     │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
-    │   ├── impacto.js          # Estado mensual por tarjeta + nómina
+    │   ├── impacto.js          # Impacto mensual rediseñado — confirmación, pago, cierre
     │   ├── eventos.js          # Lista de eventos de ofertas
     │   ├── evento-detalle.js   # Detalle de evento: planeación, realizadas, promos
     │   ├── festivos.js         # CRUD de días festivos oficiales MX
-    │   └── exportar.js         # Exportación de datos a Excel o JSON
+    │   ├── exportar.js         # Exportación de datos a Excel o JSON
+    │   └── quick-add.js        # Registro rápido de compras y gastos (FAB)
     │
     └── utils/
         ├── db.js               # CRUD genérico para Firestore
         ├── formatters.js       # Formateo de moneda, fechas, seriales Excel, etc.
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
         ├── saldo.js            # Cálculo de saldo disponible/usado con ajuste por compras
+        ├── impacto-calc.js     # Cálculos del Impacto mensual (filtrado, estimados, proyección)
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
 
@@ -172,6 +174,8 @@ service cloud.firestore {
 
 Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que garantiza aislamiento por usuario.
 
+> **Fechas con hora**: `fechaCompra` (contado/msi), `fechaPago` (gastos) y `fechaActualizacionSaldo` se almacenan con hora exacta del momento del registro (`YYYY-MM-DDTHH:MM:SS` o ISO UTC completo). Esto permite comparaciones precisas en el mismo día para el cálculo de saldo disponible.
+
 ### `instituciones/{id}`
 
 | Campo | Tipo | Descripción |
@@ -199,7 +203,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `limiteTotal` | number? | Límite de crédito o monto del préstamo |
 | `ciclo` | object? | Configuración del ciclo de facturación (ver sección [Ciclo de Facturación](#ciclo-de-facturación)) |
 | `saldoDisponible` | number? | Saldo disponible en el momento de la última actualización manual |
-| `fechaActualizacionSaldo` | string? | Fecha ISO de la última actualización de saldo (`YYYY-MM-DD`) |
+| `fechaActualizacionSaldo` | string? | Datetime ISO de la última actualización de saldo (`YYYY-MM-DDTHH:MM:SS.mmmZ`) |
 
 > `saldoDisponible` es el dato base guardado manualmente. El saldo real se obtiene restando las compras y gastos registrados con `fechaCompra`/`fechaPago` posterior a `fechaActualizacionSaldo` (ver [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)).
 
@@ -225,7 +229,7 @@ Compras de contado (sin meses) con cualquier tipo de tarjeta.
 | `tarjetaId` | string | ID de la tarjeta usada |
 | `numeroTarjeta` | string | Número específico de tarjeta usado (física o digital) |
 | `compra` | string | Descripción de la compra |
-| `fechaCompra` | string | Fecha ISO de la compra (`YYYY-MM-DD`) |
+| `fechaCompra` | string | Datetime ISO de la compra (`YYYY-MM-DDTHH:MM:SS`) |
 | `total` | number | Monto total de la compra |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
 
@@ -243,7 +247,7 @@ Gastos registrados por mes. Incluye dos orígenes: gastos fijos confirmados (tar
 | `tarjetaId` | string | ID de la tarjeta usada |
 | `numeroTarjeta` | string? | Número específico de tarjeta (física o digital) |
 | `formaPago` | string | `automatico`, `retiro` o `transferencia` |
-| `fechaPago` | string | Fecha ISO del gasto ("Fecha Gasto", `YYYY-MM-DD`) |
+| `fechaPago` | string | Datetime ISO del gasto ("Fecha Gasto", `YYYY-MM-DDTHH:MM:SS`) |
 | `importe` | number | Monto del gasto |
 | `gastaFijoId` | string? | ID del gasto fijo origen (solo cuando `tipo = 'gastaFijo'`) |
 
@@ -261,7 +265,7 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 | `tarjetaId` | string | ID de la tarjeta de crédito usada |
 | `numeroTarjeta` | string | Número específico de tarjeta usado (física o digital) |
 | `compra` | string | Descripción de la compra |
-| `fechaCompra` | string | Fecha ISO de la compra (`YYYY-MM-DD`) |
+| `fechaCompra` | string | Datetime ISO de la compra (`YYYY-MM-DDTHH:MM:SS`) |
 | `total` | number | Monto total de la compra |
 | `mensualidad` | number | Monto mensual a pagar |
 | `mesesTotal` | number | Total de meses del plan |
@@ -298,30 +302,66 @@ Días festivos oficiales de México usados para ajustar fechas de corte y pago a
 | `fecha` | string | Fecha ISO del festivo (`YYYY-MM-DD`) |
 | `nombre` | string | Nombre del festivo (ej. Día de la Independencia) |
 
-### `impactoMensual/{YYYY-MM}`
-Estado mensual. El ID del documento es el mes en formato `YYYY-MM`.
+### `config/general` *(configuración de usuario)*
+Documento único con preferencias globales.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `nomina` | number | Ingreso de nómina del mes |
-| `registros` | array | Lista de registros por tarjeta |
-| `pagosDebito` | array | Pagos realizados desde cuentas débito |
-| `total` | number | Suma total a pagar |
-| `restante` | number | `nomina - total` |
+| `nominaAprox` | number? | Nómina de referencia para calcular el Restante Esperado en cada Impacto |
 
-**Estructura de cada elemento en `registros`:**
+### `impacto/{YYYY-MM}`
+Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a la colección `impactoMensual` anterior.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `entidad` | string | Nombre visible de la tarjeta |
-| `tipo` | string | `credito` o `debito` |
-| `limite` | number | Límite de crédito |
-| `usado` | number | Monto utilizado en el período |
-| `disponible` | number | Límite disponible |
-| `corte` | string | Fecha ISO de corte |
-| `limitePago` | string | Fecha ISO límite para pagar |
-| `aPagar` | number | Monto a pagar este mes |
-| `pagado` | boolean | Si ya se realizó el pago |
+| `mes` | string | Mes del impacto (`YYYY-MM`) |
+| `estado` | string | `activo` · `cerrado` |
+| `presupuesto` | number | Ingresos reales del mes (editable mientras activo) |
+| `nominaRef` | number | Snapshot de `nominaAprox` al crear el impacto |
+| `fechaCierre` | string? | Fecha ISO de cierre |
+| `tarjetas` | array | Un registro por cada tarjeta de crédito/préstamo (ver abajo) |
+| `gastosDebito` | array | Snapshot de gastos débito guardado al cerrar |
+| `totales` | object | Resúmenes calculados (ver abajo) |
+
+**Estructura de cada elemento en `tarjetas[]`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `tarjetaId` | string | ID de la tarjeta |
+| `nombre` | string | Snapshot alias |
+| `institucion` | string | Snapshot nombre institución |
+| `color` | string | Snapshot color institución |
+| `fechaCorte` | string? | Fecha de corte del ciclo para este mes |
+| `fechaPago` | string? | Fecha límite de pago del ciclo |
+| `limiteTotal` | number | Snapshot límite total |
+| `saldoDisponible` | number? | Snapshot saldo disponible al crear |
+| `estimadoContado` | number | Estimado de compras de contado |
+| `estimadoPlazos` | number | Estimado de mensualidades A Plazos |
+| `estimadoGastos` | number | Estimado de gastos de crédito |
+| `estimadoTotal` | number | Suma de los tres estimados |
+| `confirmado` | boolean | Si el usuario confirmó los datos para este mes |
+| `montoAPagar` | number? | Monto confirmado/editado a pagar |
+| `fechaCorteConf` | string? | Fecha corte confirmada por el usuario |
+| `fechaPagoConf` | string? | Fecha pago confirmada por el usuario |
+| `limiteTotalConf` | number? | Límite confirmado |
+| `saldoDispConf` | number? | Saldo disponible confirmado |
+| `pagado` | boolean | Si se registró el pago |
+| `fechaPagado` | string? | Fecha en que se registró el pago |
+
+**Estructura de `totales`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `estimadoCredito` | number | Suma estimados de todas las tarjetas |
+| `pagoCredito` | number | Suma montos pagados registrados |
+| `gastoDebito` | number | Suma gastos débito del mes |
+| `restanteEsperado` | number | `nominaRef - estimadoCredito - gastoDebito` |
+| `restante` | number | `presupuesto - pagoCredito - gastoDebito` |
+| `creditoTotal` | number | Suma de límites de todas las tarjetas |
+| `creditoDisponible` | number | Suma de saldos disponibles |
+| `deudaTotal` | number | `creditoTotal - creditoDisponible` |
+
+> Los estimados se recalculan automáticamente al abrir el Impacto activo. Si hay nuevas compras desde la última apertura, los estimados se actualizan en Firestore.
 
 ### `eventos/{id}`
 
@@ -346,10 +386,14 @@ Estado mensual. El ID del documento es el mes en formato `YYYY-MM`.
 ## Módulos de la Aplicación
 
 ### Dashboard (`#/`)
-Vista de inicio con:
-- **4 métricas:** total a pagar este mes, crédito disponible total, mensualidad MSI combinada, total de gastos fijos
-- **Próximos pagos:** tarjetas pendientes del mes actual con indicador de días restantes
-- **MSI activos:** compras vigentes con barra de progreso y fecha de término
+Vista principal rediseñada con datos en tiempo real del mes actual:
+- **2 metric cards:** Total a pagar (con desglose Contado/Plazos/Gastos) · Restante y Esperado (divisor vertical)
+- **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual
+- **Compras De Contado recientes** — últimas 7 compras ordenadas por fecha
+- **Gastos Fijos del mes** — lista con estado (Registrado/Pendiente/Sin registrar) y montos
+- **Tarjetas del mes** — estado de cada tarjeta de crédito (pagada/pendiente/espera corte) con badge 1Q/2Q
+- **A Plazos este mes** — mensualidades que vencen este mes con barra de progreso
+- En desktop el dashboard no requiere scroll de página (altura dinámica calculada con `100dvh`)
 
 ### Tarjetas (`#/tarjetas`)
 Vista de cartera (wallet) de todas las tarjetas registradas:
@@ -422,13 +466,21 @@ Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
 - Los gastos fijos con `diaCobro` como texto no numérico no se precargan automáticamente
 
 ### Impacto Mensual (`#/impacto` o `#/impacto/YYYY-MM`)
-Estado financiero mensual:
-- Navegación entre meses con flechas anterior/siguiente
-- Tabla completa de todas las tarjetas con sus fechas y montos
-- Indicador visual de estado: pagado (verde), pendiente (amarillo), vencido (rojo)
-- Registro de pagos desde cuentas débito (nómina)
-- Cálculo de restante: `nómina - total a pagar`
-- Editor modal completo con filas dinámicas para agregar/editar/eliminar registros
+Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
+
+**Mes activo:**
+- Presupuesto editable + Nómina ref. + Restante / Esperado
+- Barra de crédito total / disponible / deuda
+- Tabla de tarjetas de crédito: Límite, Disponible, Corte, Pago (con badge 1Q/2Q)
+- Datos confirmables individualmente por campo (✓ verde al confirmar)
+- **Registrar pago**: habilitado después del corte; actualiza `saldoDisponible` y avanza `mesesPagados` de A Plazos
+- **Cerrar mes**: requiere todas las tarjetas pagadas; guarda snapshot + totales
+- Auto-creación del impacto al abrir el módulo si no existe para el mes actual
+- Estimados se recalculan al reabrir (nuevas compras quedan reflejadas)
+
+**Meses pasados (cerrados):** solo lectura
+
+**Meses futuros (proyección):** estimados calculados al vuelo con pago progresivo simulado de A Plazos y gastos fijos; no muestra columnas de Límite/Disponible
 
 ### Eventos de Ofertas (`#/eventos`)
 Lista de eventos registrados con acceso rápido a cada uno.
@@ -459,6 +511,15 @@ Exportación completa de los datos del usuario:
 - **Excel:** un archivo `.xlsx` con una hoja por colección (Instituciones, Tarjetas, MSI, Gastos Fijos, Eventos, Festivos MX)
 - **JSON:** archivo `.json` con todas las colecciones en un solo objeto
 - El nombre del archivo incluye la fecha actual (`IMPACTOS_YYYY-MM-DD`)
+
+### Botón de Registro Rápido (FAB)
+Botón flotante (`+`) disponible en todos los módulos después de iniciar sesión:
+- Posición: esquina inferior derecha (encima del bottom nav en móvil)
+- Al pulsar: despliega 3 opciones — **Gasto** · **A Plazos** · **De Contado**
+- Cada opción abre un modal auto-contenido que carga datos frescos de Firestore
+- **Preview en tiempo real**: al seleccionar tarjeta, fecha y monto muestra fechas del ciclo (corte, límite pago, nómina anterior), Disponible y Usado con cálculo aplicado, e impacto en el mes relacionado (tarjeta + global, incluyendo proyecciones)
+- Guarda directamente sin requerir navegar al módulo correspondiente
+- La Descripción/Nombre va al final del formulario para no bloquear el preview
 
 ---
 
@@ -566,6 +627,43 @@ calcularSaldo(tarjeta, contado, msi, gastos)
 - `admin-tarjetas.js`: columnas Saldo disponible (verde/negro) y Saldo usado en la tabla
 - `tarjetas.js`: chip "Usado" en el frente del plástico; chips "Límite" y "Disponible" en la franja del reverso
 - La acción **Pagar mensualidad** en A Plazos suma la mensualidad a `saldoDisponible` en Firestore sin tocar `fechaActualizacionSaldo`
+
+---
+
+## Cálculo de Impacto Mensual
+
+El módulo `js/utils/impacto-calc.js` concentra toda la lógica de cálculo del Impacto. Exporta:
+
+```javascript
+// Período del ciclo que contiene una fecha de compra
+calcularCicloParaMes(ciclo, mes, festivosMX) → { fechaCorte, fechaPago } | null
+
+// Compras de contado para una tarjeta cuya anteriorNomina(fechaPago_ciclo) cae en mes
+getContadoMes(contado, tarjetaId, ciclo, mes, festivosMX) → items[]
+
+// Mensualidades A Plazos cuyo próximo pago (anteriorNomina) cae en mes
+getPlazosMes(msi, tarjetaId, ciclo, mes, festivosMX) → items[]
+
+// Gastos crédito confirmados cuya anteriorNomina(fechaPago_ciclo) cae en mes
+getGastosCreditoMes(gastos, tarjetaId, ciclo, mes, festivosMX) → items[]
+
+// Gastos débito del mes (con gastos fijos incluidos por estado)
+getGastosDebitoCompleto(gastos, gastosFijos, mes, debitoIds, tarjetas, festivosMX) → items[]
+
+// Estimados de una tarjeta para un mes
+calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes) → { estimadoContado, estimadoPlazos, estimadoGastos, estimadoTotal }
+
+// Totales de crédito desde tarjetas[] del impacto
+calcularTotalesCredito(tarjetasImpacto) → { creditoTotal, creditoDisponible, deudaTotal }
+
+// Totales en tiempo real para impacto activo
+recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?) → totales
+
+// Proyección de un mes futuro con pago progresivo simulado
+proyectarMes(mes, currentMes, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos?, todasTarjetas?) → impactoData
+```
+
+**Criterio clave de asignación al mes**: una compra/gasto pertenece al Impacto del mes `M` si `anteriorNomina(fechaPago_del_ciclo_que_contiene_la_fecha_de_compra)` cae dentro del mes `M`.
 
 ---
 
@@ -678,6 +776,7 @@ Los siguientes campos existieron en versiones anteriores y pueden estar presente
 | `msi` | `primerPago` | Calculado dinámicamente desde `fechaCompra` + ciclo |
 | `msi` | `ultimoPago` | Calculado dinámicamente desde `fechaCompra` + ciclo |
 | `gastosFijos` | `tarjetaNombre` | `tarjetaId` + `numeroTarjeta` |
+| `impactoMensual` | colección completa | Reemplazada por colección `impacto` |
 
 > Las colecciones `contado` y `gastos` son nuevas — no tienen campos obsoletos.
 
@@ -700,4 +799,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-05-29 — Saldo disponible/usado en tarjetas, util `saldo.js`, Gastos con estado persistido, filtros por período en De Contado y Gastos, Próximo Pago y Pagar mensualidad en A Plazos*
+*Última actualización: 2026-06-01 — Rediseño Impacto y Dashboard, FAB registro rápido, impacto-calc.js, fechas con hora, proyección de meses futuros*

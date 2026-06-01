@@ -1,0 +1,334 @@
+import { calcularMes, toISODate, anteriorNomina } from './ciclo.js';
+
+// ── Private helpers ─────────────────────────────────────────────────────────
+
+function _fechaPagoFromDate(fechaISO, ciclo, festivosMX) {
+  if (!ciclo || !fechaISO) return null;
+  const d = new Date(fechaISO + 'T12:00:00');
+  let year = d.getFullYear(), month = d.getMonth();
+  let p = calcularMes(ciclo, year, month, festivosMX);
+  if (p.fechaCorte < d) {
+    const nx = new Date(year, month + 1, 1);
+    p = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+  }
+  return p.fechaPago || null;
+}
+
+function _enMes(fechaPago, mes, festivosMX) {
+  if (!fechaPago) return false;
+  const nom = anteriorNomina(fechaPago, festivosMX);
+  return !!nom && toISODate(nom).slice(0, 7) === mes;
+}
+
+function _primerCiclo(ciclo, fechaCompra, festivosMX) {
+  if (!ciclo || !fechaCompra) return null;
+  const d = new Date(fechaCompra + 'T12:00:00');
+  let year = d.getFullYear(), month = d.getMonth();
+  const p = calcularMes(ciclo, year, month, festivosMX);
+  if (p.fechaCorte < d) {
+    const nx = new Date(year, month + 1, 1);
+    return { cicloYear: nx.getFullYear(), cicloMonth: nx.getMonth() };
+  }
+  return { cicloYear: year, cicloMonth: month };
+}
+
+function _mesInt(mes) {
+  const [y, m] = mes.split('-').map(Number);
+  return y * 12 + m;
+}
+
+function _sigHabil(date, festivosMX) {
+  const festSet = new Set(festivosMX.map(f => f.fecha));
+  const d = new Date(date);
+  while (d.getDay() === 0 || d.getDay() === 6 || festSet.has(toISODate(d))) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+
+function _calcularFechaGastoMes(gasto, year, month, festivosMX) {
+  if (gasto.semanaDelMes && gasto.diaSemana) {
+    const jsDay = gasto.diaSemana === 7 ? 0 : gasto.diaSemana;
+    if (gasto.semanaDelMes === -1) {
+      const d = new Date(year, month + 1, 0);
+      while (d.getDay() !== jsDay) d.setDate(d.getDate() - 1);
+      return _sigHabil(d, festivosMX);
+    }
+    let count = 0;
+    const d = new Date(year, month, 1);
+    while (d.getMonth() === month) {
+      if (d.getDay() === jsDay) { count++; if (count === gasto.semanaDelMes) return _sigHabil(new Date(d), festivosMX); }
+      d.setDate(d.getDate() + 1);
+    }
+    return null;
+  }
+  if (gasto.diasIntervalo && gasto.fechaInicio) {
+    const inicio = new Date(gasto.fechaInicio + 'T12:00:00');
+    const monthStart = new Date(year, month, 1);
+    const monthEnd   = new Date(year, month + 1, 0, 23, 59, 59);
+    const n = Math.ceil(Math.ceil((monthStart - inicio) / 86400000) / gasto.diasIntervalo);
+    for (let i = Math.max(0, n - 1); i <= n + 2; i++) {
+      const d = new Date(inicio); d.setDate(d.getDate() + i * gasto.diasIntervalo);
+      if (d >= monthStart && d <= monthEnd) return _sigHabil(d, festivosMX);
+    }
+    return null;
+  }
+  if (gasto.diaCobro) {
+    const day = parseInt(gasto.diaCobro, 10);
+    if (!isNaN(day) && day >= 1 && day <= 31) {
+      return new Date(year, month, Math.min(day, new Date(year, month + 1, 0).getDate()));
+    }
+  }
+  return null;
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Finds the billing period whose anteriorNomina(fechaPago) falls in mes.
+ * Checks current month and the previous one (some cards pay early next month).
+ * Returns { fechaCorte: Date, fechaPago: Date } or null if not found.
+ */
+export function calcularCicloParaMes(ciclo, mes, festivosMX) {
+  if (!ciclo) return null;
+  const [y, mo] = mes.split('-').map(Number);
+  for (let delta = 0; delta <= 1; delta++) {
+    const d = new Date(y, mo - 1 - delta, 1);
+    const p = calcularMes(ciclo, d.getFullYear(), d.getMonth(), festivosMX);
+    if (!p.fechaPago) continue;
+    const nom = anteriorNomina(p.fechaPago, festivosMX);
+    if (nom && toISODate(nom).slice(0, 7) === mes) return p;
+  }
+  return null;
+}
+
+/** Finds the ciclo payment date for a billing period containing fechaISO. */
+export function calcularFechaPagoFromDate(fechaISO, ciclo, festivosMX) {
+  return _fechaPagoFromDate(fechaISO, ciclo, festivosMX);
+}
+
+/** De Contado items for a tarjeta whose anteriorNomina(fechaPago) falls in mes. */
+export function getContadoMes(contadoItems, tarjetaId, ciclo, mes, festivosMX) {
+  return contadoItems.filter(c => {
+    if (c.tarjetaId !== tarjetaId) return false;
+    return _enMes(_fechaPagoFromDate(c.fechaCompra, ciclo, festivosMX), mes, festivosMX);
+  });
+}
+
+/** A Plazos items for a tarjeta whose próximo pago anteriorNomina falls in mes. */
+export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
+  if (!ciclo) return [];
+  return msiItems.filter(m => {
+    if (m.tarjetaId !== tarjetaId || m.liquidado) return false;
+    if (Number(m.mesesPagados) >= Number(m.mesesTotal)) return false;
+    const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
+    if (!pc) return false;
+    const nx = new Date(pc.cicloYear, pc.cicloMonth + (Number(m.mesesPagados) || 0), 1);
+    const p  = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+    return _enMes(p.fechaPago, mes, festivosMX);
+  });
+}
+
+/** Confirmed credit gastos for a tarjeta whose anteriorNomina(fechaPago ciclo) falls in mes. */
+export function getGastosCreditoMes(gastosItems, tarjetaId, ciclo, mes, festivosMX) {
+  return gastosItems.filter(g => {
+    if (g.tarjetaId !== tarjetaId || g.estado !== 'registrado') return false;
+    return _enMes(_fechaPagoFromDate(g.fechaPago, ciclo, festivosMX), mes, festivosMX);
+  });
+}
+
+/** Registered debit gastos for mes (filtered by fechaPago directly). */
+export function getGastosDebitoMes(gastosItems, mes, debitoIds = null) {
+  return gastosItems.filter(g => {
+    if (g.estado !== 'registrado') return false;
+    if ((g.fechaPago || '').slice(0, 7) !== mes) return false;
+    if (debitoIds && !debitoIds.has(g.tarjetaId)) return false;
+    return true;
+  });
+}
+
+/**
+ * Returns all debit items for a month:
+ * - Gastos fijos with debit card (sin_registro | pendiente | registrado), excluding descartado
+ * - Manual debit gastos (registrado, no gastaFijoId)
+ */
+export function getGastosDebitoCompleto(gastosItems, gastosFijosItems, mes, debitoIds, tarjetas, festivosMX) {
+  const [y, mo] = mes.split('-').map(Number);
+  const month = mo - 1; // 0-indexed
+
+  // Map gastaFijoId → gastos record for this month
+  const fichaMap = new Map(
+    gastosItems
+      .filter(g => g.gastaFijoId && g.mes === mes && g.estado !== 'descartado')
+      .map(g => [g.gastaFijoId, g])
+  );
+
+  const result = [];
+
+  // 1. Gastos fijos con tarjeta débito para este mes
+  gastosFijosItems.forEach(gasto => {
+    const card = tarjetas.find(t => t.id === gasto.tarjetaId);
+    if (!card || card.tipo !== 'debito') return;
+    const fecha = _calcularFechaGastoMes(gasto, y, month, festivosMX);
+    if (!fecha) return;
+    const fechaISO = toISODate(fecha);
+    if (!fechaISO.startsWith(mes)) return;
+
+    // Check if descartado
+    const existing = gastosItems.find(g => g.gastaFijoId === gasto.id && g.mes === mes);
+    if (existing?.estado === 'descartado') return;
+
+    const estado = existing?.estado || 'sin_registro';
+    result.push({
+      gastaFijoId: gasto.id,
+      nombre:    gasto.nombre,
+      tarjetaId: gasto.tarjetaId,
+      formaPago: gasto.formaPago,
+      fechaPago: estado === 'registrado' ? existing.fechaPago : fechaISO,
+      importe:   estado === 'registrado' ? (Number(existing.importe) || 0) : (Number(gasto.importe) || 0),
+      estado,
+    });
+  });
+
+  // 2. Manuales registrados (sin gastaFijoId)
+  gastosItems
+    .filter(g =>
+      g.estado === 'registrado' &&
+      (g.fechaPago || '').slice(0, 7) === mes &&
+      debitoIds.has(g.tarjetaId) &&
+      !g.gastaFijoId
+    )
+    .forEach(g => result.push({ ...g, estado: 'registrado' }));
+
+  return result.sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
+}
+
+/** Calculates estimated amounts for one credit/loan card in a given month. */
+export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes) {
+  const ciclo = tarjeta.ciclo || null;
+  const tid   = tarjeta.id;
+  const estimadoContado = getContadoMes(contadoItems, tid, ciclo, mes, festivosMX)
+    .reduce((s, c) => s + (Number(c.total) || 0), 0);
+  const estimadoPlazos  = getPlazosMes(msiItems, tid, ciclo, mes, festivosMX)
+    .reduce((s, m) => s + (Number(m.mensualidad) || 0), 0);
+  const estimadoGastos  = getGastosCreditoMes(gastosItems, tid, ciclo, mes, festivosMX)
+    .reduce((s, g) => s + (Number(g.importe) || 0), 0);
+  return {
+    estimadoContado, estimadoPlazos, estimadoGastos,
+    estimadoTotal: estimadoContado + estimadoPlazos + estimadoGastos,
+  };
+}
+
+/** Calculates credit summary totals from an impacto's tarjetas[] array. */
+export function calcularTotalesCredito(tarjetasImpacto) {
+  let creditoTotal = 0, creditoDisponible = 0;
+  tarjetasImpacto.forEach(t => {
+    creditoTotal      += Number(t.limiteTotalConf  ?? t.limiteTotal     ?? 0);
+    creditoDisponible += Number(t.saldoDispConf    ?? t.saldoDisponible ?? 0);
+  });
+  return {
+    creditoTotal,
+    creditoDisponible,
+    deudaTotal: Math.max(0, creditoTotal - creditoDisponible),
+  };
+}
+
+/**
+ * Calculates live totals for an active impacto given current gastos débito.
+ * Does NOT mutate the impacto object.
+ */
+export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride = null) {
+  const pagoCredito     = impacto.tarjetas.reduce((s, t) => s + (t.pagado ? (Number(t.montoAPagar) || 0) : 0), 0);
+  const gastoDebito     = gastosDebitoLive.reduce((s, g) => s + (Number(g.importe) || 0), 0);
+  const estimadoCredito = impacto.tarjetas.reduce((s, t) => s + (Number(t.estimadoTotal) || 0), 0);
+  const nomRef          = nominaOverride ?? Number(impacto.nominaRef) ?? 0;
+  return {
+    estimadoCredito, pagoCredito, gastoDebito,
+    restanteEsperado: nomRef - estimadoCredito - gastoDebito,
+    restante:         (Number(impacto.presupuesto) || 0) - pagoCredito - gastoDebito,
+    ...calcularTotalesCredito(impacto.tarjetas),
+  };
+}
+
+/**
+ * Projects estimated impacto data for a future month.
+ * Simulates progressive monthly payment of A Plazos.
+ */
+export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItems, tarjetasCredito, nominaAprox, festivosMX, gastosFijosItems = [], todasTarjetas = []) {
+  const targetInt = _mesInt(mes);
+
+  // Simulate msiItems with projected mesesPagados
+  const msiProjected = msiItems.map(m => {
+    const tarjeta = tarjetasCredito.find(t => t.id === m.tarjetaId);
+    const ciclo   = tarjeta?.ciclo;
+    if (!ciclo || m.liquidado) return m;
+    const mesesPag = Number(m.mesesPagados) || 0;
+    const mesesTot = Number(m.mesesTotal)   || 0;
+    if (mesesPag >= mesesTot) return m;
+    const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
+    if (!pc) return m;
+    const nx  = new Date(pc.cicloYear, pc.cicloMonth + mesesPag, 1);
+    const pp  = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+    if (!pp.fechaPago) return m;
+    const nom = anteriorNomina(pp.fechaPago, festivosMX);
+    if (!nom) return m;
+    const proximoInt = _mesInt(toISODate(nom).slice(0, 7));
+    if (targetInt <= proximoInt) return m;
+    return { ...m, mesesPagados: Math.min(mesesPag + (targetInt - proximoInt), mesesTot) };
+  });
+
+  const [py, pmo] = mes.split('-').map(Number);
+  const debitoIds = new Set(todasTarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
+
+  const tarjetas = tarjetasCredito.map(t => {
+    const est = calcularEstimadoTarjeta(t, contadoItems, msiProjected, gastosItems, festivosMX, mes);
+
+    // Gastos fijos de crédito: incluir si el card tiene pago en este mes (vía nómina anterior)
+    // y el gasto fijo ocurre en el mes calendario objetivo
+    let estimadoGastosFijos = 0;
+    if (gastosFijosItems.length && t.ciclo) {
+      const periodo = calcularCicloParaMes(t.ciclo, mes, festivosMX);
+      if (periodo?.fechaPago) {
+        gastosFijosItems.forEach(gf => {
+          if (gf.tarjetaId !== t.id) return;
+          const fecha = _calcularFechaGastoMes(gf, py, pmo - 1, festivosMX);
+          if (fecha && toISODate(fecha).startsWith(mes))
+            estimadoGastosFijos += Number(gf.importe) || 0;
+        });
+      }
+    }
+    let fechaCorte = null, fechaPago = null;
+    if (t.ciclo) {
+      const p = calcularCicloParaMes(t.ciclo, mes, festivosMX);
+      fechaCorte = p?.fechaCorte ? toISODate(p.fechaCorte) : null;
+      fechaPago  = p?.fechaPago  ? toISODate(p.fechaPago)  : null;
+    }
+    const estimadoGastos = est.estimadoGastos + estimadoGastosFijos;
+    return {
+      tarjetaId: t.id, nombre: t.nombre, institucion: '', color: '#607d8b',
+      limiteTotal: Number(t.limiteTotal) || 0, saldoDisponible: t.saldoDisponible ?? null,
+      fechaCorte, fechaPago,
+      ...est,
+      estimadoGastos,
+      estimadoTotal: est.estimadoContado + est.estimadoPlazos + estimadoGastos,
+      confirmado: false, pagado: false,
+    };
+  });
+
+  const gastosDeb   = gastosFijosItems.length
+    ? getGastosDebitoCompleto(gastosItems, gastosFijosItems, mes, debitoIds, todasTarjetas, festivosMX)
+    : getGastosDebitoMes(gastosItems, mes);
+  const gastoDebito = gastosDeb.reduce((s, g) => s + (Number(g.importe) || 0), 0);
+  const estCredito  = tarjetas.reduce((s, t) => s + t.estimadoTotal, 0);
+
+  return {
+    mes, estado: 'proyeccion', presupuesto: nominaAprox, nominaRef: nominaAprox,
+    tarjetas, gastosDebito: gastosDeb,
+    totales: {
+      estimadoCredito: estCredito, pagoCredito: 0, gastoDebito,
+      restanteEsperado: nominaAprox - estCredito - gastoDebito,
+      restante:         nominaAprox - estCredito - gastoDebito,
+      ...calcularTotalesCredito(tarjetas),
+    },
+  };
+}

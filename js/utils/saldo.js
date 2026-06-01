@@ -18,7 +18,8 @@ export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = []) {
   let gastoPosterior = 0;
 
   if (fechaRef) {
-    const posterior = (fecha) => !!fecha && fecha > fechaRef;
+    const refDate   = new Date(fechaRef);
+    const posterior = (fecha) => !!fecha && new Date(fecha) > refDate;
 
     contado.forEach(c => {
       if (c.tarjetaId === tarjeta.id && posterior(c.fechaCompra))
