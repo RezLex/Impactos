@@ -1,12 +1,21 @@
 import { getAll, create, update, remove } from '../utils/db.js';
+
+const _addTime = s => {
+  if (!s || s.length !== 10) return s;
+  const n = new Date();
+  const today = `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+  return s === today
+    ? `${s}T${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}:${String(n.getSeconds()).padStart(2,'0')}`
+    : `${s}T12:00:00`;
+};
 import { currency, fmtDate } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
 
-export async function render(container) {
-  await renderView(container);
+export async function render(container, tab = null) {
+  await renderView(container, tab || 'contado');
 }
 
 async function renderView(container, initialTab = 'contado') {
@@ -116,7 +125,7 @@ async function renderView(container, initialTab = 'contado') {
         if (filtroContadoTipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
         const tc = cardMap[c.tarjetaId];
         if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
-          const compra = new Date(c.fechaCompra + 'T12:00:00');
+          const compra = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
           let y = compra.getFullYear(), m = compra.getMonth();
           let p = calcularMes(tc.ciclo, y, m, festivosMX);
           if (p.fechaCorte < compra) { const nx = new Date(y, m + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
@@ -477,7 +486,7 @@ async function renderView(container, initialTab = 'contado') {
           if (filtroGastosTipo === 'gasto') return (g.fechaPago || '').slice(0, 7) === filtroGastosMes;
           const tc = cardMap[g.tarjetaId];
           if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
-            const base = new Date(g.fechaPago + 'T12:00:00');
+            const base = new Date(String(g.fechaPago).includes('T') ? g.fechaPago : g.fechaPago + 'T12:00:00');
             let yr = base.getFullYear(), mo = base.getMonth();
             let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
             if (p.fechaCorte < base) { const nx = new Date(yr, mo + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
@@ -587,7 +596,7 @@ async function renderView(container, initialTab = 'contado') {
 
                     let fechaPagoCell = g.fechaPago ? fmtDate(g.fechaPago) : '—';
                     if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
-                      const base = new Date(g.fechaPago + 'T12:00:00');
+                      const base = new Date(String(g.fechaPago).includes('T') ? g.fechaPago : g.fechaPago + 'T12:00:00');
                       let yr = base.getFullYear(), mo = base.getMonth();
                       let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
                       if (p.fechaCorte < base) {
@@ -714,7 +723,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                     let limitePagoDisplay = '—';
                     let nominaPagoDisplay = null;
                     if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
-                      const compra = new Date(c.fechaCompra + 'T12:00:00');
+                      const compra = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
                       let year = compra.getFullYear(), month = compra.getMonth();
                       let p = calcularMes(tc.ciclo, year, month, festivosMX);
                       if (p.fechaCorte < compra) {
@@ -734,14 +743,14 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           ${c.compra}
                           ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
                         </div>
-                      </td>
+                                      </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
                       <td style="white-space:nowrap">
                         ${nominaPagoDisplay ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${nominaPagoDisplay}</span><br>` : ''}
                         ${limitePagoDisplay !== '—' ? `<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${limitePagoDisplay}</small>` : '—'}
                       </td>
-                      <td class="text-end fw-bold">${currency(c.total)}</td>
+                      <td class="text-end">${_bonifTotal(c, Number(c.total) || 0, !!cardMap[c.tarjetaId]?.inst?.bonificacionConIva)}</td>
                       <td>
                         <div class="d-flex gap-1">
                           <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
@@ -761,7 +770,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
 function calcularPagos(ciclo, fechaCompra, mesesTotal, festivosMX) {
   if (!ciclo || !fechaCompra || !mesesTotal) return { primerPago: null, ultimoPago: null };
 
-  const compra = new Date(fechaCompra + 'T12:00:00');
+  const compra = new Date(String(fechaCompra).includes('T') ? fechaCompra : fechaCompra + 'T12:00:00');
   let year  = compra.getFullYear();
   let month = compra.getMonth();
   let periodo = calcularMes(ciclo, year, month, festivosMX);
@@ -816,11 +825,12 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
             <table class="table">
               <thead><tr>
                 <th>Compra</th><th>Tarjeta</th><th class="text-center">Meses</th>
-                <th class="text-end">Mensualidad</th>
-                <th class="text-end">${thRestante}</th>
                 <th>Primer Pago</th>
                 ${filtro === 'curso' ? `<th>Próximo Pago</th>` : ''}
                 <th>${thUltimo}</th>
+                <th class="text-end">Mensualidad</th>
+                <th class="text-end">${thRestante}</th>
+                ${filtro === 'curso' ? `<th class="text-end">Total</th>` : ''}
                 <th></th>
               </tr></thead>
               <tbody>
@@ -894,14 +904,18 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                         <div class="progress mt-1" style="width:120px">
                           <div class="progress-bar ${done ? 'bg-success' : 'bg-primary'}" style="width:${pct}%"></div>
                         </div>
+
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td class="text-center">${m.mesesPagados || 0}/${m.mesesTotal || 0}</td>
-                      <td class="text-end">${currency(m.mensualidad)}</td>
-                      <td class="text-end ${restanteCls}">${restanteVal}</td>
                       <td style="white-space:nowrap">${primerPagoCell}</td>
                       ${filtro === 'curso' ? `<td style="white-space:nowrap">${proximoPagoCell}</td>` : ''}
                       <td style="white-space:nowrap">${ultimoPagoCell}</td>
+                      <td class="text-end">${currency(m.mensualidad)}</td>
+                      <td class="text-end ${restanteCls}">
+                        ${mostrarTotal ? _bonifTotal(m, Number(m.total) || 0, !!tc?.inst?.bonificacionConIva) : restanteVal}
+                      </td>
+                      ${filtro === 'curso' ? `<td class="text-end">${_bonifTotal(m, Number(m.total) || 0, !!tc?.inst?.bonificacionConIva)}</td>` : ''}
                       <td>
                         <div class="d-flex gap-1">
                           ${!m.liquidado && Number(m.mesesPagados) < Number(m.mesesTotal) ? `<button class="btn-icon btn-pagar-msi" data-id="${m.id}" title="Registrar pago de mensualidad"><i class="bi bi-coin"></i></button>` : ''}
@@ -925,37 +939,140 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const lista   = soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas;
-  const byInst  = {};
-  lista.forEach(t => {
+
+  const _cardOpts = (cards, showInst = false) => cards
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+    .flatMap(t => {
+      const numeros  = Array.isArray(t.numeros) ? t.numeros : [];
+      const all      = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
+                        ...numeros.filter(n => n.formato === 'digital' && n.numero)];
+      const instPrefix = showInst && instMap[t.institucionId]?.nombre
+        ? `${instMap[t.institucionId].nombre} — ` : '';
+      if (!all.length) {
+        const sel = item?.tarjetaId === t.id && !item?.numeroTarjeta ? 'selected' : '';
+        return [`<option value="${t.id}::" ${sel}>${instPrefix}${t.nombre}</option>`];
+      }
+      return all.map(n => {
+        const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
+        const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
+        const sel   = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero ? 'selected' : '';
+        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
+      });
+    }).join('');
+
+  // Favoritas primero
+  const favoritas = lista.filter(t => t.favorita);
+  const normales  = lista.filter(t => !t.favorita);
+
+  const favGroup = favoritas.length
+    ? `<optgroup label="⭐ Favoritas">${_cardOpts(favoritas, true)}</optgroup>`
+    : '';
+
+  const byInst = {};
+  normales.forEach(t => {
     const id = t.institucionId || '__';
     if (!byInst[id]) byInst[id] = { inst: instMap[id] || null, cards: [] };
     byInst[id].cards.push(t);
   });
-  return Object.values(byInst)
+  const instGroups = Object.values(byInst)
     .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'))
-    .map(({ inst, cards }) => {
-      const opts = cards
-        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-        .flatMap(t => {
-          const numeros   = Array.isArray(t.numeros) ? t.numeros : [];
-          const fisicas   = numeros.filter(n => n.formato === 'fisica'  && n.numero);
-          const digitales = numeros.filter(n => n.formato === 'digital' && n.numero);
-          const all = [...fisicas, ...digitales];
-          if (!all.length) {
-            const sel = item?.tarjetaId === t.id && !item?.numeroTarjeta ? 'selected' : '';
-            return [`<option value="${t.id}::" ${sel}>${t.nombre}</option>`];
-          }
-          return all.map(n => {
-            const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
-            const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
-            const sel   = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero ? 'selected' : '';
-            return `<option value="${t.id}::${n.numero}" ${sel}>${t.nombre} ···${last4} (${tipo})</option>`;
-          });
-        })
-        .join('');
-      return `<optgroup label="${inst?.nombre || 'Sin institución'}">${opts}</optgroup>`;
-    })
+    .map(({ inst, cards }) =>
+      `<optgroup label="${inst?.nombre || 'Sin institución'}">${_cardOpts(cards)}</optgroup>`)
     .join('');
+
+  return favGroup + instGroups;
+}
+
+// ── Modal De Contado ────────────────────────────────────────────────────────────
+
+// ── Bonificación helpers ────────────────────────────────────────────────────────
+
+function _bonifFields(item) {
+  const b = item?.bonificacion;
+  return `
+    <div class="col-12">
+      <div class="form-check mb-1">
+        <input class="form-check-input" type="checkbox" id="has-bonif" ${b ? 'checked' : ''}>
+        <label class="form-check-label" for="has-bonif" style="font-size:0.85rem">Esperar bonificación / cashback</label>
+      </div>
+      <div id="bonif-fields" ${b ? '' : 'style="display:none"'}>
+        <div class="row g-2">
+          <div class="col-4">
+            <select class="form-select form-select-sm" name="bonificacionTipo">
+              <option value="porcentaje" ${(!b || b.tipo === 'porcentaje') ? 'selected' : ''}>% Porcentaje</option>
+              <option value="cantidad"   ${b?.tipo === 'cantidad' ? 'selected' : ''}>$ Cantidad</option>
+            </select>
+          </div>
+          <div class="col-4">
+            <input type="number" class="form-control form-control-sm" name="bonificacionValor"
+                   value="${b?.valor ?? ''}" min="0" step="0.01" placeholder="Valor">
+          </div>
+          <div class="col-4">
+            <input type="date" class="form-control form-control-sm" name="bonificacionFecha"
+                   value="${b?.fechaMaxima ?? ''}">
+          </div>
+          <div class="col-12">
+            <input type="url" class="form-control form-control-sm" name="bonificacionEnlace"
+                   value="${b?.enlace ?? ''}" placeholder="Enlace de la promoción (opcional)">
+          </div>
+          <div class="col-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="bonificacionAplicada" id="bonif-aplicada" ${b?.aplicada ? 'checked' : ''}>
+              <label class="form-check-label text-success" for="bonif-aplicada" style="font-size:0.82rem">Ya recibida / aplicada</label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function _wireBonif() {
+  const chk = document.getElementById('has-bonif');
+  const flds = document.getElementById('bonif-fields');
+  if (chk && flds) chk.addEventListener('change', () => { flds.style.display = chk.checked ? '' : 'none'; });
+}
+
+function _saveBonif(data) {
+  const tipo     = data.bonificacionTipo;
+  const valor    = Number(data.bonificacionValor);
+  const fecha    = data.bonificacionFecha;
+  const enlace   = data.bonificacionEnlace || '';
+  const aplicada = !!data.bonificacionAplicada;
+  delete data.bonificacionTipo; delete data.bonificacionValor; delete data.bonificacionFecha;
+  delete data.bonificacionEnlace; delete data.bonificacionAplicada;
+  const hasBonif = document.getElementById('has-bonif')?.checked;
+  if (hasBonif && valor > 0 && fecha) {
+    data.bonificacion = {
+      tipo, valor, fechaMaxima: fecha,
+      ...(enlace   ? { enlace }   : {}),
+      ...(aplicada ? { aplicada } : {}),
+    };
+  } else {
+    delete data.bonificacion;
+  }
+}
+
+function _bonifBadge(item) {
+  // Solo muestra indicador pequeño en el nombre; el detalle va junto al total
+  const b = item?.bonificacion;
+  if (!b) return '';
+  const vencido = b.fechaMaxima < toISODate(new Date());
+  return `<span class="${vencido ? 'text-danger' : 'text-success'}" style="font-size:0.7rem"><i class="bi bi-gift"></i></span>`;
+}
+
+function _bonifTotal(item, totalVal, conIva = false) {
+  const b = item?.bonificacion;
+  if (!b) return `<span class="fw-bold">${currency(totalVal)}</span>`;
+  const montoBase = b.tipo === 'porcentaje' ? totalVal * (b.valor / 100) : Number(b.valor);
+  const monto     = conIva ? montoBase * 1.16 : montoBase;
+  const final     = totalVal - monto;
+  const label     = b.tipo === 'porcentaje' ? `${b.valor}%` : currency(b.valor);
+  const vencido = b.fechaMaxima < toISODate(new Date());
+  const cls     = b.aplicada ? 'text-success' : vencido ? 'text-danger' : 'text-warning';
+  return `
+    <span class="fw-bold ${cls}">${currency(final)}</span>
+    <span class="text-muted text-decoration-line-through ms-1" style="font-size:0.78rem">${currency(totalVal)}</span>
+    <br><span class="${cls}" style="font-size:0.7rem"><i class="bi bi-gift me-1"></i>${label}${b.tipo === 'porcentaje' ? ` = ${currency(montoBase)}` : ''}${b.conIva ? ` +IVA = ${currency(monto)}` : ''} · ${fmtDate(b.fechaMaxima)}${b.enlace ? ` <a href="${b.enlace}" target="_blank" rel="noopener" class="${cls}" title="Ver promoción"><i class="bi bi-box-arrow-up-right" style="font-size:0.65rem"></i></a>` : ''}</span>`;
 }
 
 // ── Modal De Contado ────────────────────────────────────────────────────────────
@@ -982,7 +1099,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${compra?.fechaCompra || ''}" required>
+            <input type="date" class="form-control" name="fechaCompra" value="${(compra?.fechaCompra || '').slice(0, 10)}" required>
           </div>
           <div class="col-12">
             <label class="form-label">Total *</label>
@@ -995,12 +1112,15 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
             <label class="form-label">Enlace de la compra</label>
             <input type="url" class="form-control" name="enlaceCompra" value="${compra?.enlaceCompra || ''}" placeholder="https://...">
           </div>
+          ${_bonifFields(compra)}
         </div>
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-contado">${isEdit ? 'Guardar' : 'Crear'}</button>`
   });
+
+  _wireBonif();
 
   document.getElementById('btn-save-contado').addEventListener('click', async () => {
     const form = document.getElementById('contado-form');
@@ -1011,7 +1131,8 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
     data.numeroTarjeta = numeroTarjeta || '';
     data.total         = Number(data.total);
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) { const _n = new Date(); data.fechaCompra += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
+    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    _saveBonif(data);
     try {
       if (isEdit) await update('contado', compra.id, data);
       else        await create('contado', data);
@@ -1046,7 +1167,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${msi?.fechaCompra || ''}" required>
+            <input type="date" class="form-control" name="fechaCompra" value="${(msi?.fechaCompra || '').slice(0, 10)}" required>
           </div>
           <div class="col-md-6">
             <label class="form-label">Total de la compra *</label>
@@ -1083,12 +1204,15 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
             <label class="form-label">Enlace de la compra</label>
             <input type="url" class="form-control" name="enlaceCompra" value="${msi?.enlaceCompra || ''}" placeholder="https://...">
           </div>
+          ${_bonifFields(msi)}
         </div>
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${isEdit ? 'Guardar' : 'Crear'}</button>`
   });
+
+  _wireBonif();
 
   const _recalcMsi = () => {
     const total    = Number(document.querySelector('#msi-form [name=total]').value)    || 0;
@@ -1125,7 +1249,8 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     data.mesesPagados  = Number(data.mesesPagados);
     data.restante      = data.restante !== '' ? Number(data.restante) : Math.max(0, data.total - data.mensualidad * data.mesesPagados);
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) { const _n = new Date(); data.fechaCompra += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
+    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    _saveBonif(data);
     try {
       let savedId;
       if (isEdit) {
@@ -1247,7 +1372,7 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de Pago *</label>
-            <input type="date" class="form-control" name="fechaPago" value="${pendiente.fechaPago || ''}" required>
+            <input type="date" class="form-control" name="fechaPago" value="${(pendiente.fechaPago || '').slice(0, 10)}" required>
           </div>
           <div class="col-12">
             <label class="form-label">Importe *</label>
@@ -1269,7 +1394,7 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
     const data = Object.fromEntries(new FormData(form));
     data.importe = Number(data.importe);
     data.estado  = 'registrado';
-    if (data.fechaPago?.length === 10) { const _n = new Date(); data.fechaPago += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
+    if (data.fechaPago?.length === 10) data.fechaPago = _addTime(data.fechaPago);
     try {
       await update('gastos', pendiente.id, data);
       closeModal();
@@ -1316,7 +1441,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de Pago *</label>
-            <input type="date" class="form-control" name="fechaPago" value="${gasto?.fechaPago || ''}" required>
+            <input type="date" class="form-control" name="fechaPago" value="${(gasto?.fechaPago || '').slice(0, 10)}" required>
           </div>
           <div class="col-md-6">
             <label class="form-label">Importe *</label>
@@ -1342,7 +1467,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
     data.importe       = Number(data.importe);
     data.tipo          = 'manual';
     data.estado        = 'registrado';
-    if (data.fechaPago?.length === 10) { const _n = new Date(); data.fechaPago += `T${String(_n.getHours()).padStart(2,'0')}:${String(_n.getMinutes()).padStart(2,'0')}:${String(_n.getSeconds()).padStart(2,'0')}`; }
+    if (data.fechaPago?.length === 10) data.fechaPago = _addTime(data.fechaPago);
     data.mes           = (data.fechaPago || '').slice(0, 7) || (gasto?.mes || toISODate(new Date()).slice(0, 7));
     if (!data.numeroTarjeta) delete data.numeroTarjeta;
     try {

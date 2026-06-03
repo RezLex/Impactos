@@ -110,11 +110,11 @@ function showEventoModal(ev, container) {
         <div class="row g-2">
           <div class="col-6">
             <label class="form-label">Fecha inicio</label>
-            <input type="date" class="form-control" name="fechaInicio" value="${ev?.fechaInicio || ''}">
+            <input type="date" class="form-control" name="fechaInicio" value="${(ev?.fechaInicio || '').slice(0, 10)}">
           </div>
           <div class="col-6">
             <label class="form-label">Fecha fin</label>
-            <input type="date" class="form-control" name="fechaFin" value="${ev?.fechaFin || ''}">
+            <input type="date" class="form-control" name="fechaFin" value="${(ev?.fechaFin || '').slice(0, 10)}">
           </div>
         </div>
       </form>`,

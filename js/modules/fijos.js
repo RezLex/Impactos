@@ -129,38 +129,42 @@ function showModal(fijo, instituciones, tarjetas, container) {
   const isEdit  = !!fijo;
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
 
+  const _opts = (cards, showInst = false) => cards
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+    .flatMap(t => {
+      const numeros    = Array.isArray(t.numeros) ? t.numeros : [];
+      const all        = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
+                          ...numeros.filter(n => n.formato === 'digital' && n.numero)];
+      const instPrefix = showInst && instMap[t.institucionId]?.nombre
+        ? `${instMap[t.institucionId].nombre} — ` : '';
+      if (!all.length) {
+        const sel = fijo?.tarjetaId === t.id && !fijo?.numeroTarjeta ? 'selected' : '';
+        return [`<option value="${t.id}::" ${sel}>${instPrefix}${t.nombre}</option>`];
+      }
+      return all.map(n => {
+        const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
+        const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
+        const sel   = fijo?.tarjetaId === t.id && fijo?.numeroTarjeta === n.numero ? 'selected' : '';
+        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
+      });
+    }).join('');
+
+  const favoritas = tarjetas.filter(t => t.favorita);
+  const normales  = tarjetas.filter(t => !t.favorita);
   const byInst = {};
-  tarjetas.forEach(t => {
+  normales.forEach(t => {
     const id = t.institucionId || '__';
     if (!byInst[id]) byInst[id] = { inst: instMap[id] || null, cards: [] };
     byInst[id].cards.push(t);
   });
 
-  const cardOptions = Object.values(byInst)
-    .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'))
-    .map(({ inst, cards }) => {
-      const opts = cards
-        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-        .flatMap(t => {
-          const numeros   = Array.isArray(t.numeros) ? t.numeros : [];
-          const fisicas   = numeros.filter(n => n.formato === 'fisica'  && n.numero);
-          const digitales = numeros.filter(n => n.formato === 'digital' && n.numero);
-          const all = [...fisicas, ...digitales];
-          if (!all.length) {
-            const sel = fijo?.tarjetaId === t.id && !fijo?.numeroTarjeta ? 'selected' : '';
-            return [`<option value="${t.id}::" ${sel}>${t.nombre}</option>`];
-          }
-          return all.map(n => {
-            const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
-            const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
-            const sel   = fijo?.tarjetaId === t.id && fijo?.numeroTarjeta === n.numero ? 'selected' : '';
-            return `<option value="${t.id}::${n.numero}" ${sel}>${t.nombre} ···${last4} (${tipo})</option>`;
-          });
-        })
-        .join('');
-      return `<optgroup label="${inst?.nombre || 'Sin institución'}">${opts}</optgroup>`;
-    })
-    .join('');
+  const cardOptions =
+    (favoritas.length ? `<optgroup label="⭐ Favoritas">${_opts(favoritas, true)}</optgroup>` : '') +
+    Object.values(byInst)
+      .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'))
+      .map(({ inst, cards }) =>
+        `<optgroup label="${inst?.nombre || 'Sin institución'}">${_opts(cards)}</optgroup>`)
+      .join('');
 
   openModal({
     title: isEdit ? 'Editar Gasto Fijo' : 'Nuevo Gasto Fijo',
@@ -195,7 +199,7 @@ function showModal(fijo, instituciones, tarjetas, container) {
           <div class="row g-2">
             <div class="col-6">
               <label class="form-label small text-muted mb-1">Fecha de inicio</label>
-              <input type="date" class="form-control form-control-sm" name="fechaInicio" value="${fijo?.fechaInicio || ''}">
+              <input type="date" class="form-control form-control-sm" name="fechaInicio" value="${(fijo?.fechaInicio || '').slice(0, 10)}">
             </div>
             <div class="col-6">
               <label class="form-label small text-muted mb-1">Intervalo (días)</label>

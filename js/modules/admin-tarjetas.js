@@ -122,7 +122,8 @@ async function renderView(container) {
                   data-id="${inst.id}"
                   data-nombre="${inst.nombre}"
                   data-color="${color}"
-                  data-numero-cliente="${inst.numeroCliente || ''}">
+                  data-numero-cliente="${inst.numeroCliente || ''}"
+                  data-bonificacion-con-iva="${inst.bonificacionConIva ? '1' : ''}">
                   <i class="bi bi-pencil"></i>
                 </button>
                 <button class="btn btn-sm btn-outline-light btn-del-inst"
@@ -178,6 +179,9 @@ async function renderView(container) {
                     <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap">${fmtCiclo(c)}</td>
                     <td>
                       <div class="d-flex gap-1">
+                        <button class="btn-icon btn-fav-card" data-id="${c.id}" data-fav="${c.favorita ? '1' : ''}" title="${c.favorita ? 'Quitar favorita' : 'Marcar favorita'}">
+                          <i class="bi bi-star${c.favorita ? '-fill text-warning' : ''}"></i>
+                        </button>
                         <button class="btn-icon btn-edit-card" data-id="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
                         <button class="btn-icon danger btn-del-card" data-id="${c.id}" data-nombre="${c.nombre}" title="Eliminar"><i class="bi bi-trash3"></i></button>
                       </div>
@@ -224,10 +228,11 @@ async function renderView(container) {
 
     document.querySelectorAll('.btn-edit-inst').forEach(btn =>
       btn.addEventListener('click', () => showInstModal(container, {
-        id:            btn.dataset.id,
-        nombre:        btn.dataset.nombre,
-        color:         btn.dataset.color,
-        numeroCliente: btn.dataset.numeroCliente,
+        id:                 btn.dataset.id,
+        nombre:             btn.dataset.nombre,
+        color:              btn.dataset.color,
+        numeroCliente:      btn.dataset.numeroCliente,
+        bonificacionConIva: btn.dataset.bonificacionConIva === '1',
       })));
 
     document.querySelectorAll('.btn-del-inst').forEach(btn =>
@@ -240,6 +245,13 @@ async function renderView(container) {
 
     document.querySelectorAll('.btn-add-card').forEach(btn =>
       btn.addEventListener('click', () => showCardModal(container, instituciones, btn.dataset.instId)));
+
+    document.querySelectorAll('.btn-fav-card').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        const isFav = !!btn.dataset.fav;
+        await update('tarjetas', btn.dataset.id, { favorita: !isFav });
+        renderView(container);
+      }));
 
     document.querySelectorAll('.btn-edit-card').forEach(btn =>
       btn.addEventListener('click', () => {
@@ -280,6 +292,12 @@ function showInstModal(container, inst = null) {
           <label class="form-label">Color de identificación</label>
           <input type="color" class="form-control form-control-color" name="color" value="${inst?.color || '#607d8b'}">
         </div>
+        <div class="mb-3">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="bonificacionConIva" id="inst-bonif-iva" ${inst?.bonificacionConIva ? 'checked' : ''}>
+            <label class="form-check-label" for="inst-bonif-iva">Las bonificaciones de esta institución incluyen IVA (16%)</label>
+          </div>
+        </div>
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
@@ -291,6 +309,7 @@ function showInstModal(container, inst = null) {
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const raw  = Object.fromEntries(new FormData(form));
     const data = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== ''));
+    data.bonificacionConIva = !!form.querySelector('[name=bonificacionConIva]')?.checked;
     try {
       if (editing) { await update('instituciones', inst.id, data); toast('Institución actualizada'); }
       else         { await create('instituciones', data);          toast('Institución creada');      }
@@ -427,7 +446,7 @@ function showCardModal(container, instituciones, preInstId, card = null) {
           </div>
         </div>
 
-        <!-- Ciclo (solo crédito) -->
+        <!-- Ciclo (crédito y préstamo) -->
         <div class="d-none" id="sec-credito">
           <hr>
           <div class="mb-3">
@@ -527,7 +546,7 @@ function showCardModal(container, instituciones, preInstId, card = null) {
     document.getElementById('sec-prestamo').classList.toggle('d-none', !isPrestamo);
     document.getElementById('sec-limite').classList.toggle('d-none', tipo === 'debito');
     document.getElementById('sec-saldo').classList.toggle('d-none', tipo === 'debito');
-    document.getElementById('sec-credito').classList.toggle('d-none', tipo !== 'credito');
+    document.getElementById('sec-credito').classList.toggle('d-none', tipo !== 'credito' && tipo !== 'prestamo');
   };
 
   const setCicloMode = (mode) => {
@@ -598,8 +617,8 @@ function showCardModal(container, instituciones, preInstId, card = null) {
       }
     }
 
-    // Ciclo (solo crédito)
-    if (raw.tipo === 'credito') {
+    // Ciclo (crédito y préstamo)
+    if (raw.tipo === 'credito' || raw.tipo === 'prestamo') {
 
       const modo  = document.getElementById('metodoCiclo').value;
       const ciclo = {};

@@ -4,7 +4,7 @@ import { calcularMes, toISODate, anteriorNomina } from './ciclo.js';
 
 function _fechaPagoFromDate(fechaISO, ciclo, festivosMX) {
   if (!ciclo || !fechaISO) return null;
-  const d = new Date(fechaISO + 'T12:00:00');
+  const d = _d(fechaISO);
   let year = d.getFullYear(), month = d.getMonth();
   let p = calcularMes(ciclo, year, month, festivosMX);
   if (p.fechaCorte < d) {
@@ -22,7 +22,7 @@ function _enMes(fechaPago, mes, festivosMX) {
 
 function _primerCiclo(ciclo, fechaCompra, festivosMX) {
   if (!ciclo || !fechaCompra) return null;
-  const d = new Date(fechaCompra + 'T12:00:00');
+  const d = _d(fechaCompra);
   let year = d.getFullYear(), month = d.getMonth();
   const p = calcularMes(ciclo, year, month, festivosMX);
   if (p.fechaCorte < d) {
@@ -36,6 +36,8 @@ function _mesInt(mes) {
   const [y, m] = mes.split('-').map(Number);
   return y * 12 + m;
 }
+
+const _d = s => s ? new Date(String(s).includes('T') ? s : s + 'T12:00:00') : null;
 
 function _sigHabil(date, festivosMX) {
   const festSet = new Set(festivosMX.map(f => f.fecha));
@@ -92,7 +94,8 @@ function _calcularFechaGastoMes(gasto, year, month, festivosMX) {
 export function calcularCicloParaMes(ciclo, mes, festivosMX) {
   if (!ciclo) return null;
   const [y, mo] = mes.split('-').map(Number);
-  for (let delta = 0; delta <= 1; delta++) {
+  // Check next month (+1), current (0) and previous (-1) — payment on day 1 maps to next month's ciclo
+  for (let delta = -1; delta <= 1; delta++) {
     const d = new Date(y, mo - 1 - delta, 1);
     const p = calcularMes(ciclo, d.getFullYear(), d.getMonth(), festivosMX);
     if (!p.fechaPago) continue;

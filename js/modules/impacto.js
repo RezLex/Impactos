@@ -53,19 +53,60 @@ async function renderView(container, mes) {
       });
     } else if (impactoExistente) {
       impacto = impactoExistente;
-      // Recalculate estimates for active impactos — purchases added after creation must be reflected
+      // Recalculate estimates + sync dates/new tarjetas for active impactos
       if (impacto.estado === 'activo') {
         let changed = false;
-        const updatedTarjetas = impacto.tarjetas.map(t => {
-          const tarjeta = cardMap[t.tarjetaId];
-          if (!tarjeta) return t;
-          const est = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes);
-          const same = est.estimadoContado === t.estimadoContado &&
-                       est.estimadoPlazos  === t.estimadoPlazos  &&
-                       est.estimadoGastos  === t.estimadoGastos;
-          if (!same) { changed = true; return { ...t, ...est }; }
-          return t;
-        });
+
+        // Add tarjetas registered after impacto was created
+        const existingIds = new Set(impacto.tarjetas.map(t => t.tarjetaId));
+        const nuevasTarjetas = tarjetasCredito
+          .filter(t => !existingIds.has(t.id))
+          .map(t => {
+            const inst = instMap[t.institucionId];
+            const est  = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes);
+            const p    = t.ciclo ? calcularCicloParaMes(t.ciclo, mes, festivosMX) : null;
+            changed = true;
+            return {
+              tarjetaId: t.id, nombre: t.nombre,
+              institucion: inst?.nombre || '', color: inst?.color || '#607d8b',
+              limiteTotal: Number(t.limiteTotal) || 0,
+              saldoDisponible: t.saldoDisponible ?? null,
+              fechaCorte: p?.fechaCorte ? toISODate(p.fechaCorte) : null,
+              fechaPago:  p?.fechaPago  ? toISODate(p.fechaPago)  : null,
+              ...est,
+              confirmado: false, montoAPagar: null, pagado: false, fechaPagado: null,
+              fechaCorteConf: null, fechaPagoConf: null, limiteTotalConf: null, saldoDispConf: null,
+            };
+          });
+
+        const updatedTarjetas = [
+          ...impacto.tarjetas.map(t => {
+            const tarjeta = cardMap[t.tarjetaId];
+            if (!tarjeta) return t;
+            const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes);
+            const estSame = est.estimadoContado === t.estimadoContado &&
+                            est.estimadoPlazos  === t.estimadoPlazos  &&
+                            est.estimadoGastos  === t.estimadoGastos;
+            // Always recalculate dates to catch stale/wrong values from previous versions
+            let dateUpdate = {};
+            if (tarjeta.ciclo) {
+              const p = calcularCicloParaMes(tarjeta.ciclo, mes, festivosMX);
+              if (p) {
+                const newCorte  = p.fechaCorte ? toISODate(p.fechaCorte) : null;
+                const newPago   = p.fechaPago  ? toISODate(p.fechaPago)  : null;
+                const nom       = p.fechaPago ? anteriorNomina(p.fechaPago, festivosMX) : null;
+                const newNomina = nom ? toISODate(nom) : null;
+                if (newCorte !== t.fechaCorte || newPago !== t.fechaPago || newNomina !== (t.fechaNomina ?? null)) {
+                  dateUpdate = { fechaCorte: newCorte, fechaPago: newPago, fechaNomina: newNomina };
+                }
+              }
+            }
+            if (!estSame || Object.keys(dateUpdate).length) { changed = true; return { ...t, ...est, ...dateUpdate }; }
+            return t;
+          }),
+          ...nuevasTarjetas,
+        ];
+
         if (changed) {
           impacto = { ...impacto, tarjetas: updatedTarjetas };
           upsert('impacto', mes, { tarjetas: updatedTarjetas }); // fire-and-forget
@@ -102,18 +143,22 @@ async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gasto
   const tarjetas = tarjetasCredito.map(t => {
     const est  = calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes);
     const inst = instMap[t.institucionId];
-    let fechaCorte = null, fechaPago = null;
+    let fechaCorte = null, fechaPago = null, fechaNomina = null;
     if (t.ciclo) {
       const p = calcularCicloParaMes(t.ciclo, mes, festivosMX);
       fechaCorte = p?.fechaCorte ? toISODate(p.fechaCorte) : null;
       fechaPago  = p?.fechaPago  ? toISODate(p.fechaPago)  : null;
+      if (p?.fechaPago) {
+        const nom = anteriorNomina(p.fechaPago, festivosMX);
+        fechaNomina = nom ? toISODate(nom) : null;
+      }
     }
     return {
       tarjetaId: t.id, nombre: t.nombre,
       institucion: inst?.nombre || '', color: inst?.color || '#607d8b',
       limiteTotal:     Number(t.limiteTotal) || 0,
       saldoDisponible: t.saldoDisponible ?? null,
-      fechaCorte, fechaPago, ...est,
+      fechaCorte, fechaPago, fechaNomina, ...est,
       confirmado: false, montoAPagar: null, pagado: false, fechaPagado: null,
       fechaCorteConf: null, fechaPagoConf: null, limiteTotalConf: null, saldoDispConf: null,
     };
@@ -306,12 +351,18 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
     </div>`;
   };
 
+  const _nomFecha = (t) => {
+    if (t.fechaNomina) return t.fechaNomina;
+    const fp = t.fechaPagoConf ?? t.fechaPago;
+    if (!fp) return '';
+    const nom = anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX);
+    return nom ? toISODate(nom) : fp;
+  };
+
   const rows = [...tarjetas]
     .sort((a, b) => {
       if (a.pagado !== b.pagado) return a.pagado ? 1 : -1;
-      const fa = a.fechaPagoConf ?? a.fechaPago ?? '';
-      const fb = b.fechaPagoConf ?? b.fechaPago ?? '';
-      return fa.localeCompare(fb);
+      return _nomFecha(a).localeCompare(_nomFecha(b));
     })
     .map((t, idx) => {
       // Recover original index for edit/pay actions (data-idx must match impacto.tarjetas[])
@@ -341,7 +392,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           const fp = t.fechaPagoConf ?? t.fechaPago;
           const confirmed = t.fechaPagoConf != null;
           if (!fp) return `<div class="d-flex align-items-center justify-content-end gap-1">${CONF_EMPTY}<span class="text-muted">—</span>${eb(idx, 'fechaPago')}</div>`;
-          const nom = anteriorNomina(new Date(fp + 'T12:00:00'), festivosMX);
+          const nom = anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX);
           const nomDay = nom ? Number(toISODate(nom).slice(8, 10)) : Number(fp.slice(8, 10));
           const q = nomDay <= 15 ? '1Q' : '2Q';
           const qCls = nomDay <= 15 ? 'bg-primary-subtle text-primary' : 'bg-success-subtle text-success';

@@ -315,7 +315,8 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   cursor: pointer;
   text-decoration: none;
 }
-.bottom-nav-item i { font-size: 1.2rem; }
+.bottom-nav-item span { display: none; }
+.bottom-nav-item i { font-size: 1.4rem; }
 .bottom-nav-item.active { color: var(--primary); }
 .bottom-nav-item:hover { color: var(--primary-light); }
 
@@ -531,7 +532,13 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   vertical-align: middle;
   border-color: #f3f3f3;
 }
-.table tbody tr:hover { background: #fafbfc; }
+.table tbody tr:nth-child(even) > td,
+.table tbody tr:nth-child(even) > th {
+  --bs-table-accent-bg: rgba(0,0,0,.018);
+  box-shadow: inset 0 0 0 9999px var(--bs-table-accent-bg);
+}
+.table tbody tr:hover > td,
+.table tbody tr:hover > th { background-color: #eef2ff !important; }
 .table tfoot td {
   font-weight: 700;
   background: #f8f9fa;

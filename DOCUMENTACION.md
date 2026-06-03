@@ -174,7 +174,7 @@ service cloud.firestore {
 
 Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que garantiza aislamiento por usuario.
 
-> **Fechas con hora**: `fechaCompra` (contado/msi), `fechaPago` (gastos) y `fechaActualizacionSaldo` se almacenan con hora exacta del momento del registro (`YYYY-MM-DDTHH:MM:SS` o ISO UTC completo). Esto permite comparaciones precisas en el mismo día para el cálculo de saldo disponible.
+> **Fechas con hora**: `fechaCompra` (contado/msi), `fechaPago` (gastos) y `fechaActualizacionSaldo` se almacenan con hora exacta del momento del registro (`YYYY-MM-DDTHH:MM:SS` o ISO UTC completo). Esto permite comparaciones precisas en el mismo día para el cálculo de saldo disponible. Las fechas que corresponden al día actual usan la hora exacta en ese momento; las fechas de otros días usan mediodía (`T12:00:00`) como hora neutra.
 
 ### `instituciones/{id}`
 
@@ -183,6 +183,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `nombre` | string | Nombre de la institución (ej. Banamex) |
 | `numeroCliente` | string? | Número de cliente en la institución |
 | `color` | string | Color hex para la UI (ej. `#e31837`) |
+| `bonificacionConIva` | boolean? | Si la institución aplica IVA (16%) sobre los montos de bonificación/cashback |
 
 ### `tarjetas/{id}`
 
@@ -195,6 +196,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `tipo` | string | `credito`, `debito` o `prestamo` |
 | `clabe` | string? | CLABE interbancaria (18 dígitos) |
 | `numeros` | array | Números de tarjeta (ver estructura abajo) |
+| `favorita` | boolean? | Si está marcada como favorita para aparecer primero en los selects |
 
 **Campos de `credito` y `prestamo`:**
 
@@ -232,6 +234,19 @@ Compras de contado (sin meses) con cualquier tipo de tarjeta.
 | `fechaCompra` | string | Datetime ISO de la compra (`YYYY-MM-DDTHH:MM:SS`) |
 | `total` | number | Monto total de la compra |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
+| `bonificacion` | object? | Bonificación/cashback esperado (ver estructura abajo) |
+
+**Estructura de `bonificacion` (contado y msi):**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `tipo` | string | `porcentaje` o `cantidad` |
+| `valor` | number | Porcentaje (ej. 10) o monto fijo |
+| `fechaMaxima` | string | Fecha límite para recibir la bonificación (`YYYY-MM-DD`) |
+| `enlace` | string? | URL de la promoción |
+| `aplicada` | boolean? | `true` cuando la bonificación ya fue recibida |
+
+> El monto real de la bonificación se calcula dinámicamente: si `tipo = 'porcentaje'`, es `total × valor/100`; si la institución tiene `bonificacionConIva = true`, se multiplica por 1.16. En la tabla se muestra el total neto (tachado el original), el monto de bonificación y la fecha límite con código de color: 🟡 pendiente, 🔴 vencida, 🟢 aplicada.
 
 > La **fecha de pago** no se almacena — para tarjetas de crédito se calcula dinámicamente a partir del ciclo configurado en la tarjeta.
 
@@ -272,6 +287,7 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 | `mesesPagados` | number | Meses ya pagados |
 | `restante` | number? | Monto pendiente; si no está en BD se calcula como `total - mensualidad × mesesPagados` |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
+| `bonificacion` | object? | Bonificación/cashback esperado (misma estructura que `contado`) |
 | `liquidado` | boolean? | `true` cuando la compra está completamente saldada |
 | `fechaLiquidacion` | string? | Fecha ISO en que se marcó como liquidada (`YYYY-MM-DD`) |
 
@@ -333,6 +349,7 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 | `color` | string | Snapshot color institución |
 | `fechaCorte` | string? | Fecha de corte del ciclo para este mes |
 | `fechaPago` | string? | Fecha límite de pago del ciclo |
+| `fechaNomina` | string? | Fecha de nómina anterior al pago (`YYYY-MM-DD`) — usada para ordenamiento |
 | `limiteTotal` | number | Snapshot límite total |
 | `saldoDisponible` | number? | Snapshot saldo disponible al crear |
 | `estimadoContado` | number | Estimado de compras de contado |
@@ -402,7 +419,7 @@ Vista de cartera (wallet) de todas las tarjetas registradas:
 - **En móvil:** stack vertical con efecto de superposición — la tarjeta activa se expande, las demás se colapsan mostrando institución y alias en una línea
 - Filtros por tipo (Todas / Débito / Crédito / Préstamo) y por institución
 - Ordenamiento: institución → tipo (Débito → Crédito → Préstamo) → alias
-- **Frente** (crédito/préstamo): chip de saldo usado calculado (`bi-bar-chart-fill`) + chips de fechas de ciclo activo
+- **Frente** (crédito/préstamo): chip de saldo usado calculado (`bi-bar-chart-fill`) + Para crédito y préstamo: chips con fechas del ciclo activo (corte/pago); cuando el pago anterior está pendiente se muestra primero
 - **Reverso** (crédito/préstamo): chips de Límite total y Saldo disponible en la franja negra superior; CLABE y números en el cuerpo
 - El saldo disponible se muestra en verde si no hay compras posteriores a la última actualización, o en blanco si fue ajustado (ver [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible))
 
@@ -413,11 +430,16 @@ CRUD completo de instituciones y tarjetas:
 - Por tarjeta: tipo, red, números (F/D), CLABE, límite, **saldo disponible calculado**, **saldo usado**, ciclo
 - Saldo disponible: verde si coincide con el valor en BD, negro si hay compras/gastos posteriores que lo redujeron
 - Detección automática de red al pegar número de tarjeta (IIN/BIN)
+- Modal de institución: checkbox **"Las bonificaciones incluyen IVA (16%)"** que guarda `bonificacionConIva` en la institución
 - Modal de tarjeta con secciones dinámicas según tipo:
   - Crédito y préstamo: sección "Saldo disponible" con campos Disponible y Usado (se calculan mutuamente a partir del límite); guarda `saldoDisponible` + `fechaActualizacionSaldo` automáticamente
   - Crédito y préstamo: límite total
   - Crédito: ciclo de facturación
   - Préstamo: número de pago
+- Instituciones agrupadas con acordeón plegable/expandible por institución
+- Tarjetas con botón ⭐ para marcar/desmarcar favoritas
+
+> Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). En ese grupo, cada opción muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`) para identificarlas sin el contexto del optgroup de institución.
 
 ### Compras y Gastos (`#/compras`)
 Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
@@ -429,13 +451,15 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 - Tabla: descripción + enlace, tarjeta (alias + últimos 4), fecha de compra, fecha de pago, total
 - **Fecha de pago:** nómina anterior en azul (icono billetera) + límite del ciclo en gris (icono tarjeta)
 - Para tarjetas de débito la columna de fecha de pago queda vacía
+- **Columna Total:** cuando la compra tiene `bonificacion` configurada, muestra el precio neto junto al total original tachado, el monto de bonificación y la fecha límite con código de color
 
 **Pestaña A Plazos** (colección `msi`)
 - Vista en acordeón **agrupada por institución**; botón **Colapsar/Expandir todo**
 - Filtros: **En curso** (default) / **Liquidados** / **Todos**
-- Por compra: descripción + enlace, tarjeta, meses pagados/total, mensualidad, restante, primer pago, **próximo pago** (solo "En curso"), último pago
+- Tabla "En curso": Compra · Tarjeta · Meses · Primer Pago · Próximo Pago · Último Pago · Mensualidad · Restante · **Total** · Acciones
 - **Próximo Pago:** calculado como el ciclo del mes `primerCicloMes + mesesPagados`; se muestra resaltado en azul (icono billetera + icono tarjeta)
 - Primer y Último pago: mismas dos líneas pero sin resalte
+- **Columna Total:** cuando la compra tiene `bonificacion` configurada, muestra el precio neto (total − bonificación) junto al total original tachado, el monto de bonificación y la fecha límite con código de color (🟡 pendiente, 🔴 vencida, 🟢 aplicada)
 - `restante`: se usa el valor almacenado en BD; si no existe se calcula. Campo editable en el modal, se recalcula automáticamente al cambiar total/mensualidad/mesesPagados
 - **Acción Pagar mensualidad** (`bi-coin`): incrementa `mesesPagados + 1`, reduce `restante - mensualidad`, y suma la mensualidad al `saldoDisponible` de la tarjeta (sin actualizar `fechaActualizacionSaldo`)
 - **Acción Liquidar:** marca la compra como saldada, registra `fechaLiquidacion`
@@ -531,7 +555,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 |---|---|---|
 | `#/` | dashboard.js | Dashboard principal |
 | `#/tarjetas` | tarjetas.js | Vista wallet de tarjetas |
-| `#/compras` | msi.js | Compras y Gastos (De Contado + A Plazos + Gastos) |
+| `#/compras` | msi.js | Compras y Gastos (De Contado + A Plazos + Gastos); `#/compras/gastos` abre directamente la pestaña Gastos |
 | `#/msi` | — | Redirige a `#/compras` (compatibilidad) |
 | `#/fijos` | fijos.js | Gastos fijos |
 | `#/impacto` | impacto.js | Mes actual |
@@ -627,6 +651,8 @@ calcularSaldo(tarjeta, contado, msi, gastos)
 - `admin-tarjetas.js`: columnas Saldo disponible (verde/negro) y Saldo usado en la tabla
 - `tarjetas.js`: chip "Usado" en el frente del plástico; chips "Límite" y "Disponible" en la franja del reverso
 - La acción **Pagar mensualidad** en A Plazos suma la mensualidad a `saldoDisponible` en Firestore sin tocar `fechaActualizacionSaldo`
+
+> `calcularCicloParaMes` revisa 3 meses (actual, anterior y siguiente) para identificar correctamente el período de facturación incluso cuando la fecha de pago cae en día 1 del mes.
 
 ---
 
@@ -780,6 +806,8 @@ Los siguientes campos existieron en versiones anteriores y pueden estar presente
 
 > Las colecciones `contado` y `gastos` son nuevas — no tienen campos obsoletos.
 
+> `favorita` en `tarjetas/{id}` es un campo nuevo opcional — **no es obsoleto**. Puede estar ausente en tarjetas existentes (se trata como `false`).
+
 ---
 
 ## Instituciones Bancarias Soportadas
@@ -799,4 +827,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-06-01 — Rediseño Impacto y Dashboard, FAB registro rápido, impacto-calc.js, fechas con hora, proyección de meses futuros*
+*Última actualización: 2026-06-03 — Bonificación/cashback en compras, IVA en bonificaciones por institución, tarjetas favoritas con institución en selects, columna Total en A Plazos, rayas alternadas en tablas, solo íconos en bottom nav móvil*

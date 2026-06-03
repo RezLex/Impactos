@@ -87,7 +87,7 @@ export async function render(container) {
         const est       = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes);
         const cicloData = calcularCicloParaMes(t.ciclo, mes, festivosMX);
         const fp        = cicloData?.fechaPago ? toISODate(cicloData.fechaPago) : null;
-        const nom       = fp ? anteriorNomina(new Date(fp + 'T12:00:00'), festivosMX) : null;
+        const nom       = fp ? anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX) : null;
         const nomDay    = nom ? Number(toISODate(nom).slice(8, 10)) : null;
         return {
           tarjetaId:    t.id,
@@ -100,11 +100,25 @@ export async function render(container) {
           montoAPagar:  est.estimadoTotal,
           pagado:       false,
         };
-      }).sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
+      });
+      // sort will be applied below alongside stored impacto
       totalAPagar = impactoTarjetas.reduce((s, t) => s + t.estimadoTotal, 0);
       presupuesto = nominaAprox;
       restante    = presupuesto - totalAPagar - gastoDebito;
     }
+
+    // ── Ordenar por fecha nómina (misma regla que Impacto) ──────────────────
+    const _nomFechaDash = (t) => {
+      if (t.fechaNomina) return t.fechaNomina;
+      const fp = t.fechaPagoConf ?? t.fechaPago;
+      if (!fp) return '';
+      const nom = anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX);
+      return nom ? toISODate(nom) : fp;
+    };
+    impactoTarjetas = [...impactoTarjetas].sort((a, b) => {
+      if (a.pagado !== b.pagado) return a.pagado ? 1 : -1;
+      return _nomFechaDash(a).localeCompare(_nomFechaDash(b));
+    });
 
     // ── Desglose Total a pagar ───────────────────────────────────────────────
     const estimadoContado = impactoTarjetas.reduce((s, t) => s + (Number(t.estimadoContado) || 0), 0);
@@ -224,7 +238,7 @@ export async function render(container) {
           <div class="data-card h-100">
             <div class="data-card-header">
               <span><i class="bi bi-receipt-cutoff me-2"></i>Gastos Fijos del mes</span>
-              <a href="#/fijos" class="text-white" style="font-size:0.78rem">Gestionar →</a>
+              <a href="#/compras/gastos" class="text-white" style="font-size:0.78rem">Gestionar →</a>
             </div>
             <div class="dash-panel-content" style="max-height:260px;overflow-y:auto">
               ${gastosDebMes.length === 0 && gastosFijosPendientes.length === 0
@@ -268,7 +282,7 @@ export async function render(container) {
                   ${impactoTarjetas.map(t => {
                     const cortePasado = t.fechaCorte && t.fechaCorte <= hoy;
                     const fp = t.fechaPago;
-                    const nom = fp ? anteriorNomina(new Date(fp + 'T12:00:00'), festivosMX) : null;
+                    const nom = fp ? anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX) : null;
                     const nomDay = nom ? Number(toISODate(nom).slice(8, 10)) : null;
                     const q = nomDay ? (nomDay <= 15 ? '1Q' : '2Q') : null;
                     const qCls = q === '1Q' ? 'bg-primary-subtle text-primary' : 'bg-success-subtle text-success';
