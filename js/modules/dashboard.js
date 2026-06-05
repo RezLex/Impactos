@@ -126,17 +126,12 @@ export async function render(container) {
     const estimadoGastos  = impactoTarjetas.reduce((s, t) => s + (Number(t.estimadoGastos)  || 0), 0);
     const restanteEsperado = nominaAprox - totalAPagar - gastoDebito;
 
-    // ── A Plazos este mes ────────────────────────────────────────────────────
-    const msiEsteMes = msi.filter(m => {
-      if (m.liquidado || Number(m.mesesPagados) >= Number(m.mesesTotal)) return false;
-      const tc = cardMap[m.tarjetaId];
-      return tc?.ciclo && getPlazosMes([m], m.tarjetaId, tc.ciclo, mes, festivosMX).length > 0;
-    }).sort((a, b) => {
-      const pa = (Number(a.mesesPagados) || 0) / (Number(a.mesesTotal) || 1);
-      const pb = (Number(b.mesesPagados) || 0) / (Number(b.mesesTotal) || 1);
-      return pb - pa;
-    });
-    const msiMensualidad = msiEsteMes.reduce((s, m) => s + (Number(m.mensualidad) || 0), 0);
+    // ── Últimas compras (contado + plazos unificados) ────────────────────────
+    const ultimasCompras = [
+      ...[...contado].map(c => ({ ...c, _tipo: 'contado' })),
+      ...[...msi].filter(m => !m.liquidado).map(m => ({ ...m, _tipo: 'plazos' })),
+    ].sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
+     .slice(0, 20);
 
     // ── Gastos fijos pendientes del mes ──────────────────────────────────────
     const gastosFijosPendientes = gastosDebMes
@@ -208,28 +203,51 @@ export async function render(container) {
         <div class="text-muted mt-1" style="font-size:0.72rem;text-align:right">${usadoPct}% utilizado</div>
       </div>
 
-      <!-- ── Row 1: Contado + Gastos Fijos ── -->
+      <!-- ── Row 1: Últimas Compras + Gastos Fijos ── -->
       <div class="row g-3 mb-3">
         <div class="col-lg-6">
           <div class="data-card h-100">
             <div class="data-card-header">
-              <span><i class="bi bi-bag me-2"></i>Compras De Contado recientes</span>
+              <span><i class="bi bi-bag me-2"></i>Últimas compras</span>
               <a href="#/compras" class="text-white" style="font-size:0.78rem">Ver todo →</a>
             </div>
             <div class="dash-panel-content" style="max-height:260px;overflow-y:auto">
-              ${contado.length === 0
-                ? `<div class="empty-state" style="padding:24px 0"><i class="bi bi-bag-x"></i><p>Sin compras de contado</p></div>`
-                : [...contado].sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
-                    .slice(0, 7).map(c => {
-                      const tc = cardMap[c.tarjetaId];
+              ${ultimasCompras.length === 0
+                ? `<div class="empty-state" style="padding:24px 0"><i class="bi bi-bag-x"></i><p>Sin compras registradas</p></div>`
+                : ultimasCompras.map(item => {
+                    const tc     = cardMap[item.tarjetaId];
+                    const enlace = item.enlaceCompra;
+                    const titulo = enlace
+                      ? `<a href="${enlace}" target="_blank" rel="noopener" class="text-reset text-decoration-none">${item.compra}<i class="bi bi-box-arrow-up-right ms-1" style="font-size:0.6rem;opacity:.5"></i></a>`
+                      : item.compra;
+                    const fecha  = item.fechaCompra ? ' · ' + fmtShortDate(item.fechaCompra) : '';
+                    const tarjeta = tc?.nombre || '—';
+
+                    if (item._tipo === 'contado') {
                       return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
                         <div class="flex-grow-1 min-width-0">
-                          <div class="fw-500 text-truncate">${c.compra}</div>
-                          <div class="text-muted" style="font-size:0.72rem">${tc?.nombre || '—'}${c.fechaCompra ? ' · ' + fmtShortDate(c.fechaCompra) : ''}</div>
+                          <div class="fw-500 text-truncate">${titulo}</div>
+                          <div class="text-muted" style="font-size:0.72rem">
+                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:0.6rem;vertical-align:middle">Contado</span>${tarjeta}${fecha}
+                          </div>
                         </div>
-                        <div class="fw-semibold text-end flex-shrink-0">${currency(c.total)}</div>
+                        <div class="fw-semibold text-end flex-shrink-0">${currency(item.total)}</div>
                       </div>`;
-                    }).join('')
+                    } else {
+                      return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
+                        <div class="flex-grow-1 min-width-0">
+                          <div class="fw-500 text-truncate">${titulo}</div>
+                          <div class="text-muted" style="font-size:0.72rem">
+                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:0.6rem;vertical-align:middle">${item.mesesPagados}/${item.mesesTotal} msi</span>${tarjeta}${fecha}
+                          </div>
+                        </div>
+                        <div class="text-end flex-shrink-0">
+                          <div class="fw-semibold">${currency(item.mensualidad)}<span class="text-muted fw-normal" style="font-size:0.68rem">/mes</span></div>
+                          <div style="font-size:0.65rem;color:#aaa">${currency(item.total)} total</div>
+                        </div>
+                      </div>`;
+                    }
+                  }).join('')
               }
             </div>
           </div>
@@ -268,9 +286,9 @@ export async function render(container) {
         </div>
       </div>
 
-      <!-- ── Row 2: Tarjetas + A Plazos ── -->
+      <!-- ── Row 2: Tarjetas ── -->
       <div class="row g-3 mb-3">
-        <div class="col-lg-6">
+        <div class="col-lg-12">
           <div class="data-card h-100">
             <div class="data-card-header">
               <span><i class="bi bi-credit-card me-2"></i>Tarjetas — ${fmtMonth(mes)}</span>
@@ -312,34 +330,6 @@ export async function render(container) {
                   }).join('')}
                 </tbody>
               </table>
-            </div>
-          </div>
-        </div>
-
-        <div class="col-lg-6">
-          <div class="data-card h-100">
-            <div class="data-card-header">
-              <span><i class="bi bi-calendar-range me-2"></i>A Plazos este mes</span>
-              <a href="#/compras" class="text-white" style="font-size:0.78rem">Ver todo →</a>
-            </div>
-            <div class="dash-panel-content" style="max-height:260px;overflow-y:auto">
-              ${msiEsteMes.length === 0
-                ? `<div class="empty-state" style="padding:24px 0"><i class="bi bi-calendar-check"></i><p>Sin mensualidades este mes</p></div>`
-                : msiEsteMes.slice(0, 7).map(m => {
-                    const pct = Math.round((Number(m.mesesPagados) / Number(m.mesesTotal)) * 100);
-                    const tc  = cardMap[m.tarjetaId];
-                    return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
-                      <div class="flex-grow-1 min-width-0">
-                        <div class="fw-500 text-truncate">${m.compra}</div>
-                        <div class="text-muted" style="font-size:0.72rem">${tc?.nombre || '—'} · ${m.mesesPagados}/${m.mesesTotal} meses</div>
-                        <div class="progress mt-1" style="height:4px">
-                          <div class="progress-bar ${pct >= 100 ? 'bg-success' : 'bg-primary'}" style="width:${pct}%"></div>
-                        </div>
-                      </div>
-                      <div class="text-end fw-semibold flex-shrink-0">${currency(m.mensualidad)}</div>
-                    </div>`;
-                  }).join('')
-              }
             </div>
           </div>
         </div>
