@@ -1,4 +1,4 @@
-import { getAll, getById } from '../utils/db.js';
+import { getAll, getById, recentWhere } from '../utils/db.js';
 import { currency, fmtDate, fmtShortDate, currentYYYYMM, fmtMonth } from '../utils/formatters.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
@@ -38,7 +38,7 @@ export async function render(container) {
         getAll('instituciones'),
         getAll('msi'),
         getAll('contado'),
-        getAll('gastos'),
+        getAll('gastos', recentWhere('mes')),
         getAll('gastosFijos'),
         getAll('festivosMX'),
         getById('config', 'general'),

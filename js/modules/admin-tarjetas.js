@@ -1,4 +1,4 @@
-import { getAll, create, update, remove } from '../utils/db.js';
+import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtDate } from '../utils/formatters.js';
 import { calcularSaldo } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
@@ -65,7 +65,7 @@ async function renderView(container) {
       getAll('tarjetas'),
       getAll('contado'),
       getAll('msi'),
-      getAll('gastos'),
+      getAll('gastos', recentWhere('mes')),
     ]);
 
     const saldoMap = new Map(

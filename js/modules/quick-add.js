@@ -1,4 +1,4 @@
-import { getAll, getById, create } from '../utils/db.js';
+import { getAll, getById, create, recentWhere } from '../utils/db.js';
 
 const _addTime = s => {
   if (!s || s.length !== 10) return s;
@@ -84,7 +84,7 @@ async function _loadData() {
     getAll('festivosMX'),
     getAll('contado'),
     getAll('msi'),
-    getAll('gastos'),
+    getAll('gastos', recentWhere('mes')),
     getAll('gastosFijos'),
   ]);
   return { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos };

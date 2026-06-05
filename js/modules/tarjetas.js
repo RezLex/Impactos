@@ -1,4 +1,4 @@
-import { getAll } from '../utils/db.js';
+import { getAll, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtShortDate, currentYYYYMM, nextMonth } from '../utils/formatters.js';
 import { toISODate, calcularMes } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
@@ -56,7 +56,7 @@ async function renderView(container) {
       getAll('festivosMX'),
       getAll('contado'),
       getAll('msi'),
-      getAll('gastos'),
+      getAll('gastos', recentWhere('mes')),
     ]);
 
     const saldoMap = new Map(

@@ -1,4 +1,4 @@
-import { getAll, create, update, remove } from '../utils/db.js';
+import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 
 const _addTime = s => {
   if (!s || s.length !== 10) return s;
@@ -26,7 +26,7 @@ async function renderView(container, initialTab = 'contado') {
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('festivosMX'),
-      getAll('gastos'),
+      getAll('gastos', recentWhere('mes')),
       getAll('gastosFijos'),
     ]);
 

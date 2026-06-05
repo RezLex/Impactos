@@ -1,5 +1,6 @@
 import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
+import { clearCache } from './utils/db.js';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -20,6 +21,7 @@ function onLogin() {
 }
 
 function onLogout() {
+  clearCache();
   document.getElementById('auth-overlay').classList.remove('d-none');
   document.getElementById('app-layout').classList.add('d-none');
   document.getElementById('quick-add-fab').classList.add('d-none');
@@ -106,6 +108,11 @@ function setupFab() {
       openQuickAdd(btn.dataset.action);
     })
   );
+}
+
+// ── Service Worker ───────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────

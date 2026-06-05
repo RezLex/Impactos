@@ -1,4 +1,4 @@
-import { getAll, getById, upsert, update } from '../utils/db.js';
+import { getAll, getById, upsert, update, recentWhere } from '../utils/db.js';
 import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
@@ -30,7 +30,7 @@ async function renderView(container, mes) {
         getAll('instituciones'),
         getAll('contado'),
         getAll('msi'),
-        getAll('gastos'),
+        getAll('gastos', recentWhere('mes')),
         getAll('gastosFijos'),
         getAll('festivosMX'),
         getById('config', 'general'),
