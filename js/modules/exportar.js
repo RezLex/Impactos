@@ -1,4 +1,4 @@
-import { getAll } from '../utils/db.js';
+import { getAll, clearCache } from '../utils/db.js';
 import { toast } from '../utils/ui.js';
 
 const COLLECTIONS = [
@@ -38,6 +38,26 @@ export async function render(container) {
       </div>
     </div>
 
+    <div class="data-card mb-3">
+      <div class="data-card-header">
+        <span><i class="bi bi-trash3 me-2"></i>Mantenimiento</span>
+      </div>
+      <div class="data-card-body">
+        <p style="color:var(--text-muted);font-size:0.87rem;margin-bottom:16px">
+          Limpia los datos en caché de la aplicación. Útil si los datos se ven desactualizados.
+        </p>
+        <div class="d-flex flex-wrap gap-3">
+          <button class="btn btn-outline-warning" id="btn-clear-app-cache">
+            <i class="bi bi-database-x me-2"></i>Limpiar caché de datos
+          </button>
+          <button class="btn btn-outline-danger" id="btn-clear-sw-cache">
+            <i class="bi bi-hdd-x me-2"></i>Limpiar caché del SW
+          </button>
+        </div>
+        <div id="cache-status" style="font-size:0.78rem;color:var(--text-muted);margin-top:10px;display:none"></div>
+      </div>
+    </div>
+
     <div class="data-card">
       <div class="data-card-header">
         <span><i class="bi bi-table me-2"></i>Colecciones incluidas</span>
@@ -58,6 +78,32 @@ export async function render(container) {
 
   document.getElementById('btn-export-excel').addEventListener('click', exportExcel);
   document.getElementById('btn-export-json').addEventListener('click', exportJSON);
+
+  document.getElementById('btn-clear-app-cache').addEventListener('click', () => {
+    clearCache();
+    toast('Caché de datos limpiada');
+  });
+
+  document.getElementById('btn-clear-sw-cache').addEventListener('click', async () => {
+    const btn    = document.getElementById('btn-clear-sw-cache');
+    const status = document.getElementById('cache-status');
+    btn.disabled = true;
+    try {
+      const keys    = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) await reg.update();
+      }
+      status.style.display = 'block';
+      status.textContent   = `${keys.length} caché(s) eliminada(s): ${keys.join(', ') || '—'}`;
+      toast('Caché del SW limpiada — recarga la página para re-cachear');
+    } catch (e) {
+      toast('Error al limpiar caché: ' + e.message, 'danger');
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 async function exportExcel() {

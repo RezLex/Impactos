@@ -75,7 +75,7 @@ import { currency, fmtDate, fmtMonth } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
-import { proyectarMes } from '../utils/impacto-calc.js';
+import { proyectarMes, getGastosDebitoCompleto } from '../utils/impacto-calc.js';
 
 async function _loadData() {
   const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos] = await Promise.all([
@@ -244,11 +244,12 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
       return;
     }
     const tcData    = impacto.tarjetas?.find(t => t.tarjetaId === tarjetaId);
-    const tcActual  = tcData ? (tcData.montoAPagar ?? tcData.estimadoTotal ?? 0) : 0;
-    // Use totales when available to include debit gastos fijos
-    const giActual  = impacto.totales
-      ? (Number(impacto.totales.estimadoCredito) || 0) + (Number(impacto.totales.gastoDebito) || 0)
-      : (impacto.tarjetas || []).reduce((s, t) => s + (t.montoAPagar ?? t.estimadoTotal ?? 0), 0);
+    const tcActual  = tcData ? (Number(tcData.estimadoTotal) || 0) : 0;
+    // Misma fórmula que /impacto: sum(estimadoTotal) + gastos débito en vivo
+    const debitoIds    = new Set(tarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
+    const gastosDebLive = getGastosDebitoCompleto(gastos, gastosFijos, impactoMes, debitoIds, tarjetas, festivosMX);
+    const gastoDebito   = gastosDebLive.reduce((s, g) => s + (Number(g.importe) || 0), 0);
+    const giActual      = (impacto.tarjetas || []).reduce((s, t) => s + (Number(t.estimadoTotal) || 0), 0) + gastoDebito;
 
     document.getElementById('qa-prev-tc-antes').textContent   = currency(tcActual);
     document.getElementById('qa-prev-tc-despues').textContent = currency(tcActual + monthlyAmount);

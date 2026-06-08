@@ -1407,11 +1407,13 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
 // ── Modal Nuevo Gasto Manual ────────────────────────────────────────────────────
 
 function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
-  const isEdit = !!gasto;
-  const cardOpts = buildCardOptions(
+  const isEdit     = !!gasto;
+  const esFijo     = !!(gasto?.gastaFijoId || gasto?.tipo === 'gastaFijo');
+  const cardPool   = esFijo ? tarjetas : tarjetas.filter(t => t.tipo === 'debito');
+  const cardOpts   = buildCardOptions(
     gasto ? { tarjetaId: gasto.tarjetaId, numeroTarjeta: gasto.numeroTarjeta } : null,
     instituciones,
-    tarjetas.filter(t => t.tipo === 'debito'),
+    cardPool,
     false
   );
 
@@ -1425,7 +1427,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
             <input type="text" class="form-control" name="nombre" value="${gasto?.nombre || ''}" required placeholder="Ej: Retiro Banorte">
           </div>
           <div class="col-md-6">
-            <label class="form-label">Tarjeta (débito) *</label>
+            <label class="form-label">Tarjeta${esFijo ? '' : ' (débito)'} *</label>
             <select class="form-select" name="tarjetaId" required>
               <option value="">— Seleccionar —</option>
               ${cardOpts}
@@ -1435,6 +1437,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
             <label class="form-label">Forma de Pago *</label>
             <select class="form-select" name="formaPago" required>
               <option value="">— Seleccionar —</option>
+              <option value="automatico"    ${gasto?.formaPago === 'automatico'    ? 'selected' : ''}>Pago Automático</option>
               <option value="retiro"        ${gasto?.formaPago === 'retiro'        ? 'selected' : ''}>Retiro</option>
               <option value="transferencia" ${gasto?.formaPago === 'transferencia' ? 'selected' : ''}>Transferencia</option>
             </select>

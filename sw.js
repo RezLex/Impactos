@@ -82,14 +82,11 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Archivos locales → cache first, red como fallback
+  // Archivos locales → network first, caché solo si hay error de red (offline)
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      if (cached) return cached;
-      return fetch(e.request).then(res => {
-        if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
-        return res;
-      });
-    })
+    fetch(e.request).then(res => {
+      if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+      return res;
+    }).catch(() => caches.match(e.request))
   );
 });
