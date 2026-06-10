@@ -240,16 +240,31 @@ export function calcularTotalesCredito(tarjetasImpacto) {
  * Calculates live totals for an active impacto given current gastos débito.
  * Does NOT mutate the impacto object.
  */
-export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride = null) {
+export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride = null, saldoVivoMap = null) {
   const pagoCredito     = impacto.tarjetas.reduce((s, t) => s + (t.pagado ? (Number(t.montoAPagar) || 0) : 0), 0);
   const gastoDebito     = gastosDebitoLive.reduce((s, g) => s + (Number(g.importe) || 0), 0);
   const estimadoCredito = impacto.tarjetas.reduce((s, t) => s + (Number(t.estimadoTotal) || 0), 0);
   const nomRef          = nominaOverride ?? Number(impacto.nominaRef) ?? 0;
+
+  let creditoTotal = 0, creditoDisponible = 0;
+  impacto.tarjetas.forEach(t => {
+    creditoTotal += Number(t.limiteTotalConf ?? t.limiteTotal ?? 0);
+    if (t.saldoDispConf != null) {
+      creditoDisponible += Number(t.saldoDispConf);
+    } else if (saldoVivoMap && saldoVivoMap[t.tarjetaId] != null) {
+      creditoDisponible += saldoVivoMap[t.tarjetaId];
+    } else {
+      creditoDisponible += Number(t.saldoDisponible ?? 0);
+    }
+  });
+
   return {
     estimadoCredito, pagoCredito, gastoDebito,
     restanteEsperado: nomRef - estimadoCredito - gastoDebito,
     restante:         (Number(impacto.presupuesto) || 0) - pagoCredito - gastoDebito,
-    ...calcularTotalesCredito(impacto.tarjetas),
+    creditoTotal,
+    creditoDisponible,
+    deudaTotal: Math.max(0, creditoTotal - creditoDisponible),
   };
 }
 

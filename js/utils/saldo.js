@@ -17,25 +17,23 @@ export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = []) {
 
   let gastoPosterior = 0;
 
-  if (fechaRef) {
-    const refDate   = new Date(fechaRef);
-    const posterior = (fecha) => !!fecha && new Date(fecha) > refDate;
+  const refDate   = fechaRef ? new Date(fechaRef) : null;
+  const posterior = (fecha) => !!fecha && (refDate ? new Date(fecha) > refDate : true);
 
-    contado.forEach(c => {
-      if (c.tarjetaId === tarjeta.id && posterior(c.fechaCompra))
-        gastoPosterior += Number(c.total) || 0;
-    });
+  contado.forEach(c => {
+    if (c.tarjetaId === tarjeta.id && posterior(c.fechaCompra))
+      gastoPosterior += Number(c.total) || 0;
+  });
 
-    msi.forEach(m => {
-      if (m.tarjetaId === tarjeta.id && posterior(m.fechaCompra))
-        gastoPosterior += Number(m.total) || 0;
-    });
+  msi.forEach(m => {
+    if (m.tarjetaId === tarjeta.id && posterior(m.fechaCompra))
+      gastoPosterior += Number(m.total) || 0;
+  });
 
-    gastos.forEach(g => {
-      if (g.tarjetaId === tarjeta.id && g.estado === 'registrado' && posterior(g.fechaPago))
-        gastoPosterior += Number(g.importe) || 0;
-    });
-  }
+  gastos.forEach(g => {
+    if (g.tarjetaId === tarjeta.id && g.estado === 'registrado' && posterior(g.fechaPago))
+      gastoPosterior += Number(g.importe) || 0;
+  });
 
   const disponible = Math.max(0, baseDisp - gastoPosterior);
   const usado      = limite != null ? Math.max(0, limite - disponible) : null;

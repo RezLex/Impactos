@@ -39,6 +39,8 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Autenticación exclusiva con Google (usuario único)
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
+- Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
+- Versión de la app visible en el footer del sidebar (`v1.3.0`)
 
 ---
 
@@ -63,19 +65,25 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 ```
 impactos/
 ├── index.html                  # Shell de la SPA — layout completo
+├── manifest.json               # Web App Manifest para PWA
+├── sw.js                       # Service Worker — caché de assets + estrategia network-first
 ├── DOCUMENTACION.md            # Este archivo
+│
+├── icons/
+│   ├── icon-192.png            # Ícono PWA 192×192 (banco estilizado)
+│   └── icon-512.png            # Ícono PWA 512×512
 │
 ├── css/
 │   └── app.css                 # Todos los estilos (variables, layout, componentes)
 │
 └── js/
-    ├── app.js                  # Punto de entrada — auth, nav, router bootstrap
+    ├── app.js                  # Punto de entrada — auth, nav, router bootstrap, SW registration
     ├── auth.js                 # Google Sign-In + verificación de acceso por UID
     ├── firebase.js             # Inicialización Firebase (config + exports db/auth)
     ├── router.js               # Hash router con lazy loading de módulos
     │
     ├── modules/
-    │   ├── dashboard.js        # Vista principal — métricas, impacto del mes, A Plazos, gastos
+    │   ├── dashboard.js        # Vista principal — métricas, impacto del mes, últimas compras, gastos
     │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
     │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
     │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
@@ -84,7 +92,7 @@ impactos/
     │   ├── eventos.js          # Lista de eventos de ofertas
     │   ├── evento-detalle.js   # Detalle de evento: planeación, realizadas, promos
     │   ├── festivos.js         # CRUD de días festivos oficiales MX
-    │   ├── exportar.js         # Exportación de datos a Excel o JSON
+    │   ├── exportar.js         # Exportación de datos a Excel o JSON + mantenimiento de caché
     │   └── quick-add.js        # Registro rápido de compras y gastos (FAB)
     │
     └── utils/
@@ -404,12 +412,14 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 
 ### Dashboard (`#/`)
 Vista principal rediseñada con datos en tiempo real del mes actual:
-- **2 metric cards:** Total a pagar (con desglose Contado/Plazos/Gastos) · Restante y Esperado (divisor vertical)
+- **2 metric cards:** Total a pagar (`estimadoCredito + gastoDebito`, con desglose Contado/Plazos/Gastos) · Restante y Esperado (divisor vertical)
 - **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual
-- **Compras De Contado recientes** — últimas 7 compras ordenadas por fecha
+- **Últimas compras** — hasta 20 compras recientes unificando De Contado y A Plazos, ordenadas por fecha:
+  - Badge `Contado` (gris) para compras de contado
+  - Badge `X/Y msi` (azul) con mensualidad/mes y total subtexto para A Plazos en curso
+  - Enlace directo al comprobante si la compra tiene `enlaceCompra`
 - **Gastos Fijos del mes** — lista con estado (Registrado/Pendiente/Sin registrar) y montos
 - **Tarjetas del mes** — estado de cada tarjeta de crédito (pagada/pendiente/espera corte) con badge 1Q/2Q
-- **A Plazos este mes** — mensualidades que vencen este mes con barra de progreso
 - En desktop el dashboard no requiere scroll de página (altura dinámica calculada con `100dvh`)
 
 ### Tarjetas (`#/tarjetas`)
@@ -496,6 +506,7 @@ Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
 - Presupuesto editable + Nómina ref. + Restante / Esperado
 - Barra de crédito total / disponible / deuda
 - Tabla de tarjetas de crédito: Límite, Disponible, Corte, Pago (con badge 1Q/2Q)
+- **Disponible en tiempo real:** la columna Disponible y el total del métrico usan `calcularSaldo` (mismo cálculo que /tarjetas y /admin) — no el snapshot almacenado en el impacto. Si el campo fue confirmado manualmente (`saldoDispConf`), ese valor tiene precedencia sobre el calculado.
 - Datos confirmables individualmente por campo (✓ verde al confirmar)
 - **Registrar pago**: habilitado después del corte; actualiza `saldoDisponible` y avanza `mesesPagados` de A Plazos
 - **Cerrar mes**: requiere todas las tarjetas pagadas; guarda snapshot + totales
@@ -535,6 +546,10 @@ Exportación completa de los datos del usuario:
 - **Excel:** un archivo `.xlsx` con una hoja por colección (Instituciones, Tarjetas, MSI, Gastos Fijos, Eventos, Festivos MX)
 - **JSON:** archivo `.json` con todas las colecciones en un solo objeto
 - El nombre del archivo incluye la fecha actual (`IMPACTOS_YYYY-MM-DD`)
+
+**Sección Mantenimiento:**
+- **Limpiar caché de datos:** limpia el caché en memoria de Firestore (IndexedDB local). Útil si los datos se ven desactualizados sin recargar.
+- **Limpiar caché del SW:** elimina todas las entradas del Cache Storage del Service Worker y fuerza una recarga del SW. No afecta la base de datos en Firebase.
 
 ### Botón de Registro Rápido (FAB)
 Botón flotante (`+`) disponible en todos los módulos después de iniciar sesión:
@@ -642,7 +657,8 @@ calcularSaldo(tarjeta, contado, msi, gastos)
 1. Toma `tarjeta.saldoDisponible` como base
 2. Suma todos los items de `contado`, `msi` y `gastos` (`estado: 'registrado'`) donde:
    - `tarjetaId === tarjeta.id`
-   - `fechaCompra` / `fechaPago` > `tarjeta.fechaActualizacionSaldo`
+   - Si `fechaActualizacionSaldo` está seteada: `fechaCompra`/`fechaPago` > `fechaActualizacionSaldo`
+   - Si `fechaActualizacionSaldo` es `null`: **se restan todas las compras** (sin filtro de fecha)
 3. `disponible = max(0, saldoDisponible - gastoPosterior)`
 4. `usado = limiteTotal - disponible`
 5. `ajustado = gastoPosterior > 0`
@@ -650,6 +666,7 @@ calcularSaldo(tarjeta, contado, msi, gastos)
 **Usos:**
 - `admin-tarjetas.js`: columnas Saldo disponible (verde/negro) y Saldo usado en la tabla
 - `tarjetas.js`: chip "Usado" en el frente del plástico; chips "Límite" y "Disponible" en la franja del reverso
+- `impacto.js`: columna Disponible en la tabla de tarjetas del mes activo + métrico total de crédito disponible
 - La acción **Pagar mensualidad** en A Plazos suma la mensualidad a `saldoDisponible` en Firestore sin tocar `fechaActualizacionSaldo`
 
 > `calcularCicloParaMes` revisa 3 meses (actual, anterior y siguiente) para identificar correctamente el período de facturación incluso cuando la fecha de pago cae en día 1 del mes.
@@ -683,7 +700,8 @@ calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes) → { es
 calcularTotalesCredito(tarjetasImpacto) → { creditoTotal, creditoDisponible, deudaTotal }
 
 // Totales en tiempo real para impacto activo
-recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?) → totales
+// saldoVivoMap: { [tarjetaId]: number } — saldo calculado por calcularSaldo, omite tarjetas con saldoDispConf
+recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?, saldoVivoMap?) → totales
 
 // Proyección de un mes futuro con pago progresivo simulado
 proyectarMes(mes, currentMes, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos?, todasTarjetas?) → impactoData
@@ -827,4 +845,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-06-03 — Bonificación/cashback en compras, IVA en bonificaciones por institución, tarjetas favoritas con institución en selects, columna Total en A Plazos, rayas alternadas en tablas, solo íconos en bottom nav móvil*
+*Última actualización: 2026-06-10 — PWA (manifest, service worker network-first, íconos), versión en sidebar, últimas compras unificadas (contado+plazos) en dashboard, totalAPagar incluye gastoDebito, mantenimiento de caché en /exportar, saldo disponible en tiempo real en /impacto (calcularSaldo), calcularSaldo resta todas las compras cuando fechaActualizacionSaldo es null*

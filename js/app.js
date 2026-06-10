@@ -2,6 +2,8 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
+const APP_VERSION = '1.3.0';
+
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
   const container = document.getElementById('app-content');
@@ -15,6 +17,8 @@ function onLogin() {
   document.getElementById('auth-overlay').classList.add('d-none');
   document.getElementById('app-layout').classList.remove('d-none');
   document.getElementById('quick-add-fab').classList.remove('d-none');
+  const vEl = document.getElementById('sidebar-version');
+  if (vEl) vEl.textContent = `v${APP_VERSION}`;
   setupNav();
   setupRouter();
   setupFab();

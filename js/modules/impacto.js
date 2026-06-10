@@ -3,6 +3,7 @@ import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth } from
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { navigate } from '../router.js';
+import { calcularSaldo } from '../utils/saldo.js';
 import {
   calcularEstimadoTarjeta, getGastosDebitoMes, getGastosDebitoCompleto,
   calcularTotalesCredito, getPlazosMes, proyectarMes, recalcTotalesImpacto,
@@ -189,8 +190,21 @@ function _renderPage(container, impacto, ctx) {
   const isCerrado   = impacto?.estado === 'cerrado';
   const isProyeccion = impacto?.estado === 'proyeccion';
 
+  const saldoVivoMap = isActivo
+    ? Object.fromEntries(
+        (impacto?.tarjetas || [])
+          .filter(t => t.saldoDispConf == null)
+          .map(t => {
+            const tarjeta = ctx.cardMap[t.tarjetaId];
+            const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+            return [t.tarjetaId, live ? live.disponible : null];
+          })
+          .filter(([, v]) => v != null)
+      )
+    : null;
+
   const totales = impacto
-    ? (isActivo ? recalcTotalesImpacto(impacto, gastosDebitoLive, nominaAprox) : impacto.totales)
+    ? (isActivo ? recalcTotalesImpacto(impacto, gastosDebitoLive, nominaAprox, saldoVivoMap) : impacto.totales)
     : null;
 
   const estadoBadge = isActivo
@@ -227,7 +241,7 @@ function _renderPage(container, impacto, ctx) {
     <p class="text-muted fw-semibold mb-1 mt-4" style="font-size:0.72rem;text-transform:uppercase;letter-spacing:.05em">
       <i class="bi bi-credit-card me-1"></i>Tarjetas de Crédito y Préstamos
     </p>
-    ${_renderTarjetasTable(impacto.tarjetas || [], isActivo, isCerrado, hoy, ctx.festivosMX, isProyeccion)}` : ''}
+    ${_renderTarjetasTable(impacto.tarjetas || [], isActivo, isCerrado, hoy, ctx.festivosMX, isProyeccion, saldoVivoMap)}` : ''}
 
     <!-- Debit gastos -->
     ${impacto ? _renderGastosDebito(gastosDebitoLive, ctx.cardMap) : ''}
@@ -256,7 +270,7 @@ function _renderPage(container, impacto, ctx) {
       btn.addEventListener('click', () => {
         const idx   = Number(btn.dataset.idx);
         const campo = btn.dataset.campo;
-        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx);
+        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, saldoVivoMap);
       }));
 
     container.querySelectorAll('.btn-pagar-tarjeta').forEach(btn =>
@@ -322,7 +336,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
     </div>` : ''}`;
 }
 
-function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [], isProyeccion = false) {
+function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [], isProyeccion = false, saldoVivoMap = null) {
   const CONF_ICON  = `<i class="bi bi-check-circle-fill" style="color:var(--bs-success);font-size:0.65rem;flex-shrink:0"></i>`;
   const CONF_EMPTY = `<i style="font-size:0.65rem;flex-shrink:0;visibility:hidden">·</i>`;
 
@@ -385,7 +399,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
       </td>
       ${!isProyeccion ? `
       <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.limiteTotal, t.limiteTotalConf, idx, 'limiteTotal')}</td>
-      <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.saldoDisponible, t.saldoDispConf, idx, 'saldoDisp')}</td>
+      <td class="text-end" style="white-space:nowrap;${P}">${numCell(saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible, t.saldoDispConf, idx, 'saldoDisp')}</td>
       ` : ''}
       <td class="text-end" style="white-space:nowrap;padding:2px 6px 2px 18px">${dateCell(t.fechaCorte, t.fechaCorteConf, idx, 'fechaCorte')}</td>
       <td class="text-end" style="white-space:nowrap;${P}">${(() => {
@@ -571,12 +585,13 @@ function _showModalPresupuesto(impacto, ctx) {
   });
 }
 
-function _showModalEditCampo(t, idx, campo, impacto, ctx) {
+function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null) {
+  const saldoRef = saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible;
   const defs = {
     fechaCorte:  { label: 'Fecha de corte',       ref: t.fechaCorte,      conf: t.fechaCorteConf,   confKey: 'fechaCorteConf',  type: 'date'   },
     fechaPago:   { label: 'Fecha límite de pago',  ref: t.fechaPago,       conf: t.fechaPagoConf,    confKey: 'fechaPagoConf',   type: 'date'   },
     limiteTotal: { label: 'Límite total',           ref: t.limiteTotal,     conf: t.limiteTotalConf,  confKey: 'limiteTotalConf', type: 'number' },
-    saldoDisp:   { label: 'Saldo disponible',       ref: t.saldoDisponible, conf: t.saldoDispConf,    confKey: 'saldoDispConf',   type: 'number' },
+    saldoDisp:   { label: 'Saldo disponible',       ref: saldoRef,          conf: t.saldoDispConf,    confKey: 'saldoDispConf',   type: 'number' },
     montoAPagar: { label: 'Monto a pagar',          ref: t.estimadoTotal,   conf: t.montoAPagar,      confKey: 'montoAPagar',     type: 'number' },
   };
   const d = defs[campo];

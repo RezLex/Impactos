@@ -78,7 +78,7 @@ export async function render(container) {
     if (impacto) {
       impactoTarjetas = impacto.tarjetas || [];
       const totales    = recalcTotalesImpacto(impacto, gastosDebMes, nominaAprox);
-      totalAPagar      = totales.estimadoCredito;
+      totalAPagar      = totales.estimadoCredito + totales.gastoDebito;
       presupuesto      = Number(impacto.presupuesto) || 0;
       restante         = totales.restante;
     } else {
