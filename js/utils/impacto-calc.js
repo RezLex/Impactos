@@ -249,10 +249,10 @@ export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride =
   let creditoTotal = 0, creditoDisponible = 0;
   impacto.tarjetas.forEach(t => {
     creditoTotal += Number(t.limiteTotalConf ?? t.limiteTotal ?? 0);
-    if (t.saldoDispConf != null) {
-      creditoDisponible += Number(t.saldoDispConf);
-    } else if (saldoVivoMap && saldoVivoMap[t.tarjetaId] != null) {
+    if (saldoVivoMap && saldoVivoMap[t.tarjetaId] != null) {
       creditoDisponible += saldoVivoMap[t.tarjetaId];
+    } else if (t.saldoDispConf != null) {
+      creditoDisponible += Number(t.saldoDispConf);
     } else {
       creditoDisponible += Number(t.saldoDisponible ?? 0);
     }

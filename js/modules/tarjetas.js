@@ -66,8 +66,9 @@ async function renderView(container) {
     const instMap = {};
     instituciones.forEach(i => { instMap[i.id] = i; });
 
-    let filtroTipo = 'todos';
-    let filtroInst = '';
+    let filtroTipo    = 'todos';
+    let filtroInst    = '';
+    let filtroDigitos = '';
 
     container.innerHTML = `
       <div class="page-header">
@@ -90,6 +91,9 @@ async function renderView(container) {
               .map(i => `<option value="${i.id}">${i.nombre}</option>`)
               .join('')}
         </select>
+        <input type="text" id="filtro-digitos" placeholder="···· últimos 4 dígitos"
+               maxlength="4" inputmode="numeric"
+               style="width:148px;padding:4px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--card-bg);color:var(--text-primary);font-size:0.85rem;font-variant-numeric:tabular-nums;outline:none">
       </div>
       <div class="wallet-grid" id="wallet-grid"></div>`;
 
@@ -100,6 +104,13 @@ async function renderView(container) {
         .filter(t => {
           if (filtroTipo !== 'todos' && t.tipo !== filtroTipo) return false;
           if (filtroInst && t.institucionId !== filtroInst) return false;
+          if (filtroDigitos) {
+            const d     = filtroDigitos;
+            const last4 = s => (s || '').replace(/\s/g, '').slice(-4);
+            const matchClabe = last4(t.clabe).startsWith(d);
+            const matchNums  = (t.numeros || []).some(n => last4(n.numero).startsWith(d));
+            if (!matchClabe && !matchNums) return false;
+          }
           return true;
         })
         .sort((a, b) => {
@@ -215,6 +226,11 @@ async function renderView(container) {
 
     document.getElementById('filtro-inst').addEventListener('change', e => {
       filtroInst = e.target.value;
+      renderGrid();
+    });
+
+    document.getElementById('filtro-digitos').addEventListener('input', e => {
+      filtroDigitos = e.target.value.replace(/\D/g, '');
       renderGrid();
     });
 

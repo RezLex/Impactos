@@ -193,7 +193,6 @@ function _renderPage(container, impacto, ctx) {
   const saldoVivoMap = isActivo
     ? Object.fromEntries(
         (impacto?.tarjetas || [])
-          .filter(t => t.saldoDispConf == null)
           .map(t => {
             const tarjeta = ctx.cardMap[t.tarjetaId];
             const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
@@ -279,6 +278,15 @@ function _renderPage(container, impacto, ctx) {
         _showModalPagar(impacto.tarjetas[idx], idx, impacto, ctx);
       }));
   }
+
+  if (isCerrado) {
+    container.querySelectorAll('.btn-edit-campo').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const idx   = Number(btn.dataset.idx);
+        const campo = btn.dataset.campo;
+        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, null);
+      }));
+  }
 }
 
 // ── Section renderers ────────────────────────────────────────────────────────
@@ -340,10 +348,14 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
   const CONF_ICON  = `<i class="bi bi-check-circle-fill" style="color:var(--bs-success);font-size:0.65rem;flex-shrink:0"></i>`;
   const CONF_EMPTY = `<i style="font-size:0.65rem;flex-shrink:0;visibility:hidden">·</i>`;
 
-  const eb = (idx, campo) => isActivo
-    ? `<button class="btn-icon btn-edit-campo" data-idx="${idx}" data-campo="${campo}"
-               style="font-size:0.7rem;opacity:0.45;flex-shrink:0" title="Editar"><i class="bi bi-pencil-fill"></i></button>`
-    : '';
+  const eb = (idx, campo) => {
+    const limitOrDisp = campo === 'limiteTotal' || campo === 'saldoDisp';
+    const show = (isActivo && !limitOrDisp) || isCerrado;
+    return show
+      ? `<button class="btn-icon btn-edit-campo" data-idx="${idx}" data-campo="${campo}"
+                 style="font-size:0.7rem;opacity:0.45;flex-shrink:0" title="Editar"><i class="bi bi-pencil-fill"></i></button>`
+      : '';
+  };
 
   const dateCell = (ref, conf, idx, campo) => {
     const val = conf ?? ref;
@@ -375,8 +387,13 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
 
   const rows = [...tarjetas]
     .sort((a, b) => {
-      if (a.pagado !== b.pagado) return a.pagado ? 1 : -1;
-      return _nomFecha(a).localeCompare(_nomFecha(b));
+      const nomA = _nomFecha(a), nomB = _nomFecha(b);
+      const qA = nomA ? (Number(nomA.slice(8, 10)) <= 15 ? 0 : 1) : 2;
+      const qB = nomB ? (Number(nomB.slice(8, 10)) <= 15 ? 0 : 1) : 2;
+      if (qA !== qB) return qA - qB;
+      const corteA = a.fechaCorteConf ?? a.fechaCorte ?? '';
+      const corteB = b.fechaCorteConf ?? b.fechaCorte ?? '';
+      return corteA.localeCompare(corteB);
     })
     .map((t, idx) => {
       // Recover original index for edit/pay actions (data-idx must match impacto.tarjetas[])
@@ -398,8 +415,8 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
         ${t.pagado ? `<span class="badge bg-success" style="font-size:0.6rem;margin-left:18px">Pagada</span>` : ''}
       </td>
       ${!isProyeccion ? `
-      <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.limiteTotal, t.limiteTotalConf, idx, 'limiteTotal')}</td>
-      <td class="text-end" style="white-space:nowrap;${P}">${numCell(saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible, t.saldoDispConf, idx, 'saldoDisp')}</td>
+      <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.limiteTotal, isActivo ? null : t.limiteTotalConf, idx, 'limiteTotal')}</td>
+      <td class="text-end" style="white-space:nowrap;${P}">${numCell(saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible, isActivo ? null : t.saldoDispConf, idx, 'saldoDisp')}</td>
       ` : ''}
       <td class="text-end" style="white-space:nowrap;padding:2px 6px 2px 18px">${dateCell(t.fechaCorte, t.fechaCorteConf, idx, 'fechaCorte')}</td>
       <td class="text-end" style="white-space:nowrap;${P}">${(() => {
@@ -633,7 +650,6 @@ function _showModalPagar(t, idx, impacto, ctx) {
   const hayNoConf = [
     t.fechaCorteConf == null && t.fechaCorte,
     t.fechaPagoConf  == null && t.fechaPago,
-    t.limiteTotalConf == null,
     t.montoAPagar == null,
   ].some(Boolean);
 
@@ -666,20 +682,22 @@ function _showModalPagar(t, idx, impacto, ctx) {
 async function _registrarPago(t, idx, monto, impacto, ctx) {
   const hoy = toISODate(new Date());
 
-  // 1. Update tarjeta record in impacto
+  // 1. Compute live available credit as base
+  const tarjeta  = ctx.cardMap[t.tarjetaId];
+  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+  const dispActual = live ? live.disponible : Number(t.saldoDisponible ?? 0);
+
+  // 2. Update tarjeta record in impacto (no saldoDispConf — stays live until month closes)
   const updatedTarjetas = [...impacto.tarjetas];
-  const dispActual = Number(t.saldoDispConf ?? t.saldoDisponible ?? 0);
-  updatedTarjetas[idx] = {
-    ...t,
-    pagado:      true,
-    fechaPagado: hoy,
-    saldoDispConf: dispActual + monto,
-  };
+  updatedTarjetas[idx] = { ...t, pagado: true, fechaPagado: hoy };
   await upsert('impacto', impacto.mes, { tarjetas: updatedTarjetas });
 
-  // 2. Update saldoDisponible on the tarjeta document (no fecha update)
+  // 3. Update tarjeta document with new saldo and reset reference date to now
   if (t.tarjetaId && monto > 0) {
-    await update('tarjetas', t.tarjetaId, { saldoDisponible: dispActual + monto });
+    await update('tarjetas', t.tarjetaId, {
+      saldoDisponible:         dispActual + monto,
+      fechaActualizacionSaldo: new Date().toISOString(),
+    });
   }
 
   // 3. Increment mesesPagados for A Plazos whose próximo pago is this month
@@ -701,16 +719,23 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
 }
 
 async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {
-  // Auto-mark 0-amount cards as paid if not already
-  const updatedTarjetas = impacto.tarjetas.map(t =>
-    (!t.pagado && (t.montoAPagar ?? t.estimadoTotal ?? 0) === 0)
-      ? { ...t, pagado: true, fechaPagado: toISODate(new Date()) }
-      : t
-  );
+  const hoy = toISODate(new Date());
+
+  // Snapshot live límite and saldo into conf fields for all tarjetas
+  const updatedTarjetas = impacto.tarjetas.map(t => {
+    const tarjeta    = ctx.cardMap[t.tarjetaId];
+    const live       = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+    const saldoSnap  = live ? live.disponible : (t.saldoDisponible ?? 0);
+    const limiteSnap = Number(ctx.cardMap[t.tarjetaId]?.limiteTotal ?? t.limiteTotal ?? 0);
+    const autoPagado = !t.pagado && (t.montoAPagar ?? t.estimadoTotal ?? 0) === 0
+      ? { pagado: true, fechaPagado: hoy }
+      : {};
+    return { ...t, ...autoPagado, limiteTotalConf: limiteSnap, saldoDispConf: saldoSnap };
+  });
 
   await upsert('impacto', impacto.mes, {
     estado: 'cerrado',
-    fechaCierre: toISODate(new Date()),
+    fechaCierre: hoy,
     tarjetas: updatedTarjetas,
     gastosDebito: gastosDebitoLive,
     totales,
