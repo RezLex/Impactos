@@ -116,8 +116,13 @@ export async function render(container) {
       return nom ? toISODate(nom) : fp;
     };
     impactoTarjetas = [...impactoTarjetas].sort((a, b) => {
-      if (a.pagado !== b.pagado) return a.pagado ? 1 : -1;
-      return _nomFechaDash(a).localeCompare(_nomFechaDash(b));
+      const nomA = _nomFechaDash(a), nomB = _nomFechaDash(b);
+      const qA = nomA ? (Number(nomA.slice(8, 10)) <= 15 ? 0 : 1) : 2;
+      const qB = nomB ? (Number(nomB.slice(8, 10)) <= 15 ? 0 : 1) : 2;
+      if (qA !== qB) return qA - qB;
+      const corteA = a.fechaCorteConf ?? a.fechaCorte ?? '';
+      const corteB = b.fechaCorteConf ?? b.fechaCorte ?? '';
+      return corteA.localeCompare(corteB);
     });
 
     // ── Desglose Total a pagar ───────────────────────────────────────────────
@@ -312,9 +317,11 @@ export async function render(container) {
                           <span style="font-size:0.82rem">${t.institucion ? `<span class="text-muted">${t.institucion}</span> ` : ''}<span class="fw-500">${t.nombre}</span></span>
                         </div>
                       </td>
-                      <td style="padding:4px 8px;white-space:nowrap;color:#666;font-size:0.78rem">
-                        ${fp ? fmtShortDate(fp) : '—'}
-                        ${q ? `<span class="badge ${qCls} ms-1" style="font-size:0.58rem;padding:1px 3px">${q}</span>` : ''}
+                      <td style="padding:4px 8px;white-space:nowrap;font-size:0.78rem">
+                        <div class="d-flex flex-column gap-0" style="line-height:1.4">
+                          ${t.fechaCorte ? `<span class="text-muted"><i class="bi bi-scissors me-1" style="font-size:0.7rem"></i>${fmtShortDate(t.fechaCorteConf ?? t.fechaCorte)}</span>` : ''}
+                          <span style="color:#666"><i class="bi bi-wallet2 me-1" style="font-size:0.7rem"></i>${fp ? fmtShortDate(fp) : '—'}${q ? `<span class="badge ${qCls} ms-1" style="font-size:0.58rem;padding:1px 3px">${q}</span>` : ''}</span>
+                        </div>
                       </td>
                       <td class="text-end fw-semibold" style="padding:4px 8px;white-space:nowrap">${currency(monto)}</td>
                       <td style="padding:4px 8px;text-align:center">

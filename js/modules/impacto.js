@@ -233,7 +233,7 @@ function _renderPage(container, impacto, ctx) {
     </div>
 
     <!-- Budget metrics -->
-    ${impacto ? _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox) : ''}
+    ${impacto ? _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox, gastosDebitoLive) : ''}
 
     <!-- Credit cards -->
     ${impacto ? `
@@ -291,14 +291,19 @@ function _renderPage(container, impacto, ctx) {
 
 // ── Section renderers ────────────────────────────────────────────────────────
 
-function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox = 0) {
+function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox = 0, gastosDebitoLive = []) {
   const pres = Number(impacto.presupuesto) || 0;
   const nom  = isActivo ? nominaAprox : (Number(impacto.nominaRef) || 0);
   const totalAPagar = totales.estimadoCredito + totales.gastoDebito;
 
+  const debitoRegistrado = gastosDebitoLive
+    .filter(g => g.estado === 'registrado')
+    .reduce((s, g) => s + (Number(g.importe) || 0), 0);
+  const debitoPendiente = totales.gastoDebito - debitoRegistrado;
+
   return `
     <div class="row g-2 mb-1">
-      <div class="col-6 col-lg-3">
+      <div class="col-12 col-lg-3">
         <div class="metric-card">
           <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-wallet2" style="color:#2e7d32"></i></div>
           <div class="metric-info">
@@ -310,13 +315,25 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
           </div>
         </div>
       </div>
-      <div class="col-6 col-lg-3">
+      <div class="col-12 col-lg-3">
         <div class="metric-card">
           <div class="metric-icon" style="background:#fce4ec"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
+          ${isProyeccion ? `
           <div class="metric-info">
             <div class="metric-value">${currency(totalAPagar)}</div>
             <div class="metric-label">Total a pagar</div>
-          </div>
+          </div>` : `
+          <div class="metric-info d-flex gap-0" style="min-width:0">
+            <div style="flex:1;min-width:0">
+              <div class="metric-value">${currency(totalAPagar)}</div>
+              <div class="metric-label">Total a pagar</div>
+            </div>
+            <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px">
+              <div style="font-size:0.72rem;color:#999">Pendiente <strong style="color:#c62828">${currency((totales.estimadoCredito - totales.pagoCredito) + debitoPendiente)}</strong></div>
+              <div style="font-size:0.72rem;color:#999">Pagado <strong style="color:#2e7d32">${currency(totales.pagoCredito + debitoRegistrado)}</strong></div>
+            </div>
+          </div>`}
         </div>
       </div>
       <div class="col-12 col-lg-3">
