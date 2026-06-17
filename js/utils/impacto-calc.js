@@ -243,7 +243,8 @@ export function calcularTotalesCredito(tarjetasImpacto) {
 export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride = null, saldoVivoMap = null) {
   const pagoCredito     = impacto.tarjetas.reduce((s, t) => s + (t.pagado ? (Number(t.montoAPagar) || 0) : 0), 0);
   const gastoDebito     = gastosDebitoLive.reduce((s, g) => s + (Number(g.importe) || 0), 0);
-  const estimadoCredito = impacto.tarjetas.reduce((s, t) => s + (Number(t.estimadoTotal) || 0), 0);
+  const estimadoCredito = impacto.tarjetas.reduce((s, t) =>
+    s + (t.montoAPagar != null ? Number(t.montoAPagar) : (Number(t.estimadoTotal) || 0)), 0);
   const nomRef          = nominaOverride ?? Number(impacto.nominaRef) ?? 0;
 
   let creditoTotal = 0, creditoDisponible = 0;
