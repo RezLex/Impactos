@@ -60,16 +60,17 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas, contado, msi, gastos] = await Promise.all([
+    const [instituciones, tarjetas, contado, msi, gastos, pagosDiferidos] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('contado'),
       getAll('msi'),
       getAll('gastos', recentWhere('mes')),
+      getAll('pagosDiferidos'),
     ]);
 
     const saldoMap = new Map(
-      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos)])
+      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos)])
     );
 
     instituciones.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));

@@ -50,17 +50,18 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas, festivosMX, contado, msi, gastos] = await Promise.all([
+    const [instituciones, tarjetas, festivosMX, contado, msi, gastos, pagosDiferidos] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('festivosMX'),
       getAll('contado'),
       getAll('msi'),
       getAll('gastos', recentWhere('mes')),
+      getAll('pagosDiferidos'),
     ]);
 
     const saldoMap = new Map(
-      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos)])
+      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos)])
     );
 
     const instMap = {};

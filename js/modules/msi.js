@@ -20,7 +20,7 @@ export async function render(container, tab = null) {
 
 async function renderView(container, initialTab = 'contado') {
   try {
-    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems] = await Promise.all([
+    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos] = await Promise.all([
       getAll('contado'),
       getAll('msi'),
       getAll('instituciones'),
@@ -28,7 +28,18 @@ async function renderView(container, initialTab = 'contado') {
       getAll('festivosMX'),
       getAll('gastos', recentWhere('mes')),
       getAll('gastosFijos'),
+      getAll('pagosDiferidos'),
     ]);
+
+    // Index pagosDiferidos by compraId for fast lookup
+    const pagosMap = {};
+    pagosDiferidos.forEach(p => {
+      if (!pagosMap[p.compraId]) pagosMap[p.compraId] = [];
+      pagosMap[p.compraId].push(p);
+    });
+
+    // State: which diferido compras are expanded
+    const expandedDiferidos = new Set();
 
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
@@ -195,7 +206,7 @@ async function renderView(container, initialTab = 'contado') {
               </button>
             </div>
             <div class="accordion" id="contado-accordion">
-              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed)).join('')}
+              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed, pagosMap, expandedDiferidos)).join('')}
             </div>`
         }`;
 
@@ -238,6 +249,57 @@ async function renderView(container, initialTab = 'contado') {
           await remove('contado', c.id);
           contadoItems.splice(contadoItems.findIndex(x => x.id === c.id), 1);
           toast('Compra eliminada');
+          renderContado();
+        }));
+
+      content.querySelectorAll('[data-toggle-diferido]').forEach(row =>
+        row.addEventListener('click', e => {
+          if (e.target.closest('a,button')) return;
+          const id = row.dataset.toggleDiferido;
+          if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
+          else expandedDiferidos.add(id);
+          renderContado();
+        }));
+
+      content.querySelectorAll('.btn-add-pago-diferido').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const compraId = btn.dataset.id;
+          const coleccion = btn.dataset.coleccion || 'contado';
+          const compra = contadoItems.find(x => x.id === compraId);
+          if (!compra) return;
+          _showModalPagoDiferido(null, compra, coleccion, pagosDiferidos, () => {
+            expandedDiferidos.add(compraId);
+            renderContado();
+          });
+        }));
+
+      content.querySelectorAll('.btn-edit-pago-diferido').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const pago = pagosDiferidos.find(x => x.id === btn.dataset.id);
+          if (!pago) return;
+          const coleccion = pago.compraColeccion || 'contado';
+          const compra = contadoItems.find(x => x.id === pago.compraId);
+          _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, renderContado);
+        }));
+
+      content.querySelectorAll('.btn-del-pago-diferido').forEach(btn =>
+        btn.addEventListener('click', async e => {
+          e.stopPropagation();
+          const pagoId = btn.dataset.id;
+          const compraId = btn.dataset.compraId;
+          const monto = Number(btn.dataset.monto) || 0;
+          if (!confirm('¿Eliminar este pago?')) return;
+          await remove('pagosDiferidos', pagoId);
+          const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
+          if (idx >= 0) pagosDiferidos.splice(idx, 1);
+          const compra = contadoItems.find(x => x.id === compraId);
+          if (compra) {
+            compra.total = (Number(compra.total) || 0) + monto;
+            await update('contado', { id: compraId, total: compra.total });
+          }
+          toast('Pago eliminado');
           renderContado();
         }));
     };
@@ -341,7 +403,7 @@ async function renderView(container, initialTab = 'contado') {
               </button>
             </div>
             <div class="accordion" id="msi-accordion">
-              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro, plazosCollapsed)).join('')}
+              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro, plazosCollapsed, pagosMap, expandedDiferidos)).join('')}
             </div>`
         }`;
 
@@ -437,6 +499,55 @@ async function renderView(container, initialTab = 'contado') {
           await update('msi', m.id, { liquidado: true, mesesPagados: m.mesesTotal, restante: 0, fechaLiquidacion });
           Object.assign(m, { liquidado: true, mesesPagados: m.mesesTotal, restante: 0, fechaLiquidacion });
           toast('Compra liquidada');
+          renderPlazos(filtroMsi);
+        }));
+
+      content.querySelectorAll('[data-toggle-diferido-msi]').forEach(row =>
+        row.addEventListener('click', e => {
+          if (e.target.closest('a,button')) return;
+          const id = row.dataset.toggleDiferidoMsi;
+          if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
+          else expandedDiferidos.add(id);
+          renderPlazos(filtroMsi);
+        }));
+
+      content.querySelectorAll('.btn-add-pago-diferido-msi').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const compraId = btn.dataset.id;
+          const compra = msiItems.find(x => x.id === compraId);
+          if (!compra) return;
+          _showModalPagoDiferido(null, compra, 'msi', pagosDiferidos, () => {
+            expandedDiferidos.add(compraId);
+            renderPlazos(filtroMsi);
+          });
+        }));
+
+      content.querySelectorAll('.btn-edit-pago-diferido-msi').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const pago = pagosDiferidos.find(x => x.id === btn.dataset.id);
+          if (!pago) return;
+          const compra = msiItems.find(x => x.id === pago.compraId);
+          _showModalPagoDiferido(pago, compra, 'msi', pagosDiferidos, () => renderPlazos(filtroMsi));
+        }));
+
+      content.querySelectorAll('.btn-del-pago-diferido-msi').forEach(btn =>
+        btn.addEventListener('click', async e => {
+          e.stopPropagation();
+          const pagoId  = btn.dataset.id;
+          const compraId = btn.dataset.compraId;
+          const monto   = Number(btn.dataset.monto) || 0;
+          if (!confirm('¿Eliminar este pago?')) return;
+          await remove('pagosDiferidos', pagoId);
+          const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
+          if (idx >= 0) pagosDiferidos.splice(idx, 1);
+          const compra = msiItems.find(x => x.id === compraId);
+          if (compra) {
+            compra.total = (Number(compra.total) || 0) + monto;
+            await update('msi', { id: compraId, total: compra.total });
+          }
+          toast('Pago eliminado');
           renderPlazos(filtroMsi);
         }));
     };
@@ -682,7 +793,7 @@ async function renderView(container, initialTab = 'contado') {
 
 // ── Render helpers ──────────────────────────────────────────────────────────────
 
-function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false) {
+function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false, pagosMap = {}, expandedDiferidos = new Set()) {
   const label      = inst?.nombre || 'Sin institución';
   const color      = inst?.color  || '#607d8b';
   const totalGrupo = items.reduce((s, c) => s + (Number(c.total) || 0), 0);
@@ -710,7 +821,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
               <tbody>
                 ${[...items]
                   .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
-                  .map(c => {
+                  .flatMap(c => {
                     const tc = cardMap[c.tarjetaId];
                     const lastFour = c.numeroTarjeta
                       ? String(c.numeroTarjeta).replace(/\s/g, '').slice(-4)
@@ -720,44 +831,90 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
                         })();
 
-                    let limitePagoDisplay = '—';
-                    let nominaPagoDisplay = null;
-                    if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
-                      const compra = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
+                    const _pagoCell = (fechaISO) => {
+                      if (!tc?.ciclo || !fechaISO) return '—';
+                      const compra = new Date(String(fechaISO).includes('T') ? fechaISO : fechaISO + 'T12:00:00');
                       let year = compra.getFullYear(), month = compra.getMonth();
                       let p = calcularMes(tc.ciclo, year, month, festivosMX);
                       if (p.fechaCorte < compra) {
                         const next = new Date(year, month + 1, 1);
                         p = calcularMes(tc.ciclo, next.getFullYear(), next.getMonth(), festivosMX);
                       }
-                      if (p.fechaPago) {
-                        limitePagoDisplay = fmtDate(toISODate(p.fechaPago));
-                        const nom = anteriorNomina(p.fechaPago, festivosMX);
-                        if (nom) nominaPagoDisplay = fmtDate(toISODate(nom));
-                      }
+                      if (!p.fechaPago) return '—';
+                      const lim = fmtDate(toISODate(p.fechaPago));
+                      const nom = anteriorNomina(p.fechaPago, festivosMX);
+                      return `${nom ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>` : ''}<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${lim}</small>`;
+                    };
+
+                    if (c.diferido) {
+                      const pagos   = (pagosMap[c.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+                      const regTotal = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const pend     = Number(c.totalDiferido || c.total) - regTotal;
+                      const expanded = expandedDiferidos.has(c.id);
+                      const bonif    = !!tc?.inst?.bonificacionConIva;
+
+                      const parentRow = `<tr class="table-warning" style="cursor:pointer" data-toggle-diferido="${c.id}">
+                        <td>
+                          <span class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
+                          <span class="fw-500">${c.compra}</span>
+                          <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
+                          ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                        </td>
+                        <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
+                        <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
+                        <td>—</td>
+                        <td class="text-end">
+                          ${_bonifTotal(c, Number(c.totalDiferido || c.total) || 0, bonif)}
+                          <div style="font-size:0.7rem;line-height:1.3;margin-top:2px">
+                            <span class="text-success">✓ ${currency(regTotal)}</span><br>
+                            <span class="text-danger">○ ${currency(Math.max(0, pend))}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="d-flex gap-1">
+                            <button class="btn-icon btn-add-pago-diferido" data-id="${c.id}" data-coleccion="contado" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>
+                            <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
+                            <button class="btn-icon danger btn-del-contado" data-id="${c.id}"><i class="bi bi-trash3"></i></button>
+                          </div>
+                        </td>
+                      </tr>`;
+
+                      const pagoRows = expanded ? pagos.map(p => `
+                        <tr style="background:#fffde7">
+                          <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+                          <td></td>
+                          <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
+                          <td style="white-space:nowrap">${_pagoCell(p.fecha)}</td>
+                          <td class="text-end">${currency(p.monto)}</td>
+                          <td>
+                            <div class="d-flex gap-1">
+                              <button class="btn-icon btn-edit-pago-diferido" data-id="${p.id}" title="Editar pago"><i class="bi bi-pencil"></i></button>
+                              <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${c.id}" data-monto="${p.monto}" title="Eliminar pago"><i class="bi bi-trash3"></i></button>
+                            </div>
+                          </td>
+                        </tr>`).join('') : '';
+
+                      return [parentRow, pagoRows];
                     }
 
-                    return `<tr>
+                    return [`<tr>
                       <td>
                         <div class="fw-500">
                           ${c.compra}
                           ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
                         </div>
-                                      </td>
+                      </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
-                      <td style="white-space:nowrap">
-                        ${nominaPagoDisplay ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${nominaPagoDisplay}</span><br>` : ''}
-                        ${limitePagoDisplay !== '—' ? `<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${limitePagoDisplay}</small>` : '—'}
-                      </td>
-                      <td class="text-end">${_bonifTotal(c, Number(c.total) || 0, !!cardMap[c.tarjetaId]?.inst?.bonificacionConIva)}</td>
+                      <td style="white-space:nowrap">${_pagoCell(c.fechaCompra)}</td>
+                      <td class="text-end">${_bonifTotal(c, Number(c.total) || 0, !!tc?.inst?.bonificacionConIva)}</td>
                       <td>
                         <div class="d-flex gap-1">
                           <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
                           <button class="btn-icon danger btn-del-contado" data-id="${c.id}"><i class="bi bi-trash3"></i></button>
                         </div>
                       </td>
-                    </tr>`;
+                    </tr>`];
                   }).join('')}
               </tbody>
             </table>
@@ -791,7 +948,7 @@ function calcularPagos(ciclo, fechaCompra, mesesTotal, festivosMX) {
   return { primerPago, ultimoPago: lastPeriodo.fechaPago, cicloYear: year, cicloMonth: month };
 }
 
-function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, collapsed = false) {
+function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, collapsed = false, pagosMap = {}, expandedDiferidos = new Set()) {
   const label        = inst?.nombre || 'Sin institución';
   const color        = inst?.color  || '#607d8b';
   const mostrarTotal = filtro !== 'curso';
@@ -836,7 +993,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
               <tbody>
                 ${[...items]
                   .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
-                  .map(m => {
+                  .flatMap(m => {
                     const tc = cardMap[m.tarjetaId];
                     const { primerPago, ultimoPago, cicloYear, cicloMonth } = calcularPagos(
                       tc?.ciclo, m.fechaCompra, Number(m.mesesTotal) || 0, festivosMX
@@ -851,6 +1008,78 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                           const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
                           return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
                         })();
+
+                    const _pagoMuted = (nom, limite) =>
+                      `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${fmtDate(toISODate(nom))}</span><br>
+                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
+
+                    const _pagoHighlight = (nom, limite) =>
+                      `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>
+                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
+
+                    const primerPagoCell = nomPrimero ? _pagoMuted(nomPrimero, primerPago) : '—';
+
+                    // Diferido parent row
+                    if (m.diferido) {
+                      const pagos    = (pagosMap[m.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+                      const regTotal = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const pend     = Number(m.totalDiferido || m.total) - regTotal;
+                      const expanded = expandedDiferidos.has(m.id);
+                      const bonif    = !!tc?.inst?.bonificacionConIva;
+
+                      const parentRow = `<tr class="table-warning" style="cursor:pointer" data-toggle-diferido-msi="${m.id}">
+                        <td>
+                          <span class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
+                          <span class="fw-500">${m.compra}</span>
+                          <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
+                          ${m.enlaceCompra ? `<a href="${m.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                        </td>
+                        <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
+                        <td class="text-center">${m.mesesTotal || 0} meses</td>
+                        <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
+                        <td style="white-space:nowrap">${primerPagoCell}</td>
+                        ${filtro === 'curso' ? `<td>—</td>` : ''}
+                        <td>—</td>
+                        <td class="text-end">${currency(m.mensualidad)}</td>
+                        <td class="text-end">
+                          ${_bonifTotal(m, Number(m.totalDiferido || m.total) || 0, bonif)}
+                          <div style="font-size:0.7rem;line-height:1.3;margin-top:2px">
+                            <span class="text-success">✓ ${currency(regTotal)}</span><br>
+                            <span class="text-danger">○ ${currency(Math.max(0, pend))}</span>
+                          </div>
+                        </td>
+                        ${filtro === 'curso' ? `<td class="text-end">${_bonifTotal(m, Number(m.totalDiferido || m.total) || 0, bonif)}</td>` : ''}
+                        <td>
+                          <div class="d-flex gap-1">
+                            <button class="btn-icon btn-add-pago-diferido-msi" data-id="${m.id}" data-coleccion="msi" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>
+                            <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
+                            <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
+                          </div>
+                        </td>
+                      </tr>`;
+
+                      const pagoRows = expanded ? pagos.map(p => `
+                        <tr style="background:#fffde7">
+                          <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+                          <td></td>
+                          <td class="text-center">—</td>
+                          <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
+                          <td>—</td>
+                          ${filtro === 'curso' ? `<td>—</td>` : ''}
+                          <td>—</td>
+                          <td class="text-end">${currency(p.monto)}</td>
+                          <td class="text-end">${currency(p.monto)}</td>
+                          ${filtro === 'curso' ? `<td></td>` : ''}
+                          <td>
+                            <div class="d-flex gap-1">
+                              <button class="btn-icon btn-edit-pago-diferido-msi" data-id="${p.id}" title="Editar"><i class="bi bi-pencil"></i></button>
+                              <button class="btn-icon danger btn-del-pago-diferido-msi" data-id="${p.id}" data-compra-id="${m.id}" data-monto="${p.monto}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                            </div>
+                          </td>
+                        </tr>`).join('') : '';
+
+                      return [parentRow, pagoRows];
+                    }
 
                     const restanteEfectivo = m.restante != null
                       ? Number(m.restante)
@@ -867,16 +1096,6 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
                     const isLiquidado = (filtro === 'liquidados' || m.liquidado) && m.fechaLiquidacion;
 
-                    const _pagoMuted = (nom, limite) =>
-                      `<span><i class="bi bi-wallet2 me-1 text-muted" style="font-size:0.75rem"></i>${fmtDate(toISODate(nom))}</span><br>
-                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
-
-                    const _pagoHighlight = (nom, limite) =>
-                      `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>
-                       <small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${fmtDate(toISODate(limite))}</small>`;
-
-                    const primerPagoCell = nomPrimero ? _pagoMuted(nomPrimero, primerPago) : '—';
-
                     const ultimoPagoCell = isLiquidado
                       ? fmtDate(m.fechaLiquidacion)
                       : nomUltimo ? _pagoMuted(nomUltimo, ultimoPago) : '—';
@@ -891,7 +1110,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       }
                     }
 
-                    return `<tr class="${done ? 'table-success' : ''}">
+                    return [`<tr class="${done ? 'table-success' : ''}">
                       <td>
                         <div class="fw-500">
                           ${m.compra}
@@ -921,7 +1140,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                           <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
                         </div>
                       </td>
-                    </tr>`;
+                    </tr>`];
                   }).join('')}
               </tbody>
             </table>
@@ -1099,10 +1318,20 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
             <input type="date" class="form-control" name="fechaCompra" value="${(compra?.fechaCompra || '').slice(0, 10)}" required>
           </div>
           <div class="col-12">
-            <label class="form-label">Total *</label>
+            <div class="form-check form-switch mb-1">
+              <input class="form-check-input" type="checkbox" id="chk-diferido-contado" name="diferido" value="1" ${compra?.diferido ? 'checked' : ''}>
+              <label class="form-check-label" for="chk-diferido-contado">Pagos diferidos</label>
+              <small class="text-muted ms-2">El total se irá cubriendo con pagos posteriores</small>
+            </div>
+          </div>
+          <div class="col-12">
+            <label class="form-label" id="lbl-total-contado">Total *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="total" value="${compra?.total || ''}" required min="0" step="0.01">
+              <input type="number" class="form-control" name="total" value="${compra?.diferido ? (compra?.totalDiferido || compra?.total || '') : (compra?.total || '')}" required min="0" step="0.01">
+            </div>
+            <div id="diferido-hint-contado" class="form-text" style="display:${compra?.diferido ? 'block' : 'none'}">
+              Este monto total afecta al límite disponible. Los pagos registrados lo reducirán.
             </div>
           </div>
           <div class="col-12">
@@ -1119,6 +1348,12 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
 
   _wireBonif();
 
+  const chkDif = document.getElementById('chk-diferido-contado');
+  const hintDif = document.getElementById('diferido-hint-contado');
+  chkDif?.addEventListener('change', () => {
+    hintDif.style.display = chkDif.checked ? 'block' : 'none';
+  });
+
   document.getElementById('btn-save-contado').addEventListener('click', async () => {
     const form = document.getElementById('contado-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
@@ -1126,7 +1361,16 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
     const [tarjetaId, numeroTarjeta] = (data.tarjetaId || '').split('::');
     data.tarjetaId     = tarjetaId;
     data.numeroTarjeta = numeroTarjeta || '';
-    data.total         = Number(data.total);
+    const totalVal = Number(data.total);
+    if (data.diferido === '1') {
+      data.diferido      = true;
+      data.totalDiferido = totalVal;
+      // total = pending amount; on create = full amount; on edit preserve pending
+      data.total = isEdit && compra.diferido ? Number(compra.total) : totalVal;
+    } else {
+      delete data.diferido;
+      data.total = totalVal;
+    }
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
     _saveBonif(data);
@@ -1166,11 +1410,21 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
             <label class="form-label">Fecha de compra *</label>
             <input type="date" class="form-control" name="fechaCompra" value="${(msi?.fechaCompra || '').slice(0, 10)}" required>
           </div>
+          <div class="col-12">
+            <div class="form-check form-switch mb-1">
+              <input class="form-check-input" type="checkbox" id="chk-diferido-msi" name="diferido" value="1" ${msi?.diferido ? 'checked' : ''}>
+              <label class="form-check-label" for="chk-diferido-msi">Pagos diferidos</label>
+              <small class="text-muted ms-2">El total se irá cubriendo con pagos posteriores</small>
+            </div>
+          </div>
           <div class="col-md-6">
             <label class="form-label">Total de la compra *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="total" value="${msi?.total || ''}" required min="0" step="0.01">
+              <input type="number" class="form-control" name="total" value="${msi?.diferido ? (msi?.totalDiferido || msi?.total || '') : (msi?.total || '')}" required min="0" step="0.01">
+            </div>
+            <div id="diferido-hint-msi" class="form-text" style="display:${msi?.diferido ? 'block' : 'none'}">
+              Este monto total afecta al límite disponible. Los pagos registrados lo reducirán.
             </div>
           </div>
           <div class="col-md-3">
@@ -1211,6 +1465,12 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
 
   _wireBonif();
 
+  const chkDifMsi  = document.getElementById('chk-diferido-msi');
+  const hintDifMsi = document.getElementById('diferido-hint-msi');
+  chkDifMsi?.addEventListener('change', () => {
+    hintDifMsi.style.display = chkDifMsi.checked ? 'block' : 'none';
+  });
+
   const _recalcMsi = () => {
     const total    = Number(document.querySelector('#msi-form [name=total]').value)    || 0;
     const meses    = Number(document.querySelector('#msi-form [name=mesesTotal]').value) || 0;
@@ -1240,10 +1500,18 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     const [tarjetaId, numeroTarjeta] = (data.tarjetaId || '').split('::');
     data.tarjetaId     = tarjetaId;
     data.numeroTarjeta = numeroTarjeta || '';
-    data.total         = Number(data.total);
+    const totalVal     = Number(data.total);
     data.mensualidad   = Number(data.mensualidad);
     data.mesesTotal    = Number(data.mesesTotal);
     data.mesesPagados  = Number(data.mesesPagados);
+    if (data.diferido === '1') {
+      data.diferido      = true;
+      data.totalDiferido = totalVal;
+      data.total         = isEdit && msi.diferido ? Number(msi.total) : totalVal;
+    } else {
+      delete data.diferido;
+      data.total = totalVal;
+    }
     data.restante      = data.restante !== '' ? Number(data.restante) : Math.max(0, data.total - data.mensualidad * data.mesesPagados);
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
@@ -1495,4 +1763,81 @@ function _mesSiguiente(mes) {
 function _labelMes(mes) {
   const [y, m] = mes.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+}
+
+// ── Modal Registrar Pago Diferido ──────────────────────────────────────────────
+
+function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved) {
+  if (!compra) return;
+  const isEdit = !!pago;
+  const pagosExistentes = pagosDiferidos.filter(p => p.compraId === compra.id && (!isEdit || p.id !== pago.id));
+  const yaRegistrado    = pagosExistentes.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  const pendiente       = Number(compra.totalDiferido || (compra.total + (isEdit ? Number(pago.monto) : 0))) - yaRegistrado;
+
+  openModal({
+    title: isEdit ? 'Editar Pago' : `Registrar Pago — ${compra.compra}`,
+    body: `
+      <form id="pago-dif-form">
+        <div class="row g-3">
+          <div class="col-12">
+            <div class="alert alert-info py-2 mb-0" style="font-size:0.85rem">
+              <strong>Pendiente por registrar:</strong> ${currency(Math.max(0, pendiente))}
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Fecha de pago *</label>
+            <input type="date" class="form-control" name="fecha" value="${(pago?.fecha || '').slice(0, 10)}" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Monto *</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="monto" value="${pago?.monto || ''}"
+                required min="0.01" step="0.01" max="${pendiente.toFixed(2)}"
+                placeholder="0.00">
+            </div>
+            <div class="form-text">Máximo: ${currency(Math.max(0, pendiente))}</div>
+          </div>
+        </div>
+      </form>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-pago-dif">${isEdit ? 'Guardar' : 'Registrar'}</button>`
+  });
+
+  document.getElementById('btn-save-pago-dif').addEventListener('click', async () => {
+    const form = document.getElementById('pago-dif-form');
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const data = Object.fromEntries(new FormData(form));
+    data.monto = Number(data.monto);
+    if (data.monto <= 0) { toast('El monto debe ser mayor a 0', 'warning'); return; }
+    if (data.monto > pendiente + 0.01) { toast('El monto supera el pendiente', 'warning'); return; }
+    if (data.fecha?.length === 10) data.fecha = _addTime(data.fecha);
+
+    try {
+      if (isEdit) {
+        const diff = data.monto - Number(pago.monto);
+        await update('pagosDiferidos', { id: pago.id, fecha: data.fecha, monto: data.monto });
+        const idx = pagosDiferidos.findIndex(x => x.id === pago.id);
+        if (idx >= 0) { pagosDiferidos[idx].fecha = data.fecha; pagosDiferidos[idx].monto = data.monto; }
+        compra.total = Math.max(0, Number(compra.total) - diff);
+        await update(coleccion, { id: compra.id, total: compra.total });
+      } else {
+        const newPago = {
+          compraId: compra.id,
+          compraColeccion: coleccion,
+          tarjetaId: compra.tarjetaId,
+          fecha: data.fecha,
+          monto: data.monto
+        };
+        const id = await create('pagosDiferidos', newPago);
+        pagosDiferidos.push({ ...newPago, id });
+        compra.total = Math.max(0, Number(compra.total) - data.monto);
+        await update(coleccion, { id: compra.id, total: compra.total });
+      }
+      closeModal();
+      toast(isEdit ? 'Pago actualizado' : 'Pago registrado');
+      onSaved();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
 }

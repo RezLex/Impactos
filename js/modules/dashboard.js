@@ -31,7 +31,7 @@ export async function render(container) {
   try {
     const mes = currentYYYYMM();
 
-    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen] =
+    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -42,6 +42,7 @@ export async function render(container) {
         getAll('gastosFijos'),
         getAll('festivosMX'),
         getById('config', 'general'),
+        getAll('pagosDiferidos'),
       ]);
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -52,7 +53,7 @@ export async function render(container) {
     const hoy             = toISODate(new Date());
 
     // ── Saldo calculado por tarjeta ──────────────────────────────────────────
-    const saldoMap = new Map(tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos)]));
+    const saldoMap = new Map(tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos)]));
 
     // ── Crédito health ───────────────────────────────────────────────────────
     let creditoTotal = 0, creditoDisponible = 0;

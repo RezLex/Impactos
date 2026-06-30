@@ -78,7 +78,7 @@ import { calcularSaldo } from '../utils/saldo.js';
 import { proyectarMes, getGastosDebitoCompleto } from '../utils/impacto-calc.js';
 
 async function _loadData() {
-  const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos] = await Promise.all([
+  const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos] = await Promise.all([
     getAll('instituciones'),
     getAll('tarjetas'),
     getAll('festivosMX'),
@@ -86,8 +86,9 @@ async function _loadData() {
     getAll('msi'),
     getAll('gastos', recentWhere('mes')),
     getAll('gastosFijos'),
+    getAll('pagosDiferidos'),
   ]);
-  return { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos };
+  return { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos };
 }
 
 function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
@@ -204,7 +205,7 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
   }
 
   // ── Saldo (con calcularSaldo para aplicar compras posteriores) ───────────
-  const saldo      = calcularSaldo(tarjeta, contado, msi, gastos);
+  const saldo      = calcularSaldo(tarjeta, contado, msi, gastos, pagosDiferidos);
   const limite     = Number(tarjeta.limiteTotal) || 0;
   const disponible = saldo ? saldo.disponible : (tarjeta.saldoDisponible != null ? Number(tarjeta.saldoDisponible) : null);
   const usado      = saldo ? saldo.usado      : (disponible != null && limite ? limite - disponible : null);

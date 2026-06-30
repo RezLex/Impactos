@@ -24,7 +24,7 @@ async function renderView(container, mes) {
     const isFuture   = mes > mesCurrent;
     const isPast     = mes < mesCurrent;
 
-    const [impactoExistente, tarjetas, instituciones, contado, msi, gastos, gastosFijos, festivosMX, configGen] =
+    const [impactoExistente, tarjetas, instituciones, contado, msi, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -35,6 +35,7 @@ async function renderView(container, mes) {
         getAll('gastosFijos'),
         getAll('festivosMX'),
         getById('config', 'general'),
+        getAll('pagosDiferidos'),
       ]);
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -125,7 +126,7 @@ async function renderView(container, mes) {
 
     const ctx = {
       mes, mesCurrent, isFuture, isPast, tarjetas, cardMap, instMap,
-      tarjetasCredito, festivosMX, configGen, nominaAprox, contado, msi, gastos,
+      tarjetasCredito, festivosMX, configGen, nominaAprox, contado, msi, gastos, pagosDiferidos,
       gastosDebitoLive, debitoIds, container,
     };
 
@@ -195,7 +196,7 @@ function _renderPage(container, impacto, ctx) {
         (impacto?.tarjetas || [])
           .map(t => {
             const tarjeta = ctx.cardMap[t.tarjetaId];
-            const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+            const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
             return [t.tarjetaId, live ? live.disponible : null];
           })
           .filter(([, v]) => v != null)
@@ -731,7 +732,7 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
 
   // 1. Compute live available credit as base
   const tarjeta  = ctx.cardMap[t.tarjetaId];
-  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
   const dispActual = live ? live.disponible : Number(t.saldoDisponible ?? 0);
 
   // 2. Update tarjeta record in impacto (no saldoDispConf — stays live until month closes)
@@ -845,7 +846,7 @@ async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {
   // Snapshot live límite and saldo into conf fields for all tarjetas
   const updatedTarjetas = impacto.tarjetas.map(t => {
     const tarjeta    = ctx.cardMap[t.tarjetaId];
-    const live       = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos) : null;
+    const live       = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
     const saldoSnap  = live ? live.disponible : (t.saldoDisponible ?? 0);
     const limiteSnap = Number(ctx.cardMap[t.tarjetaId]?.limiteTotal ?? t.limiteTotal ?? 0);
     const autoPagado = !t.pagado && (t.montoAPagar ?? t.estimadoTotal ?? 0) === 0
