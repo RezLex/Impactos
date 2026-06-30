@@ -233,7 +233,7 @@ function _renderPage(container, impacto, ctx) {
     </div>
 
     <!-- Budget metrics -->
-    ${impacto ? _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox, gastosDebitoLive) : ''}
+    ${impacto ? _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox, gastosDebitoLive, isCerrado) : ''}
 
     <!-- Credit cards -->
     ${impacto ? `
@@ -243,7 +243,7 @@ function _renderPage(container, impacto, ctx) {
     ${_renderTarjetasTable(impacto.tarjetas || [], isActivo, isCerrado, hoy, ctx.festivosMX, isProyeccion, saldoVivoMap)}` : ''}
 
     <!-- Debit gastos -->
-    ${impacto ? _renderGastosDebito(gastosDebitoLive, ctx.cardMap) : ''}
+    ${impacto ? _renderGastosDebito(gastosDebitoLive, ctx.cardMap, isCerrado) : ''}
 
     ${!impacto ? `<div class="empty-state"><i class="bi bi-bar-chart-line"></i><p>No hay datos de impacto para este mes.</p></div>` : ''}`;
 
@@ -256,11 +256,8 @@ function _renderPage(container, impacto, ctx) {
     container.querySelector('#btn-edit-nomina')?.addEventListener('click', () =>
       _showModalNomina(ctx.configGen, ctx));
 
-    container.querySelector('#btn-presupuesto-edit')?.addEventListener('click', () =>
-      _showModalPresupuesto(impacto, ctx));
-
     container.querySelector('#btn-cerrar-mes')?.addEventListener('click', () => {
-      if (!allConfirmadosPagados) return;
+      if (!allPagados) return;
       if (!confirm(`¿Cerrar el Impacto de ${fmtMonth(mes)}?\n\nEsta acción guarda los totales y el mes quedará en solo lectura.`)) return;
       _cerrarMes(impacto, gastosDebitoLive, totales, ctx);
     });
@@ -279,19 +276,35 @@ function _renderPage(container, impacto, ctx) {
       }));
   }
 
+  container.querySelector('#btn-presupuesto-edit')?.addEventListener('click', () =>
+    _showModalPresupuesto(impacto, totales, isCerrado, ctx));
+
   if (isCerrado) {
     container.querySelectorAll('.btn-edit-campo').forEach(btn =>
       btn.addEventListener('click', () => {
         const idx   = Number(btn.dataset.idx);
         const campo = btn.dataset.campo;
-        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, null);
+        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, null, true, gastosDebitoLive);
       }));
+
+    container.querySelectorAll('.btn-edit-gasto').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const gi = Number(btn.dataset.gi);
+        _showModalEditGasto(gastosDebitoLive[gi], gi, impacto, gastosDebitoLive, totales, ctx);
+      }));
+
+    container.querySelectorAll('.btn-edit-totales').forEach(btn =>
+      btn.addEventListener('click', () =>
+        _showModalEditTotal(btn.dataset.campo, impacto, totales, ctx)));
   }
 }
 
 // ── Section renderers ────────────────────────────────────────────────────────
 
-function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox = 0, gastosDebitoLive = []) {
+function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox = 0, gastosDebitoLive = [], isCerrado = false) {
+  const editBtn = (id) => isCerrado
+    ? `<button class="btn btn-link p-0 ms-1 btn-edit-totales" data-campo="${id}" style="font-size:0.65rem;line-height:1;vertical-align:middle"><i class="bi bi-pencil"></i></button>`
+    : '';
   const pres = Number(impacto.presupuesto) || 0;
   const nom  = isActivo ? nominaAprox : (Number(impacto.nominaRef) || 0);
   const totalAPagar = totales.estimadoCredito + totales.gastoDebito;
@@ -309,7 +322,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
           <div class="metric-info">
             <div class="metric-value d-flex align-items-center gap-1">
               ${isProyeccion ? currency(nom) : currency(pres)}
-              ${isActivo ? `<button class="btn btn-link p-0" id="btn-presupuesto-edit" style="font-size:0.7rem;line-height:1"><i class="bi bi-pencil"></i></button>` : ''}
+              ${!isProyeccion ? `<button class="btn btn-link p-0" id="btn-presupuesto-edit" style="font-size:0.7rem;line-height:1"><i class="bi bi-pencil"></i></button>` : ''}
             </div>
             <div class="metric-label">${isProyeccion ? 'Nómina estimada' : 'Presupuesto'}</div>
           </div>
@@ -318,15 +331,15 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
       <div class="col-12 col-lg-3">
         <div class="metric-card">
           <div class="metric-icon" style="background:#fce4ec"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
-          ${isProyeccion ? `
+          ${isProyeccion || isCerrado ? `
           <div class="metric-info">
-            <div class="metric-value">${currency(totalAPagar)}</div>
-            <div class="metric-label">Total a pagar</div>
+            <div class="metric-value">${currency(totales.pagoCredito + debitoRegistrado)}</div>
+            <div class="metric-label">${isCerrado ? 'Total pagado' : 'Total a pagar'}</div>
           </div>` : `
           <div class="metric-info d-flex gap-0" style="min-width:0">
             <div style="flex:1;min-width:0">
               <div class="metric-value">${currency(totalAPagar)}</div>
-              <div class="metric-label">Total a pagar</div>
+              <div class="metric-label">${isCerrado ? 'Total pagado' : 'Total a pagar'}</div>
             </div>
             <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
             <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px">
@@ -344,7 +357,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
               <div class="metric-value ${totales.restante < 0 ? 'text-danger' : 'text-success'}">${currency(totales.restante)}</div>
               <div class="metric-label">Restante</div>
             </div>
-            ${!isProyeccion ? `<div style="width:1px;background:#e9ecef;margin:2px 8px"></div>
+            ${!isProyeccion && !isCerrado ? `<div style="width:1px;background:#e9ecef;margin:2px 8px"></div>
             <div style="flex:1;min-width:0">
               <div class="metric-value text-muted">${currency(totales.restanteEsperado)}</div>
               <div class="metric-label">Esperado</div>
@@ -355,9 +368,14 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
     </div>
     ${!isProyeccion ? `
     <div class="d-flex flex-wrap gap-3 mb-1" style="font-size:0.75rem;color:#888">
-      <span><i class="bi bi-layers me-1"></i>Crédito total: <strong class="text-body">${currency(totales.creditoTotal)}</strong></span>
-      <span><i class="bi bi-check-circle me-1 text-success"></i>Disponible: <strong class="text-success">${currency(totales.creditoDisponible)}</strong></span>
-      <span><i class="bi bi-exclamation-circle me-1 text-danger"></i>Deuda: <strong class="text-danger">${currency(totales.deudaTotal)}</strong></span>
+      ${(() => {
+        const ct = totales.creditoTotal || 0;
+        const pct = (v) => ct > 0 ? ` <span style="font-size:0.68rem;opacity:0.75">(${Math.round(v / ct * 100)}%)</span>` : '';
+        return `
+      <span><i class="bi bi-layers me-1"></i>Crédito total: <strong class="text-body">${currency(ct)}</strong>${editBtn('creditoTotal')}</span>
+      <span><i class="bi bi-check-circle me-1 text-success"></i>Disponible: <strong class="text-success">${currency(totales.creditoDisponible)}</strong>${pct(totales.creditoDisponible)}${editBtn('creditoDisponible')}</span>
+      <span><i class="bi bi-exclamation-circle me-1 text-danger"></i>Deuda: <strong class="text-danger">${currency(totales.deudaTotal)}</strong>${pct(totales.deudaTotal)}</span>`;
+      })()}
     </div>` : ''}`;
 }
 
@@ -481,7 +499,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           <th class="text-center" style="padding:3px 6px;white-space:nowrap">Disponible</th>` : ''}
           <th class="text-center" style="padding:3px 6px 3px 18px;white-space:nowrap">Corte</th>
           <th class="text-center" style="padding:3px 6px;white-space:nowrap">Pago</th>
-          <th class="text-center" style="padding:3px 6px;white-space:nowrap">A Pagar</th>
+          <th class="text-center" style="padding:3px 6px;white-space:nowrap">${isCerrado ? 'Pagado' : 'A Pagar'}</th>
           ${isActivo ? '<th style="padding:3px 6px;width:36px"></th>' : ''}
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -489,7 +507,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
     </div>`;
 }
 
-function _renderGastosDebito(gastosDebitoLive, cardMap) {
+function _renderGastosDebito(gastosDebitoLive, cardMap, isCerrado = false) {
   if (!gastosDebitoLive.length) return '';
 
   const estadoCell = (estado) => {
@@ -507,10 +525,11 @@ function _renderGastosDebito(gastosDebitoLive, cardMap) {
     <div class="table-wrapper mb-2">
       <table class="table table-sm">
         <thead><tr>
-          <th>Nombre</th><th>Tarjeta</th><th>Fecha</th><th>Estado</th><th class="text-end">Importe</th>
+          <th>Nombre</th><th>Tarjeta</th><th>Fecha</th><th>Estado</th><th class="text-end">${isCerrado ? 'Pagado' : 'Importe'}</th>
+          ${isCerrado ? '<th style="width:32px"></th>' : ''}
         </tr></thead>
         <tbody>
-          ${gastosDebitoLive.map(g => {
+          ${gastosDebitoLive.map((g, gi) => {
             const tc = cardMap[g.tarjetaId];
             const muted = g.estado === 'sin_registro';
             return `<tr class="${muted ? 'text-muted' : ''}">
@@ -519,11 +538,13 @@ function _renderGastosDebito(gastosDebitoLive, cardMap) {
               <td style="white-space:nowrap">${g.fechaPago ? fmtDate(g.fechaPago) : '—'}</td>
               <td>${estadoCell(g.estado)}</td>
               <td class="text-end ${muted ? 'fst-italic' : ''}">${currency(g.importe)}</td>
+              ${isCerrado ? `<td><button class="btn-icon btn-edit-gasto" data-gi="${gi}" style="font-size:0.7rem"><i class="bi bi-pencil"></i></button></td>` : ''}
             </tr>`;
           }).join('')}
           <tr class="fw-semibold table-secondary">
             <td colspan="4">Total débito</td>
             <td class="text-end">${currency(totalDebito)}</td>
+            ${isCerrado ? '<td></td>' : ''}
           </tr>
         </tbody>
       </table>
@@ -595,7 +616,7 @@ function _showModalNomina(configGen, ctx) {
   });
 }
 
-function _showModalPresupuesto(impacto, ctx) {
+function _showModalPresupuesto(impacto, totales, isCerrado, ctx) {
   const val = Number(impacto.presupuesto) || 0;
   openModal({
     title: 'Presupuesto del mes',
@@ -612,14 +633,21 @@ function _showModalPresupuesto(impacto, ctx) {
   });
   document.getElementById('btn-save-pres').addEventListener('click', async () => {
     const v = Number(document.getElementById('input-pres').value) || 0;
-    await upsert('impacto', impacto.mes, { presupuesto: v });
+    const data = { presupuesto: v };
+    if (isCerrado && totales) {
+      data.totales = {
+        ...totales,
+        restante: v - (totales.pagoCredito || 0) - (totales.gastoDebito || 0),
+      };
+    }
+    await upsert('impacto', impacto.mes, data);
     closeModal();
     toast('Presupuesto actualizado');
     await renderView(ctx.container, ctx.mes);
   });
 }
 
-function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null) {
+function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null, isCerrado = false, gastosDebitoLive = []) {
   const saldoRef = saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible;
   const defs = {
     fechaCorte:  { label: 'Fecha de corte',       ref: t.fechaCorte,      conf: t.fechaCorteConf,   confKey: 'fechaCorteConf',  type: 'date'   },
@@ -650,7 +678,9 @@ function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null) {
   const _save = async (newVal) => {
     const updated = [...impacto.tarjetas];
     updated[idx] = { ...t, [d.confKey]: newVal };
-    await upsert('impacto', impacto.mes, { tarjetas: updated });
+    const data = { tarjetas: updated };
+    if (isCerrado) data.totales = _recalcTotalesCerrado(updated, gastosDebitoLive, impacto.presupuesto, impacto.nominaRef, impacto.totales);
+    await upsert('impacto', impacto.mes, data);
     closeModal();
     await renderView(ctx.container, ctx.mes);
   };
@@ -733,6 +763,80 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
       }));
     }
   }
+}
+
+function _recalcTotalesCerrado(tarjetas, gastosDebito, presupuesto, nominaRef, totalesActual) {
+  const pagoCredito     = tarjetas.reduce((s, t) => s + (t.pagado ? (Number(t.montoAPagar) || 0) : 0), 0);
+  const estimadoCredito = tarjetas.reduce((s, t) =>
+    s + (t.montoAPagar != null ? Number(t.montoAPagar) : (Number(t.estimadoTotal) || 0)), 0);
+  const gastoDebito     = gastosDebito.reduce((s, g) => s + (Number(g.importe) || 0), 0);
+  return {
+    ...totalesActual,
+    pagoCredito,
+    estimadoCredito,
+    gastoDebito,
+    restante:         (Number(presupuesto) || 0) - pagoCredito - gastoDebito,
+    restanteEsperado: (Number(nominaRef)   || 0) - estimadoCredito - gastoDebito,
+  };
+}
+
+function _showModalEditGasto(g, gi, impacto, gastosDebitoLive, totales, ctx) {
+  openModal({
+    title: `Editar importe — ${g.nombre}`,
+    body: `<div class="mb-3">
+             <label class="form-label">Importe</label>
+             <div class="input-group">
+               <span class="input-group-text">$</span>
+               <input type="number" class="form-control" id="edit-gasto-val"
+                      value="${(Number(g.importe) || 0).toFixed(2)}" min="0" step="0.01">
+             </div>
+           </div>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-gasto">Guardar</button>`,
+  });
+  document.getElementById('btn-save-gasto').addEventListener('click', async () => {
+    const nuevo = Number(document.getElementById('edit-gasto-val').value) || 0;
+    const updatedGastos = gastosDebitoLive.map((x, i) => i === gi ? { ...x, importe: nuevo } : x);
+    const nuevoTotales  = _recalcTotalesCerrado(impacto.tarjetas, updatedGastos, impacto.presupuesto, impacto.nominaRef, totales);
+    await upsert('impacto', impacto.mes, { gastosDebito: updatedGastos, totales: nuevoTotales });
+    closeModal();
+    toast('Guardado');
+    await renderView(ctx.container, ctx.mes);
+  });
+}
+
+function _showModalEditTotal(campo, impacto, totales, ctx) {
+  const labels = { creditoTotal: 'Crédito total', creditoDisponible: 'Disponible' };
+  const val    = Number(totales[campo]) || 0;
+  openModal({
+    title: `Editar ${labels[campo]}`,
+    body: `<div class="mb-3">
+             <label class="form-label">${labels[campo]}</label>
+             <div class="input-group">
+               <span class="input-group-text">$</span>
+               <input type="number" class="form-control" id="edit-total-val" value="${val.toFixed(2)}" min="0" step="0.01">
+             </div>
+           </div>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-total">Guardar</button>`,
+  });
+  document.getElementById('btn-save-total').addEventListener('click', async () => {
+    const nuevo = Number(document.getElementById('edit-total-val').value) || 0;
+    const nuevoTotales = {
+      ...totales,
+      [campo]: nuevo,
+      deudaTotal: Math.max(0,
+        (campo === 'creditoTotal'      ? nuevo : totales.creditoTotal) -
+        (campo === 'creditoDisponible' ? nuevo : totales.creditoDisponible)
+      ),
+    };
+    await upsert('impacto', impacto.mes, { totales: nuevoTotales });
+    closeModal();
+    toast('Guardado');
+    await renderView(ctx.container, ctx.mes);
+  });
 }
 
 async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {

@@ -256,6 +256,7 @@ async function renderView(container) {
     document.querySelectorAll('.btn-edit-card').forEach(btn =>
       btn.addEventListener('click', () => {
         const card = tarjetas.find(t => t.id === btn.dataset.id);
+        if (!card) return;
         showCardModal(container, instituciones, card.institucionId, card);
       }));
 
