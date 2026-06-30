@@ -250,7 +250,7 @@ async function renderView(container, initialTab = 'contado') {
         if (filtro === 'curso')      return !m.liquidado;
         if (filtro === 'liquidados') return !!m.liquidado;
         return true;
-      });
+      }).sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''));
 
       const byInst = {};
       filtered.forEach(m => {
@@ -824,7 +824,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
           <div class="table-wrapper">
             <table class="table">
               <thead><tr>
-                <th>Compra</th><th>Tarjeta</th><th class="text-center">Meses</th>
+                <th>Compra</th><th>Tarjeta</th><th class="text-center">Meses</th><th style="white-space:nowrap">Fecha compra</th>
                 <th>Primer Pago</th>
                 ${filtro === 'curso' ? `<th>Próximo Pago</th>` : ''}
                 <th>${thUltimo}</th>
@@ -835,11 +835,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
               </tr></thead>
               <tbody>
                 ${[...items]
-                  .sort((a, b) => {
-                    const pa = (Number(a.mesesPagados) || 0) / (Number(a.mesesTotal) || 1);
-                    const pb = (Number(b.mesesPagados) || 0) / (Number(b.mesesTotal) || 1);
-                    return pa !== pb ? pb - pa : a.compra.localeCompare(b.compra, 'es');
-                  })
+                  .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
                   .map(m => {
                     const tc = cardMap[m.tarjetaId];
                     const { primerPago, ultimoPago, cicloYear, cicloMonth } = calcularPagos(
@@ -908,6 +904,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td class="text-center">${m.mesesPagados || 0}/${m.mesesTotal || 0}</td>
+                      <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
                       <td style="white-space:nowrap">${primerPagoCell}</td>
                       ${filtro === 'curso' ? `<td style="white-space:nowrap">${proximoPagoCell}</td>` : ''}
                       <td style="white-space:nowrap">${ultimoPagoCell}</td>
