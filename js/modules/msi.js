@@ -41,6 +41,16 @@ async function renderView(container, initialTab = 'contado') {
     // State: which diferido compras are expanded
     const expandedDiferidos = new Set();
 
+    const _rerenderAcordeon = (acordeonId, renderFn) => {
+      const abiertos = [...document.querySelectorAll(`#${acordeonId} .accordion-collapse.show`)].map(el => el.id);
+      renderFn();
+      abiertos.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains('show'))
+          bootstrap.Collapse.getOrCreateInstance(el, { toggle: false }).show();
+      });
+    };
+
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
 
@@ -255,10 +265,11 @@ async function renderView(container, initialTab = 'contado') {
       content.querySelectorAll('[data-toggle-diferido]').forEach(row =>
         row.addEventListener('click', e => {
           if (e.target.closest('a,button')) return;
+          e.stopPropagation();
           const id = row.dataset.toggleDiferido;
           if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
           else expandedDiferidos.add(id);
-          renderContado();
+          _rerenderAcordeon('contado-accordion', renderContado);
         }));
 
       content.querySelectorAll('.btn-add-pago-diferido').forEach(btn =>
@@ -505,10 +516,11 @@ async function renderView(container, initialTab = 'contado') {
       content.querySelectorAll('[data-toggle-diferido-msi]').forEach(row =>
         row.addEventListener('click', e => {
           if (e.target.closest('a,button')) return;
+          e.stopPropagation();
           const id = row.dataset.toggleDiferidoMsi;
           if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
           else expandedDiferidos.add(id);
-          renderPlazos(filtroMsi);
+          _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
         }));
 
       content.querySelectorAll('.btn-add-pago-diferido-msi').forEach(btn =>
