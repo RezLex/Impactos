@@ -1,4 +1,5 @@
 import { getAll, getById, create, recentWhere } from '../utils/db.js';
+import { r2 } from '../utils/formatters.js';
 
 const _addTime = s => {
   if (!s || s.length !== 10) return s;
@@ -443,7 +444,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     data.mensualidad   = Number(data.mensualidad);
     data.mesesTotal    = Number(data.mesesTotal);
     data.mesesPagados  = 0;
-    data.restante      = Math.max(0, data.total - data.mensualidad * data.mesesPagados);
+    data.restante      = r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
     _saveBonifQA(data);

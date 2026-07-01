@@ -1,5 +1,7 @@
 import { calcularMes, toISODate, anteriorNomina } from './ciclo.js';
 
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
 // ── Private helpers ─────────────────────────────────────────────────────────
 
 function _fechaPagoFromDate(fechaISO, ciclo, festivosMX) {
@@ -110,11 +112,31 @@ export function calcularFechaPagoFromDate(fechaISO, ciclo, festivosMX) {
   return _fechaPagoFromDate(fechaISO, ciclo, festivosMX);
 }
 
-/** De Contado items for a tarjeta whose anteriorNomina(fechaPago) falls in mes. */
+/** De Contado items for a tarjeta whose anteriorNomina(fechaPago) falls in mes.
+ *  Diferido items are excluded once total < 0.005 (fully registered via pagos). */
 export function getContadoMes(contadoItems, tarjetaId, ciclo, mes, festivosMX) {
   return contadoItems.filter(c => {
     if (c.tarjetaId !== tarjetaId) return false;
+    if (c.diferido && (Number(c.total) || 0) < 0.005) return false;
     return _enMes(_fechaPagoFromDate(c.fechaCompra, ciclo, festivosMX), mes, festivosMX);
+  });
+}
+
+/** Pagos diferidos (contado or msi) for a tarjeta whose próximo pago anteriorNomina falls in mes. */
+export function getPagosDiferidosMes(pagosDiferidos, tarjetaId, ciclo, mes, festivosMX, diferidoMap) {
+  if (!ciclo) return [];
+  return pagosDiferidos.filter(p => {
+    if (p.tarjetaId !== tarjetaId) return false;
+    const compra = diferidoMap[p.compraId];
+    if (!compra) return false;
+    const mesesPag = Number(p.mesesPagados) || 0;
+    // mesesTotal || 1: contado diferido pagos are single-occurrence; they retire after cerrarMes.
+    if (mesesPag >= (Number(compra.mesesTotal) || 1)) return false;
+    const pc = _primerCiclo(ciclo, p.fecha, festivosMX);
+    if (!pc) return false;
+    const nx = new Date(pc.cicloYear, pc.cicloMonth + mesesPag, 1);
+    const pp = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+    return _enMes(pp.fechaPago, mes, festivosMX);
   });
 }
 
@@ -123,6 +145,7 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   if (!ciclo) return [];
   return msiItems.filter(m => {
     if (m.tarjetaId !== tarjetaId || m.liquidado) return false;
+    if (m.diferido && (Number(m.total) || 0) < 0.005) return false; // ya todo registrado en pagos
     if (Number(m.mesesPagados) >= Number(m.mesesTotal)) return false;
     const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
     if (!pc) return false;
@@ -207,18 +230,43 @@ export function getGastosDebitoCompleto(gastosItems, gastosFijosItems, mes, debi
 }
 
 /** Calculates estimated amounts for one credit/loan card in a given month. */
-export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes) {
+export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = []) {
   const ciclo = tarjeta.ciclo || null;
   const tid   = tarjeta.id;
+
+  // Unified map covers both MSI and contado diferido parents.
+  const diferidoMap = {};
+  msiItems.forEach(m => { if (m.diferido) diferidoMap[m.id] = m; });
+  contadoItems.forEach(c => { if (c.diferido) diferidoMap[c.id] = c; });
+
+  const pagosDifMes = getPagosDiferidosMes(pagosDiferidos, tid, ciclo, mes, festivosMX, diferidoMap);
+
   const estimadoContado = getContadoMes(contadoItems, tid, ciclo, mes, festivosMX)
     .reduce((s, c) => s + (Number(c.total) || 0), 0);
-  const estimadoPlazos  = getPlazosMes(msiItems, tid, ciclo, mes, festivosMX)
-    .reduce((s, m) => s + (Number(m.mensualidad) || 0), 0);
-  const estimadoGastos  = getGastosCreditoMes(gastosItems, tid, ciclo, mes, festivosMX)
+
+  const estimadoPlazos = getPlazosMes(msiItems, tid, ciclo, mes, festivosMX)
+    .reduce((s, m) => {
+      if (!m.diferido) return s + (Number(m.mensualidad) || 0);
+      // m.total is already reduced by every registered pago's monto,
+      // so total/mesesTotal gives the true unregistered monthly portion.
+      return s + r2(Number(m.total) / Math.max(1, Number(m.mesesTotal)));
+    }, 0);
+
+  const estimadoGastos = getGastosCreditoMes(gastosItems, tid, ciclo, mes, festivosMX)
     .reduce((s, g) => s + (Number(g.importe) || 0), 0);
+
+  const estimadoPagosDif = pagosDifMes.reduce((s, p) => {
+    const compra = diferidoMap[p.compraId];
+    // Contado diferido pagos have no mensualidad — the full monto is due in one payment.
+    const men = p.mensualidad != null ? Number(p.mensualidad)
+              : compra?.mensualidad  != null ? Number(compra.mensualidad)
+              : Number(p.monto);
+    return s + (men || 0);
+  }, 0);
+
   return {
     estimadoContado, estimadoPlazos, estimadoGastos,
-    estimadoTotal: estimadoContado + estimadoPlazos + estimadoGastos,
+    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + estimadoPagosDif),
   };
 }
 
@@ -232,7 +280,7 @@ export function calcularTotalesCredito(tarjetasImpacto) {
   return {
     creditoTotal,
     creditoDisponible,
-    deudaTotal: Math.max(0, creditoTotal - creditoDisponible),
+    deudaTotal: r2(Math.max(0, creditoTotal - creditoDisponible)),
   };
 }
 
@@ -261,11 +309,11 @@ export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride =
 
   return {
     estimadoCredito, pagoCredito, gastoDebito,
-    restanteEsperado: nomRef - estimadoCredito - gastoDebito,
-    restante:         (Number(impacto.presupuesto) || 0) - pagoCredito - gastoDebito,
+    restanteEsperado: r2(nomRef - estimadoCredito - gastoDebito),
+    restante:         r2((Number(impacto.presupuesto) || 0) - pagoCredito - gastoDebito),
     creditoTotal,
     creditoDisponible,
-    deudaTotal: Math.max(0, creditoTotal - creditoDisponible),
+    deudaTotal: r2(Math.max(0, creditoTotal - creditoDisponible)),
   };
 }
 
@@ -273,7 +321,7 @@ export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride =
  * Projects estimated impacto data for a future month.
  * Simulates progressive monthly payment of A Plazos.
  */
-export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItems, tarjetasCredito, nominaAprox, festivosMX, gastosFijosItems = [], todasTarjetas = []) {
+export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItems, tarjetasCredito, nominaAprox, festivosMX, gastosFijosItems = [], todasTarjetas = [], pagosDiferidos = []) {
   const targetInt = _mesInt(mes);
 
   // Simulate msiItems with projected mesesPagados
@@ -300,7 +348,7 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
   const debitoIds = new Set(todasTarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
 
   const tarjetas = tarjetasCredito.map(t => {
-    const est = calcularEstimadoTarjeta(t, contadoItems, msiProjected, gastosItems, festivosMX, mes);
+    const est = calcularEstimadoTarjeta(t, contadoItems, msiProjected, gastosItems, festivosMX, mes, pagosDiferidos);
 
     // Gastos fijos de crédito: incluir si el card tiene pago en este mes (vía nómina anterior)
     // y el gasto fijo ocurre en el mes calendario objetivo
@@ -322,14 +370,14 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
       fechaCorte = p?.fechaCorte ? toISODate(p.fechaCorte) : null;
       fechaPago  = p?.fechaPago  ? toISODate(p.fechaPago)  : null;
     }
-    const estimadoGastos = est.estimadoGastos + estimadoGastosFijos;
+    const estimadoGastos = r2(est.estimadoGastos + estimadoGastosFijos);
     return {
       tarjetaId: t.id, nombre: t.nombre, institucion: '', color: '#607d8b',
       limiteTotal: Number(t.limiteTotal) || 0, saldoDisponible: t.saldoDisponible ?? null,
       fechaCorte, fechaPago,
       ...est,
       estimadoGastos,
-      estimadoTotal: est.estimadoContado + est.estimadoPlazos + estimadoGastos,
+      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos),
       confirmado: false, pagado: false,
     };
   });
@@ -337,16 +385,16 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
   const gastosDeb   = gastosFijosItems.length
     ? getGastosDebitoCompleto(gastosItems, gastosFijosItems, mes, debitoIds, todasTarjetas, festivosMX)
     : getGastosDebitoMes(gastosItems, mes);
-  const gastoDebito = gastosDeb.reduce((s, g) => s + (Number(g.importe) || 0), 0);
-  const estCredito  = tarjetas.reduce((s, t) => s + t.estimadoTotal, 0);
+  const gastoDebito = r2(gastosDeb.reduce((s, g) => s + (Number(g.importe) || 0), 0));
+  const estCredito  = r2(tarjetas.reduce((s, t) => s + t.estimadoTotal, 0));
 
   return {
     mes, estado: 'proyeccion', presupuesto: nominaAprox, nominaRef: nominaAprox,
     tarjetas, gastosDebito: gastosDeb,
     totales: {
       estimadoCredito: estCredito, pagoCredito: 0, gastoDebito,
-      restanteEsperado: nominaAprox - estCredito - gastoDebito,
-      restante:         nominaAprox - estCredito - gastoDebito,
+      restanteEsperado: r2(nominaAprox - estCredito - gastoDebito),
+      restante:         r2(nominaAprox - estCredito - gastoDebito),
       ...calcularTotalesCredito(tarjetas),
     },
   };

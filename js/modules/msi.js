@@ -8,7 +8,7 @@ const _addTime = s => {
     ? `${s}T${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}:${String(n.getSeconds()).padStart(2,'0')}`
     : `${s}T12:00:00`;
 };
-import { currency, fmtDate } from '../utils/formatters.js';
+import { currency, fmtDate, r2 } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 
@@ -43,12 +43,41 @@ async function renderView(container, initialTab = 'contado') {
 
     const _rerenderAcordeon = (acordeonId, renderFn) => {
       const abiertos = [...document.querySelectorAll(`#${acordeonId} .accordion-collapse.show`)].map(el => el.id);
+      const scrollY = window.scrollY;
+      // Rebuild pagosMap from current pagosDiferidos before re-render
+      Object.keys(pagosMap).forEach(k => delete pagosMap[k]);
+      pagosDiferidos.forEach(p => {
+        if (!pagosMap[p.compraId]) pagosMap[p.compraId] = [];
+        pagosMap[p.compraId].push(p);
+      });
       renderFn();
+      // Restore open panels without animation, then restore scroll
       abiertos.forEach(id => {
         const el = document.getElementById(id);
-        if (el && !el.classList.contains('show'))
-          bootstrap.Collapse.getOrCreateInstance(el, { toggle: false }).show();
+        if (el && !el.classList.contains('show')) {
+          el.style.transition = 'none';
+          el.classList.add('show');
+          const btn = document.querySelector(`[data-bs-target="#${id}"]`);
+          if (btn) btn.classList.remove('collapsed');
+          requestAnimationFrame(() => { el.style.transition = ''; });
+        }
       });
+      window.scrollTo(0, scrollY);
+    };
+
+    const _buildPagoCellHtml = (tc, fechaISO) => {
+      if (!tc?.ciclo || !fechaISO) return '—';
+      const dt = new Date(String(fechaISO).includes('T') ? fechaISO : fechaISO + 'T12:00:00');
+      let year = dt.getFullYear(), month = dt.getMonth();
+      let p = calcularMes(tc.ciclo, year, month, festivosMX);
+      if (p.fechaCorte < dt) {
+        const next = new Date(year, month + 1, 1);
+        p = calcularMes(tc.ciclo, next.getFullYear(), next.getMonth(), festivosMX);
+      }
+      if (!p.fechaPago) return '—';
+      const lim = fmtDate(toISODate(p.fechaPago));
+      const nom = anteriorNomina(p.fechaPago, festivosMX);
+      return `${nom ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>` : ''}<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${lim}</small>`;
     };
 
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -267,9 +296,60 @@ async function renderView(container, initialTab = 'contado') {
           if (e.target.closest('a,button')) return;
           e.stopPropagation();
           const id = row.dataset.toggleDiferido;
-          if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
-          else expandedDiferidos.add(id);
-          _rerenderAcordeon('contado-accordion', renderContado);
+          const isExpanding = !expandedDiferidos.has(id);
+          if (isExpanding) expandedDiferidos.add(id); else expandedDiferidos.delete(id);
+
+          const iconEl = row.querySelector('[data-dif-icon]');
+          if (iconEl) iconEl.textContent = isExpanding ? '▼' : '▶';
+
+          const tbody = row.closest('tbody');
+          tbody.querySelectorAll(`[data-pago-de="${id}"]`).forEach(r => r.remove());
+
+          if (isExpanding) {
+            const compra = contadoItems.find(x => x.id === id);
+            if (!compra) return;
+            const tc = cardMap[compra.tarjetaId];
+            const pagos = pagosDiferidos.filter(p => p.compraId === id)
+              .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+            const childHtml = pagos.map(p => `
+              <tr data-pago-de="${id}" style="background:#fffde7">
+                <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+                <td></td>
+                <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
+                <td style="white-space:nowrap">${_buildPagoCellHtml(tc, p.fecha)}</td>
+                <td class="text-end">${currency(p.monto)}</td>
+                <td>
+                  <div class="d-flex gap-1">
+                    <button class="btn-icon btn-edit-pago-diferido" data-id="${p.id}"><i class="bi bi-pencil"></i></button>
+                    <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${id}" data-monto="${p.monto}"><i class="bi bi-trash3"></i></button>
+                  </div>
+                </td>
+              </tr>`).join('');
+            if (childHtml) {
+              row.insertAdjacentHTML('afterend', childHtml);
+              tbody.querySelectorAll(`[data-pago-de="${id}"] .btn-edit-pago-diferido`).forEach(btn =>
+                btn.addEventListener('click', e => {
+                  e.stopPropagation();
+                  const pago = pagosDiferidos.find(x => x.id === btn.dataset.id);
+                  if (!pago) return;
+                  _showModalPagoDiferido(pago, compra, 'contado', pagosDiferidos,
+                    () => _rerenderAcordeon('contado-accordion', renderContado));
+                }));
+              tbody.querySelectorAll(`[data-pago-de="${id}"] .btn-del-pago-diferido`).forEach(btn =>
+                btn.addEventListener('click', async e => {
+                  e.stopPropagation();
+                  const pagoId = btn.dataset.id;
+                  const monto = Number(btn.dataset.monto) || 0;
+                  if (!confirm('¿Eliminar este pago?')) return;
+                  await remove('pagosDiferidos', pagoId);
+                  pagosDiferidos.splice(pagosDiferidos.findIndex(x => x.id === pagoId), 1);
+                  compra.total = (Number(compra.total) || 0) + monto;
+                  await update('contado', compra.id, { total: compra.total });
+                  toast('Pago eliminado');
+                  _rerenderAcordeon('contado-accordion', renderContado);
+                }));
+            }
+          }
         }));
 
       content.querySelectorAll('.btn-add-pago-diferido').forEach(btn =>
@@ -281,7 +361,7 @@ async function renderView(container, initialTab = 'contado') {
           if (!compra) return;
           _showModalPagoDiferido(null, compra, coleccion, pagosDiferidos, () => {
             expandedDiferidos.add(compraId);
-            renderContado();
+            _rerenderAcordeon('contado-accordion', renderContado);
           });
         }));
 
@@ -292,7 +372,8 @@ async function renderView(container, initialTab = 'contado') {
           if (!pago) return;
           const coleccion = pago.compraColeccion || 'contado';
           const compra = contadoItems.find(x => x.id === pago.compraId);
-          _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, renderContado);
+          _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos,
+            () => _rerenderAcordeon('contado-accordion', renderContado));
         }));
 
       content.querySelectorAll('.btn-del-pago-diferido').forEach(btn =>
@@ -308,10 +389,10 @@ async function renderView(container, initialTab = 'contado') {
           const compra = contadoItems.find(x => x.id === compraId);
           if (compra) {
             compra.total = (Number(compra.total) || 0) + monto;
-            await update('contado', { id: compraId, total: compra.total });
+            await update('contado', compraId, { total: compra.total });
           }
           toast('Pago eliminado');
-          renderContado();
+          _rerenderAcordeon('contado-accordion', renderContado);
         }));
     };
 
@@ -449,7 +530,7 @@ async function renderView(container, initialTab = 'contado') {
           const restanteBase  = m.restante != null
             ? Number(m.restante)
             : Math.max(0, (Number(m.total) || 0) - (Number(m.mensualidad) || 0) * (Number(m.mesesPagados) || 0));
-          const nuevoRestante = Math.max(0, restanteBase - (Number(m.mensualidad) || 0));
+          const nuevoRestante = r2(Math.max(0, restanteBase - (Number(m.mensualidad) || 0)));
           const mensualidad   = Number(m.mensualidad) || 0;
 
           const ops = [update('msi', m.id, { mesesPagados: nuevosMeses, restante: nuevoRestante })];
@@ -457,7 +538,7 @@ async function renderView(container, initialTab = 'contado') {
           // Sumar mensualidad al saldo disponible de la tarjeta (sin tocar fechaActualizacionSaldo)
           const tc = cardMap[m.tarjetaId];
           if (tc && tc.saldoDisponible != null && mensualidad > 0) {
-            const nuevoSaldo = Number(tc.saldoDisponible) + mensualidad;
+            const nuevoSaldo = r2(Number(tc.saldoDisponible) + mensualidad);
             ops.push(update('tarjetas', tc.id, { saldoDisponible: nuevoSaldo }));
             tc.saldoDisponible = nuevoSaldo; // actualizar en memoria
           }
@@ -531,7 +612,7 @@ async function renderView(container, initialTab = 'contado') {
           if (!compra) return;
           _showModalPagoDiferido(null, compra, 'msi', pagosDiferidos, () => {
             expandedDiferidos.add(compraId);
-            renderPlazos(filtroMsi);
+            _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
           });
         }));
 
@@ -541,7 +622,8 @@ async function renderView(container, initialTab = 'contado') {
           const pago = pagosDiferidos.find(x => x.id === btn.dataset.id);
           if (!pago) return;
           const compra = msiItems.find(x => x.id === pago.compraId);
-          _showModalPagoDiferido(pago, compra, 'msi', pagosDiferidos, () => renderPlazos(filtroMsi));
+          _showModalPagoDiferido(pago, compra, 'msi', pagosDiferidos,
+            () => _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi)));
         }));
 
       content.querySelectorAll('.btn-del-pago-diferido-msi').forEach(btn =>
@@ -557,10 +639,45 @@ async function renderView(container, initialTab = 'contado') {
           const compra = msiItems.find(x => x.id === compraId);
           if (compra) {
             compra.total = (Number(compra.total) || 0) + monto;
-            await update('msi', { id: compraId, total: compra.total });
+            await update('msi', compraId, { total: compra.total });
           }
           toast('Pago eliminado');
-          renderPlazos(filtroMsi);
+          _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
+        }));
+
+      content.querySelectorAll('.btn-edit-pago-msi-plan').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const pago  = pagosDiferidos.find(x => x.id === btn.dataset.id);
+          if (!pago) return;
+          const compra = msiItems.find(x => x.id === pago.compraId);
+          _showModalEditPagoPlan(pago, compra, pagosDiferidos,
+            () => _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi)));
+        }));
+
+      content.querySelectorAll('.btn-pagar-cuota-diferido').forEach(btn =>
+        btn.addEventListener('click', async e => {
+          e.stopPropagation();
+          const pago   = pagosDiferidos.find(x => x.id === btn.dataset.id);
+          const compra = msiItems.find(x => x.id === btn.dataset.compraId);
+          if (!pago || !compra) return;
+          const mens    = Number(pago.mensualidad != null ? pago.mensualidad : compra.mensualidad) || 0;
+          const rest    = pago.restante != null ? Number(pago.restante) : Math.max(0, Number(pago.monto) - mens * (Number(pago.mesesPagados) || 0));
+          const newMeses = (Number(pago.mesesPagados) || 0) + 1;
+          const newRest  = r2(Math.max(0, rest - mens));
+          pago.mesesPagados = newMeses;
+          pago.restante     = newRest;
+          await update('pagosDiferidos', pago.id, { mesesPagados: newMeses, restante: newRest });
+          // Recalcular restante del padre
+          const pagosDeLaCompra = pagosDiferidos.filter(p => p.compraId === compra.id);
+          const sumRest = pagosDeLaCompra.reduce((s, p) => {
+            const m2 = Number(p.mensualidad != null ? p.mensualidad : compra.mensualidad) || 0;
+            return s + (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - m2 * (Number(p.mesesPagados) || 0)));
+          }, 0);
+          const nuevoRestante = r2(sumRest + (Number(compra.total) || 0));
+          compra.restante = nuevoRestante;
+          await update('msi', compra.id, { restante: nuevoRestante });
+          _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
         }));
     };
 
@@ -859,32 +976,33 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                     };
 
                     if (c.diferido) {
-                      const pagos   = (pagosMap[c.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
-                      const regTotal = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
-                      const pend     = Number(c.totalDiferido || c.total) - regTotal;
-                      const expanded = expandedDiferidos.has(c.id);
-                      const bonif    = !!tc?.inst?.bonificacionConIva;
+                      const pagos        = (pagosMap[c.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+                      const regTotal     = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const totalVal     = Number(c.totalDiferido || c.total) || 0;
+                      const pend         = totalVal - regTotal;
+                      const allRegistered = pend < 0.005;
+                      const expanded     = expandedDiferidos.has(c.id);
+                      const bonif        = !!tc?.inst?.bonificacionConIva;
 
                       const parentRow = `<tr class="table-warning" style="cursor:pointer" data-toggle-diferido="${c.id}">
                         <td>
-                          <span class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
+                          <span data-dif-icon class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
                           <span class="fw-500">${c.compra}</span>
                           <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
                           ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                          <span style="font-size:0.7rem" class="${allRegistered ? 'text-success' : 'text-danger'}">
+                            ${allRegistered ? '✓' : `○ ${currency(Math.max(0, pend))}`}
+                          </span>
                         </td>
                         <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                         <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
-                        <td>—</td>
+                        <td style="white-space:nowrap">${_pagoCell(c.fechaCompra)}</td>
                         <td class="text-end">
-                          ${_bonifTotal(c, Number(c.totalDiferido || c.total) || 0, bonif)}
-                          <div style="font-size:0.7rem;line-height:1.3;margin-top:2px">
-                            <span class="text-success">✓ ${currency(regTotal)}</span><br>
-                            <span class="text-danger">○ ${currency(Math.max(0, pend))}</span>
-                          </div>
+                          ${_bonifTotal(c, totalVal, bonif)}
                         </td>
                         <td>
                           <div class="d-flex gap-1">
-                            <button class="btn-icon btn-add-pago-diferido" data-id="${c.id}" data-coleccion="contado" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>
+                            ${!allRegistered ? `<button class="btn-icon btn-add-pago-diferido" data-id="${c.id}" data-coleccion="contado" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>` : ''}
                             <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
                             <button class="btn-icon danger btn-del-contado" data-id="${c.id}"><i class="bi bi-trash3"></i></button>
                           </div>
@@ -892,7 +1010,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                       </tr>`;
 
                       const pagoRows = expanded ? pagos.map(p => `
-                        <tr style="background:#fffde7">
+                        <tr data-pago-de="${c.id}" style="background:#fffde7">
                           <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
                           <td></td>
                           <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
@@ -1033,62 +1151,150 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
                     // Diferido parent row
                     if (m.diferido) {
-                      const pagos    = (pagosMap[m.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
-                      const regTotal = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
-                      const pend     = Number(m.totalDiferido || m.total) - regTotal;
-                      const expanded = expandedDiferidos.has(m.id);
-                      const bonif    = !!tc?.inst?.bonificacionConIva;
+                      const pagos        = (pagosMap[m.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+                      const pendingAmount = Number(m.total) || 0;
+                      const allRegistered = pendingAmount < 0.005;
+                      const bonif         = !!tc?.inst?.bonificacionConIva;
+                      const expanded      = expandedDiferidos.has(m.id);
+
+                      // Aggregate across registered pagos
+                      const sumMesesPagados  = pagos.reduce((s, p) => s + (Number(p.mesesPagados) || 0), 0);
+                      const sumMensualidad  = pagos.reduce((s, p) => s + (Number(p.mensualidad != null ? p.mensualidad : m.mensualidad) || 0), 0);
+                      const sumRestante     = pagos.reduce((s, p) => {
+                        const mens = Number(p.mensualidad != null ? p.mensualidad : m.mensualidad) || 0;
+                        return s + (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - mens * (Number(p.mesesPagados) || 0)));
+                      }, 0);
+                      const totalRestante    = sumRestante + pendingAmount;
+                      const totalMensualidad = sumMensualidad + (pendingAmount > 0 && m.mesesTotal ? pendingAmount / m.mesesTotal : 0);
+                      const totalDif  = Number(m.totalDiferido) || (Number(m.total) + pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0));
+
+                      // Detectar si los pagos pertenecen a distintos ciclos
+                      const _pagosCicloKeys = pagos.map(p => {
+                        if (!tc?.ciclo) return null;
+                        const { cicloYear: cy, cicloMonth: cm } = calcularPagos(tc.ciclo, p.fecha, Number(m.mesesTotal) || 0, festivosMX);
+                        return cy != null ? `${cy}-${cm}` : null;
+                      });
+                      const multiCiclo = new Set(_pagosCicloKeys.filter(Boolean)).size > 1;
+
+                      // Progreso padre
+                      const totalMesesPosibles = (Number(m.mesesTotal) || 1) * Math.max(1, pagos.length);
+                      const sumMonto = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const pctParent = multiCiclo
+                        ? Math.min(100, Math.round(sumMonto > 0
+                            ? pagos.reduce((s, p) => s + (Number(p.mesesPagados) || 0) / (Number(m.mesesTotal) || 1) * ((Number(p.monto) || 0) / sumMonto), 0) * 100
+                            : 0))
+                        : Math.min(100, Math.round(sumMesesPagados / totalMesesPosibles * 100));
+                      const doneParent = allRegistered && pagos.length > 0 && pagos.every(p => {
+                        const mens = Number(p.mensualidad != null ? p.mensualidad : m.mensualidad) || 0;
+                        return (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - mens * (Number(p.mesesPagados) || 0))) <= 0;
+                      });
+
+                      // Primer/último/próximo pago from registered pagos
+                      let difPrimerCell = '—', difUltimoCell = '—', difProximoCell = '—';
+                      if (pagos.length > 0) {
+                        let earliestPrimer = null, latestUltimo = null;
+                        for (const p of pagos) {
+                          const { primerPago, ultimoPago } = calcularPagos(tc?.ciclo, p.fecha, Number(m.mesesTotal) || 0, festivosMX);
+                          if (primerPago && (!earliestPrimer || primerPago < earliestPrimer)) earliestPrimer = primerPago;
+                          if (ultimoPago  && (!latestUltimo  || ultimoPago  > latestUltimo))  latestUltimo  = ultimoPago;
+                        }
+                        if (earliestPrimer) { const n = anteriorNomina(earliestPrimer, festivosMX); difPrimerCell = n ? _pagoMuted(n, earliestPrimer) : fmtDate(toISODate(earliestPrimer)); }
+                        if (latestUltimo)   { const n = anteriorNomina(latestUltimo,   festivosMX); difUltimoCell = n ? _pagoMuted(n, latestUltimo)   : fmtDate(toISODate(latestUltimo)); }
+                        if (filtro === 'curso') {
+                          let earliest = null;
+                          for (const p of pagos) {
+                            const mp = Number(p.mesesPagados) || 0;
+                            if (mp >= Number(m.mesesTotal)) continue;
+                            const { cicloYear: cy, cicloMonth: cm } = calcularPagos(tc?.ciclo, p.fecha, Number(m.mesesTotal) || 0, festivosMX);
+                            if (cy == null) continue;
+                            const nx = new Date(cy, cm + mp, 1);
+                            const pp = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+                            if (pp?.fechaPago && (!earliest || pp.fechaPago < earliest.fp)) earliest = { fp: pp.fechaPago, nom: anteriorNomina(pp.fechaPago, festivosMX) };
+                          }
+                          if (earliest) difProximoCell = earliest.nom ? _pagoHighlight(earliest.nom, earliest.fp) : fmtDate(toISODate(earliest.fp));
+                        }
+                      }
 
                       const parentRow = `<tr class="table-warning" style="cursor:pointer" data-toggle-diferido-msi="${m.id}">
                         <td>
-                          <span class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
+                          <span data-dif-icon class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
                           <span class="fw-500">${m.compra}</span>
                           <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
                           ${m.enlaceCompra ? `<a href="${m.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
-                        </td>
-                        <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
-                        <td class="text-center">${m.mesesTotal || 0} meses</td>
-                        <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
-                        <td style="white-space:nowrap">${primerPagoCell}</td>
-                        ${filtro === 'curso' ? `<td>—</td>` : ''}
-                        <td>—</td>
-                        <td class="text-end">${currency(m.mensualidad)}</td>
-                        <td class="text-end">
-                          ${_bonifTotal(m, Number(m.totalDiferido || m.total) || 0, bonif)}
-                          <div style="font-size:0.7rem;line-height:1.3;margin-top:2px">
-                            <span class="text-success">✓ ${currency(regTotal)}</span><br>
-                            <span class="text-danger">○ ${currency(Math.max(0, pend))}</span>
+                          <div class="d-flex align-items-center gap-2 mt-1">
+                            <div class="progress" style="width:120px;flex-shrink:0">
+                              <div class="progress-bar ${doneParent ? 'bg-success' : 'bg-primary'}" style="width:${pctParent}%"></div>
+                            </div>
+                            <span style="font-size:0.7rem;white-space:nowrap" class="${allRegistered ? 'text-success' : 'text-danger'}">
+                              ${allRegistered ? '✓' : `○ ${currency(pendingAmount)}`}
+                            </span>
                           </div>
                         </td>
-                        ${filtro === 'curso' ? `<td class="text-end">${_bonifTotal(m, Number(m.totalDiferido || m.total) || 0, bonif)}</td>` : ''}
+                        <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
+                        <td class="text-center">${(() => {
+                          if (!multiCiclo) return `${sumMesesPagados}/${m.mesesTotal || 0}`;
+                          const mn = Math.min(...pagos.map(p => Number(p.mesesPagados) || 0));
+                          const mx = Math.max(...pagos.map(p => Number(p.mesesPagados) || 0));
+                          return mn === mx ? `${mn}/${m.mesesTotal || 0}` : `${mn}–${mx}/${m.mesesTotal || 0}`;
+                        })()}</td>
+                        <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
+                        <td style="white-space:nowrap">${difPrimerCell}</td>
+                        ${filtro === 'curso' ? `<td style="white-space:nowrap">${difProximoCell}</td>` : ''}
+                        <td style="white-space:nowrap">${difUltimoCell}</td>
+                        <td class="text-end">${currency(totalMensualidad)}${doneParent ? ' <span class="text-success">✓</span>' : ''}</td>
+                        <td class="text-end ${doneParent ? 'text-success' : 'fw-bold'}">
+                          ${currency(totalRestante)}${doneParent ? ' <span class="text-success">✓</span>' : ''}
+                        </td>
+                        ${filtro === 'curso' ? `<td class="text-end">${_bonifTotal(m, Number(m.totalDiferido || 0), bonif)}</td>` : ''}
                         <td>
                           <div class="d-flex gap-1">
-                            <button class="btn-icon btn-add-pago-diferido-msi" data-id="${m.id}" data-coleccion="msi" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>
+                            ${!allRegistered ? `<button class="btn-icon btn-add-pago-diferido-msi" data-id="${m.id}" data-coleccion="msi" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>` : ''}
                             <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
                             <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
                           </div>
                         </td>
                       </tr>`;
 
-                      const pagoRows = expanded ? pagos.map(p => `
-                        <tr style="background:#fffde7">
-                          <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+                      const pagoRows = expanded ? pagos.map(p => {
+                        const pMens   = Number(p.mensualidad != null ? p.mensualidad : m.mensualidad) || 0;
+                        const pMesPag = Number(p.mesesPagados) || 0;
+                        const pRest   = p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - pMens * pMesPag);
+                        const pDone   = pRest <= 0 || pMesPag >= Number(m.mesesTotal);
+                        const pPct    = Math.round(pMesPag / (Number(m.mesesTotal) || 1) * 100);
+                        const { primerPago: pp1, ultimoPago: up1, cicloYear: cy1, cicloMonth: cm1 } = calcularPagos(tc?.ciclo, p.fecha, Number(m.mesesTotal) || 0, festivosMX);
+                        const nomPp1  = pp1 ? anteriorNomina(pp1, festivosMX) : null;
+                        const nomUp1  = up1 ? anteriorNomina(up1, festivosMX) : null;
+                        const pPrimerCell = nomPp1 ? _pagoMuted(nomPp1, pp1) : '—';
+                        const pUltimoCell = nomUp1 ? _pagoMuted(nomUp1, up1) : '—';
+                        let pProximoCell = '—';
+                        if (filtro === 'curso' && !pDone && cy1 != null && pMesPag < Number(m.mesesTotal)) {
+                          const nx = new Date(cy1, cm1 + pMesPag, 1);
+                          const ppn = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+                          if (ppn?.fechaPago) { const n = anteriorNomina(ppn.fechaPago, festivosMX); pProximoCell = n ? _pagoHighlight(n, ppn.fechaPago) : fmtDate(toISODate(ppn.fechaPago)); }
+                        }
+                        return `<tr data-pago-de="${m.id}" style="background:#fffde7">
+                          <td style="padding-left:28px;color:#666;font-size:0.85rem">
+                            └ Pago ${fmtDate(p.fecha)}
+                            ${multiCiclo ? `<div class="progress mt-1" style="width:100px"><div class="progress-bar ${pDone ? 'bg-success' : 'bg-primary'}" style="width:${pPct}%"></div></div>` : ''}
+                          </td>
                           <td></td>
-                          <td class="text-center">—</td>
-                          <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
+                          <td class="text-center">${multiCiclo ? `${pMesPag}/${m.mesesTotal || 0}` : '—'}</td>
                           <td>—</td>
-                          ${filtro === 'curso' ? `<td>—</td>` : ''}
-                          <td>—</td>
-                          <td class="text-end">${currency(p.monto)}</td>
-                          <td class="text-end">${currency(p.monto)}</td>
-                          ${filtro === 'curso' ? `<td></td>` : ''}
+                          <td style="white-space:nowrap">${multiCiclo ? pPrimerCell : '—'}</td>
+                          ${filtro === 'curso' ? `<td style="white-space:nowrap">${multiCiclo ? pProximoCell : '—'}</td>` : ''}
+                          <td style="white-space:nowrap">${multiCiclo ? pUltimoCell : '—'}</td>
+                          <td class="text-end">${currency(pMens)}</td>
+                          <td class="text-end ${pDone ? 'text-success' : 'fw-bold'}">${pDone ? '✓ Pagado' : currency(pRest)}</td>
+                          ${filtro === 'curso' ? `<td class="text-end">${currency(p.monto)}</td>` : ''}
                           <td>
                             <div class="d-flex gap-1">
-                              <button class="btn-icon btn-edit-pago-diferido-msi" data-id="${p.id}" title="Editar"><i class="bi bi-pencil"></i></button>
+                              <button class="btn-icon btn-edit-pago-msi-plan" data-id="${p.id}" title="Editar plan"><i class="bi bi-pencil"></i></button>
+                              ${!pDone ? `<button class="btn-icon btn-pagar-cuota-diferido" data-id="${p.id}" data-compra-id="${m.id}" title="Pagar cuota"><i class="bi bi-coin"></i></button>` : ''}
                               <button class="btn-icon danger btn-del-pago-diferido-msi" data-id="${p.id}" data-compra-id="${m.id}" data-monto="${p.monto}" title="Eliminar"><i class="bi bi-trash3"></i></button>
                             </div>
                           </td>
-                        </tr>`).join('') : '';
+                        </tr>`;
+                      }).join('') : '';
 
                       return [parentRow, pagoRows];
                     }
@@ -1360,7 +1566,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
 
   _wireBonif();
 
-  const chkDif = document.getElementById('chk-diferido-contado');
+  const chkDif  = document.getElementById('chk-diferido-contado');
   const hintDif = document.getElementById('diferido-hint-contado');
   chkDif?.addEventListener('change', () => {
     hintDif.style.display = chkDif.checked ? 'block' : 'none';
@@ -1524,7 +1730,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
       delete data.diferido;
       data.total = totalVal;
     }
-    data.restante      = data.restante !== '' ? Number(data.restante) : Math.max(0, data.total - data.mensualidad * data.mesesPagados);
+    data.restante      = data.restante !== '' ? r2(Number(data.restante)) : r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
     _saveBonif(data);
@@ -1782,9 +1988,19 @@ function _labelMes(mes) {
 function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved) {
   if (!compra) return;
   const isEdit = !!pago;
+  const mesesTotal      = Number(compra.mesesTotal) || 0;
   const pagosExistentes = pagosDiferidos.filter(p => p.compraId === compra.id && (!isEdit || p.id !== pago.id));
   const yaRegistrado    = pagosExistentes.reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const pendiente       = Number(compra.totalDiferido || (compra.total + (isEdit ? Number(pago.monto) : 0))) - yaRegistrado;
+  const montoInicial    = Number(pago?.monto) || 0;
+  const mensInit        = pago?.mensualidad != null
+    ? Number(pago.mensualidad)
+    : (mesesTotal > 0 ? montoInicial / mesesTotal : 0);
+  const restInit        = pago?.restante != null
+    ? Number(pago.restante)
+    : montoInicial;
+
+  const isContado = coleccion === 'contado';
 
   openModal({
     title: isEdit ? 'Editar Pago' : `Registrar Pago — ${compra.compra}`,
@@ -1804,12 +2020,29 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
             <label class="form-label">Monto *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="monto" value="${pago?.monto || ''}"
-                required min="0.01" step="0.01" max="${pendiente.toFixed(2)}"
-                placeholder="0.00">
+              <input type="number" class="form-control" id="pd-monto" name="monto" value="${montoInicial || ''}"
+                required min="0.01" step="0.01" max="${pendiente.toFixed(2)}" placeholder="0.00">
             </div>
             <div class="form-text">Máximo: ${currency(Math.max(0, pendiente))}</div>
           </div>
+          ${!isContado ? `
+          <div class="col-md-6">
+            <label class="form-label">Mensualidad</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" id="pd-mensualidad" name="mensualidad"
+                value="${mensInit ? mensInit.toFixed(2) : ''}" min="0" step="0.01" placeholder="0.00">
+              <button type="button" class="btn btn-outline-secondary" id="pd-btn-recalc" title="Recalcular mensualidad">↺</button>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Restante</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" id="pd-restante" name="restante"
+                value="${restInit ? restInit.toFixed(2) : ''}" min="0" step="0.01" placeholder="0.00">
+            </div>
+          </div>` : ''}
         </div>
       </form>`,
     footer: `
@@ -1817,23 +2050,42 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-pago-dif">${isEdit ? 'Guardar' : 'Registrar'}</button>`
   });
 
+  const montoEl = document.getElementById('pd-monto');
+  const mensEl  = document.getElementById('pd-mensualidad');
+  const restEl  = document.getElementById('pd-restante');
+
+  const _recalcMens = () => {
+    const mt = Number(montoEl?.value) || 0;
+    if (mensEl && mesesTotal > 0) mensEl.value = (mt / mesesTotal).toFixed(2);
+    if (restEl) restEl.value = mt.toFixed(2);
+  };
+
+  montoEl?.addEventListener('input', _recalcMens);
+  document.getElementById('pd-btn-recalc')?.addEventListener('click', _recalcMens);
+
   document.getElementById('btn-save-pago-dif').addEventListener('click', async () => {
     const form = document.getElementById('pago-dif-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const data = Object.fromEntries(new FormData(form));
     data.monto = Number(data.monto);
+    const newMensualidad = data.mensualidad !== '' ? Number(data.mensualidad) : null;
+    const newRestante    = data.restante    !== '' ? Number(data.restante)    : null;
     if (data.monto <= 0) { toast('El monto debe ser mayor a 0', 'warning'); return; }
     if (data.monto > pendiente + 0.01) { toast('El monto supera el pendiente', 'warning'); return; }
+    if (newRestante != null && newRestante > data.monto + 0.005) { toast('El restante no puede ser mayor al monto', 'warning'); return; }
     if (data.fecha?.length === 10) data.fecha = _addTime(data.fecha);
 
     try {
       if (isEdit) {
         const diff = data.monto - Number(pago.monto);
-        await update('pagosDiferidos', { id: pago.id, fecha: data.fecha, monto: data.monto });
+        const upd = { fecha: data.fecha, monto: data.monto };
+        if (newMensualidad != null) upd.mensualidad = newMensualidad;
+        if (newRestante    != null) upd.restante    = newRestante;
+        await update('pagosDiferidos', pago.id, upd);
         const idx = pagosDiferidos.findIndex(x => x.id === pago.id);
-        if (idx >= 0) { pagosDiferidos[idx].fecha = data.fecha; pagosDiferidos[idx].monto = data.monto; }
-        compra.total = Math.max(0, Number(compra.total) - diff);
-        await update(coleccion, { id: compra.id, total: compra.total });
+        if (idx >= 0) Object.assign(pagosDiferidos[idx], upd);
+        compra.total = r2(Math.max(0, Number(compra.total) - diff));
+        await update(coleccion, compra.id, { total: compra.total });
       } else {
         const newPago = {
           compraId: compra.id,
@@ -1842,13 +2094,143 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
           fecha: data.fecha,
           monto: data.monto
         };
+        if (newMensualidad != null) newPago.mensualidad = newMensualidad;
+        if (newRestante    != null) newPago.restante    = newRestante;
         const id = await create('pagosDiferidos', newPago);
         pagosDiferidos.push({ ...newPago, id });
-        compra.total = Math.max(0, Number(compra.total) - data.monto);
-        await update(coleccion, { id: compra.id, total: compra.total });
+        compra.total = r2(Math.max(0, Number(compra.total) - data.monto));
+        await update(coleccion, compra.id, { total: compra.total });
       }
       closeModal();
       toast(isEdit ? 'Pago actualizado' : 'Pago registrado');
+      onSaved();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
+}
+
+// ── Modal Editar Plan de Pago Diferido (meses, mensualidad, restante) ──────────
+
+function _showModalEditPagoPlan(pago, compra, pagosDiferidos, onSaved) {
+  if (!pago || !compra) return;
+  const mesesTotal         = Number(compra.mesesTotal) || 0;
+  const mensualidadDefault = Number(compra.mensualidad) || 0;
+  const mesesPagados       = Number(pago.mesesPagados) || 0;
+  const montoOrig          = Number(pago.monto) || 0;
+  const mensualidad        = Number(pago.mensualidad != null ? pago.mensualidad : mensualidadDefault) || 0;
+  const restante           = pago.restante != null
+    ? Number(pago.restante)
+    : Math.max(0, montoOrig - mensualidad * mesesPagados);
+  // Max monto = saldo pendiente de la compra + lo que ya tiene este pago
+  const maxMonto = (Number(compra.total) || 0) + montoOrig;
+
+  openModal({
+    title: `Plan de Pago — ${fmtDate(pago.fecha)}`,
+    body: `
+      <form id="pago-plan-form">
+        <div class="row g-3">
+          <div class="col-12">
+            <div class="alert alert-info py-2 mb-0" style="font-size:0.85rem">
+              ${mesesTotal} meses · Disponible para reasignar: <strong>${currency(maxMonto)}</strong>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Fecha de pago</label>
+            <input type="date" class="form-control" name="fecha" id="pp-fecha"
+              value="${(pago.fecha || '').slice(0, 10)}" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Total pago</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="monto" id="pp-monto"
+                value="${montoOrig.toFixed(2)}" min="0.01" max="${maxMonto.toFixed(2)}" step="0.01">
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Meses pagados</label>
+            <input type="number" class="form-control" name="mesesPagados" id="pp-meses-pagados"
+              value="${mesesPagados}" min="0" max="${mesesTotal}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Mensualidad</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="mensualidad" id="pp-mensualidad"
+                value="${mensualidad.toFixed(2)}" min="0" step="0.01">
+              <button type="button" class="btn btn-outline-secondary" id="btn-recalc-mens" title="Recalcular mensualidad">↺</button>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Restante</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="restante" id="pp-restante"
+                value="${restante.toFixed(2)}" min="0" step="0.01">
+            </div>
+          </div>
+        </div>
+      </form>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-pago-plan">Guardar</button>`
+  });
+
+  const montoEl = document.getElementById('pp-monto');
+  const mesesEl = document.getElementById('pp-meses-pagados');
+  const mensEl  = document.getElementById('pp-mensualidad');
+  const restEl  = document.getElementById('pp-restante');
+
+  const _recalcRestante = () => {
+    const mt = Number(montoEl?.value) || 0;
+    const mp = Number(mesesEl?.value) || 0;
+    const mn = Number(mensEl?.value) || 0;
+    if (restEl) restEl.value = Math.max(0, mt - mn * mp).toFixed(2);
+  };
+
+  document.getElementById('btn-recalc-mens')?.addEventListener('click', () => {
+    const mt = Number(montoEl?.value) || 0;
+    if (mensEl && mesesTotal > 0) mensEl.value = (mt / mesesTotal).toFixed(2);
+    _recalcRestante();
+  });
+
+  montoEl?.addEventListener('input', _recalcRestante);
+  mesesEl?.addEventListener('input', _recalcRestante);
+  mensEl?.addEventListener('input', _recalcRestante);
+
+  document.getElementById('btn-save-pago-plan').addEventListener('click', async () => {
+    const form = document.getElementById('pago-plan-form');
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const data       = Object.fromEntries(new FormData(form));
+    const newMonto   = Number(data.monto);
+    const newRestante = Number(data.restante);
+
+    if (newRestante > newMonto + 0.005) {
+      toast('El restante no puede ser mayor al total del pago', 'danger'); return;
+    }
+    if (newMonto > maxMonto + 0.005) {
+      toast(`El total no puede ser mayor a ${currency(maxMonto)}`, 'danger'); return;
+    }
+
+    let newFecha = data.fecha || '';
+    if (newFecha.length === 10) newFecha = _addTime(newFecha);
+    const updates = {
+      fecha:        newFecha,
+      monto:        newMonto,
+      mesesPagados: Number(data.mesesPagados),
+      mensualidad:  Number(data.mensualidad),
+      restante:     newRestante
+    };
+    try {
+      await update('pagosDiferidos', pago.id, updates);
+      if (Math.abs(newMonto - montoOrig) > 0.005) {
+        compra.total = r2((Number(compra.total) || 0) + montoOrig - newMonto);
+        await update('msi', compra.id, { total: compra.total });
+      }
+      Object.assign(pago, updates);
+      const idx = pagosDiferidos.findIndex(x => x.id === pago.id);
+      if (idx >= 0) Object.assign(pagosDiferidos[idx], updates);
+      closeModal();
+      toast('Plan actualizado');
       onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });

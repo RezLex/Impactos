@@ -2,12 +2,13 @@ import { getAll, clearCache } from '../utils/db.js';
 import { toast } from '../utils/ui.js';
 
 const COLLECTIONS = [
-  { key: 'instituciones', label: 'Instituciones' },
-  { key: 'tarjetas',      label: 'Tarjetas'      },
-  { key: 'msi',           label: 'MSI'            },
-  { key: 'fijos',         label: 'Gastos Fijos'   },
-  { key: 'eventos',       label: 'Eventos'        },
-  { key: 'festivosMX',    label: 'Festivos MX'    },
+  { key: 'instituciones',  label: 'Instituciones'    },
+  { key: 'tarjetas',       label: 'Tarjetas'         },
+  { key: 'msi',            label: 'MSI'              },
+  { key: 'pagosDiferidos', label: 'Pagos Diferidos'  },
+  { key: 'fijos',          label: 'Gastos Fijos'     },
+  { key: 'eventos',        label: 'Eventos'          },
+  { key: 'festivosMX',     label: 'Festivos MX'      },
 ];
 
 export async function render(container) {

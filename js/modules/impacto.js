@@ -1,5 +1,5 @@
 import { getAll, getById, upsert, update, recentWhere } from '../utils/db.js';
-import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth } from '../utils/formatters.js';
+import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth, r2 } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { navigate } from '../router.js';
@@ -7,7 +7,7 @@ import { calcularSaldo } from '../utils/saldo.js';
 import {
   calcularEstimadoTarjeta, getGastosDebitoMes, getGastosDebitoCompleto,
   calcularTotalesCredito, getPlazosMes, proyectarMes, recalcTotalesImpacto,
-  calcularCicloParaMes,
+  calcularCicloParaMes, getPagosDiferidosMes,
 } from '../utils/impacto-calc.js';
 
 export async function render(container, mesParam) {
@@ -46,7 +46,7 @@ async function renderView(container, mes) {
 
     let impacto;
     if (isFuture) {
-      impacto = proyectarMes(mes, mesCurrent, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas);
+      impacto = proyectarMes(mes, mesCurrent, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas, pagosDiferidos);
       // Enrich projection tarjetas with institution data
       impacto.tarjetas = impacto.tarjetas.map(t => {
         const tc   = cardMap[t.tarjetaId];
@@ -65,7 +65,7 @@ async function renderView(container, mes) {
           .filter(t => !existingIds.has(t.id))
           .map(t => {
             const inst = instMap[t.institucionId];
-            const est  = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes);
+            const est  = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
             const p    = t.ciclo ? calcularCicloParaMes(t.ciclo, mes, festivosMX) : null;
             changed = true;
             return {
@@ -85,10 +85,11 @@ async function renderView(container, mes) {
           ...impacto.tarjetas.map(t => {
             const tarjeta = cardMap[t.tarjetaId];
             if (!tarjeta) return t;
-            const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes);
+            const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
             const estSame = est.estimadoContado === t.estimadoContado &&
                             est.estimadoPlazos  === t.estimadoPlazos  &&
-                            est.estimadoGastos  === t.estimadoGastos;
+                            est.estimadoGastos  === t.estimadoGastos  &&
+                            est.estimadoTotal   === t.estimadoTotal;
             // Always recalculate dates to catch stale/wrong values from previous versions
             let dateUpdate = {};
             if (tarjeta.ciclo) {
@@ -115,7 +116,7 @@ async function renderView(container, mes) {
         }
       }
     } else if (!isPast) {
-      impacto = await _crearImpacto(mes, tarjetasCredito, contado, msi, gastos, festivosMX, nominaAprox, instMap);
+      impacto = await _crearImpacto(mes, tarjetasCredito, contado, msi, gastos, festivosMX, nominaAprox, instMap, pagosDiferidos);
     } else {
       impacto = null;
     }
@@ -139,11 +140,11 @@ async function renderView(container, mes) {
 
 // ── Create new impacto ───────────────────────────────────────────────────────
 
-async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gastosItems, festivosMX, nominaAprox, instMap) {
+async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gastosItems, festivosMX, nominaAprox, instMap, pagosDiferidos = []) {
   const [y, mo] = mes.split('-').map(Number);
 
   const tarjetas = tarjetasCredito.map(t => {
-    const est  = calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes);
+    const est  = calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos);
     const inst = instMap[t.institucionId];
     let fechaCorte = null, fechaPago = null, fechaNomina = null;
     if (t.ciclo) {
@@ -638,7 +639,7 @@ function _showModalPresupuesto(impacto, totales, isCerrado, ctx) {
     if (isCerrado && totales) {
       data.totales = {
         ...totales,
-        restante: v - (totales.pagoCredito || 0) - (totales.gastoDebito || 0),
+        restante: r2(v - (totales.pagoCredito || 0) - (totales.gastoDebito || 0)),
       };
     }
     await upsert('impacto', impacto.mes, data);
@@ -743,7 +744,7 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
   // 3. Update tarjeta document with new saldo and reset reference date to now
   if (t.tarjetaId && monto > 0) {
     await update('tarjetas', t.tarjetaId, {
-      saldoDisponible:         dispActual + monto,
+      saldoDisponible:         r2(dispActual + monto),
       fechaActualizacionSaldo: new Date().toISOString(),
     });
   }
@@ -776,8 +777,8 @@ function _recalcTotalesCerrado(tarjetas, gastosDebito, presupuesto, nominaRef, t
     pagoCredito,
     estimadoCredito,
     gastoDebito,
-    restante:         (Number(presupuesto) || 0) - pagoCredito - gastoDebito,
-    restanteEsperado: (Number(nominaRef)   || 0) - estimadoCredito - gastoDebito,
+    restante:         r2((Number(presupuesto) || 0) - pagoCredito - gastoDebito),
+    restanteEsperado: r2((Number(nominaRef)   || 0) - estimadoCredito - gastoDebito),
   };
 }
 
@@ -828,10 +829,10 @@ function _showModalEditTotal(campo, impacto, totales, ctx) {
     const nuevoTotales = {
       ...totales,
       [campo]: nuevo,
-      deudaTotal: Math.max(0,
+      deudaTotal: r2(Math.max(0,
         (campo === 'creditoTotal'      ? nuevo : totales.creditoTotal) -
         (campo === 'creditoDisponible' ? nuevo : totales.creditoDisponible)
-      ),
+      )),
     };
     await upsert('impacto', impacto.mes, { totales: nuevoTotales });
     closeModal();
@@ -854,6 +855,49 @@ async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {
       : {};
     return { ...t, ...autoPagado, limiteTotalConf: limiteSnap, saldoDispConf: saldoSnap };
   });
+
+  // Auto-avanzar mesesPagados en pagos diferidos (contado y msi) que vencen este mes
+  const diferidoMap = {};
+  ctx.msi.forEach(m => { if (m.diferido) diferidoMap[m.id] = { ...m, _coleccion: 'msi' }; });
+  ctx.contado.forEach(c => { if (c.diferido) diferidoMap[c.id] = { ...c, _coleccion: 'contado' }; });
+
+  const ops = [];
+  const comprasAfectadas = new Set();
+
+  for (const t of impacto.tarjetas) {
+    const tarjeta = ctx.cardMap[t.tarjetaId];
+    if (!tarjeta?.ciclo) continue;
+    const pagosDelMes = getPagosDiferidosMes(ctx.pagosDiferidos, t.tarjetaId, tarjeta.ciclo, impacto.mes, ctx.festivosMX, diferidoMap);
+    for (const p of pagosDelMes) {
+      const compra = diferidoMap[p.compraId];
+      if (!compra) continue;
+      const mens     = Number(p.mensualidad != null ? p.mensualidad : compra.mensualidad) || 0;
+      const rest     = p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - mens * (Number(p.mesesPagados) || 0));
+      const newMeses = (Number(p.mesesPagados) || 0) + 1;
+      const newRest  = r2(Math.max(0, rest - mens));
+      ops.push(update('pagosDiferidos', p.id, { mesesPagados: newMeses, restante: newRest }));
+      p.mesesPagados = newMeses;
+      p.restante     = newRest;
+      comprasAfectadas.add(p.compraId);
+    }
+  }
+
+  // Actualizar restante del padre para cada compra afectada
+  for (const compraId of comprasAfectadas) {
+    const compra = diferidoMap[compraId];
+    if (!compra) continue;
+    const sumRest = ctx.pagosDiferidos
+      .filter(p => p.compraId === compraId)
+      .reduce((s, p) => {
+        const mens = Number(p.mensualidad != null ? p.mensualidad : compra.mensualidad) || 0;
+        return s + (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - mens * (Number(p.mesesPagados) || 0)));
+      }, 0);
+    const nuevoRestante = r2(sumRest + (Number(compra.total) || 0));
+    compra.restante = nuevoRestante;
+    ops.push(update(compra._coleccion || 'msi', compraId, { restante: nuevoRestante }));
+  }
+
+  if (ops.length) await Promise.all(ops);
 
   await upsert('impacto', impacto.mes, {
     estado: 'cerrado',

@@ -13,6 +13,8 @@
  * @param {Array}  pagosDiferidos  - Items colección pagosDiferidos
  * @returns {{ disponible: number, usado: number|null, ajustado: boolean, gastoPosterior: number } | null}
  */
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
 export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = [], pagosDiferidos = []) {
   if (tarjeta.saldoDisponible == null || tarjeta.tipo === 'debito') return null;
 
@@ -31,6 +33,7 @@ export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = [], pago
   });
 
   msi.forEach(m => {
+    if (m.diferido) return; // límites solo afectados por pagosDiferidos registrados
     if (m.tarjetaId === tarjeta.id && posterior(m.fechaCompra))
       gastoPosterior += Number(m.total) || 0;
   });
@@ -46,8 +49,8 @@ export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = [], pago
       gastoPosterior += Number(p.monto) || 0;
   });
 
-  const disponible = Math.max(0, baseDisp - gastoPosterior);
-  const usado      = limite != null ? Math.max(0, limite - disponible) : null;
+  const disponible = r2(Math.max(0, baseDisp - gastoPosterior));
+  const usado      = limite != null ? r2(Math.max(0, limite - disponible)) : null;
 
   return { disponible, usado, ajustado: gastoPosterior > 0, gastoPosterior };
 }

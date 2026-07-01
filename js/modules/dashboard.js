@@ -85,7 +85,7 @@ export async function render(container) {
     } else {
       impactoTarjetas = tarjetasCredito.map(t => {
         const inst      = instMap[t.institucionId];
-        const est       = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes);
+        const est       = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
         const cicloData = calcularCicloParaMes(t.ciclo, mes, festivosMX);
         const fp        = cicloData?.fechaPago ? toISODate(cicloData.fechaPago) : null;
         const nom       = fp ? anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX) : null;

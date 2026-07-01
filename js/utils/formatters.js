@@ -1,6 +1,7 @@
 const mxn = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 2 });
 
 export const currency = v => (v == null || isNaN(v)) ? '—' : mxn.format(v);
+export const r2       = n => Math.round((Number(n) || 0) * 100) / 100;
 
 export const percent  = v => (v == null) ? '—' : (v * 100).toFixed(0) + '%';
 
