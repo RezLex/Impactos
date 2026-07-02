@@ -174,6 +174,10 @@ async function renderView(container, initialTab = 'contado') {
       const filtered = contadoItems.filter(c => {
         if (filtroContadoTipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
         const tc = cardMap[c.tarjetaId];
+        // Diferido with pagos: each pago belongs to its own cycle — show when this cycle has pagos
+        if (c.diferido && (pagosMap[c.id] || []).length > 0 && tc?.tipo === 'credito' && tc?.ciclo) {
+          return _getPagosEnCiclo(pagosMap[c.id], tc, filtroContadoMes, festivosMX).length > 0;
+        }
         if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
           const compra = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
           let y = compra.getFullYear(), m = compra.getMonth();
@@ -192,7 +196,15 @@ async function renderView(container, initialTab = 'contado') {
         byInst[instId].items.push(c);
       });
 
-      const totalCompras = filtered.reduce((s, c) => s + (Number(c.total) || 0), 0);
+      const _contadoVal = c => {
+        if (!c.diferido) return Number(c.total) || 0;
+        const tc2 = cardMap[c.tarjetaId];
+        const pp = (filtroContadoTipo === 'pago' && tc2?.ciclo)
+          ? _getPagosEnCiclo(pagosMap[c.id], tc2, filtroContadoMes, festivosMX)
+          : (pagosMap[c.id] || []);
+        return pp.reduce((ps, p) => ps + (Number(p.monto) || 0), 0);
+      };
+      const totalCompras = filtered.reduce((s, c) => s + _contadoVal(c), 0);
       const groups       = Object.values(byInst)
         .filter(g => g.items.length > 0)
         .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'));
@@ -245,7 +257,7 @@ async function renderView(container, initialTab = 'contado') {
               </button>
             </div>
             <div class="accordion" id="contado-accordion">
-              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed, pagosMap, expandedDiferidos)).join('')}
+              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed, pagosMap, expandedDiferidos, filtroContadoTipo === 'pago' ? filtroContadoMes : null)).join('')}
             </div>`
         }`;
 
@@ -309,8 +321,11 @@ async function renderView(container, initialTab = 'contado') {
             const compra = contadoItems.find(x => x.id === id);
             if (!compra) return;
             const tc = cardMap[compra.tarjetaId];
-            const pagos = pagosDiferidos.filter(p => p.compraId === id)
-              .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+            const _allPagos = pagosDiferidos.filter(p => p.compraId === id);
+            const pagos = (filtroContadoTipo === 'pago' && tc?.ciclo)
+              ? _getPagosEnCiclo(_allPagos, tc, filtroContadoMes, festivosMX)
+              : _allPagos;
+            pagos.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
             const childHtml = pagos.map(p => `
               <tr data-pago-de="${id}" style="background:#fffde7">
                 <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
@@ -393,6 +408,65 @@ async function renderView(container, initialTab = 'contado') {
           }
           toast('Pago eliminado');
           _rerenderAcordeon('contado-accordion', renderContado);
+        }));
+
+      content.querySelectorAll('.btn-csv-contado').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const grupo = groups[Number(btn.dataset.groupIdx)];
+          if (!grupo) return;
+          const _cardLabel = c => {
+            const tc   = cardMap[c.tarjetaId];
+            const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
+            const n    = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const l4   = n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
+            return { tc, label: tc ? `${tc.nombre}${l4 ? ' ···' + l4 : ''}` : '' };
+          };
+          const sorted = [...grupo.items].sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''));
+          const mainRows = sorted.map(c => {
+            const { tc, label } = _cardLabel(c);
+            let fechaPago = '';
+            if (tc?.ciclo && c.fechaCompra) {
+              const d = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
+              let y = d.getFullYear(), mo = d.getMonth();
+              let p = calcularMes(tc.ciclo, y, mo, festivosMX);
+              if (p.fechaCorte < d) { const nx = new Date(y, mo + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
+              if (p.fechaPago) fechaPago = toISODate(p.fechaPago);
+            }
+            const totalCompra   = c.diferido ? (Number(c.totalDiferido || c.total) || 0) : (Number(c.total) || 0);
+            const pagosSumC     = c.diferido ? (pagosMap[c.id] || []).reduce((s, p) => s + (Number(p.monto) || 0), 0) : 0;
+            const pendiente     = c.diferido ? Math.max(0, totalCompra - pagosSumC) : 0;
+            const impactoC      = c.diferido ? pagosSumC : (Number(c.total) || 0);
+            return {
+              'Compra':        c.compra || '',
+              'Tarjeta':       label,
+              'Fecha Compra':  (c.fechaCompra || '').slice(0, 10),
+              'Fecha Pago':    fechaPago,
+              'Total Compra':  totalCompra.toFixed(2),
+              'Pendiente':     c.diferido ? pendiente.toFixed(2) : '',
+              'Impacto':       impactoC.toFixed(2),
+              'Diferido':      c.diferido ? 'Sí' : 'No',
+            };
+          });
+          const pagoRows = [];
+          sorted.filter(c => c.diferido).forEach(c => {
+            const { label } = _cardLabel(c);
+            (pagosMap[c.id] || [])
+              .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+              .forEach(p => pagoRows.push({
+                'Compra Padre':  c.compra || '',
+                'Tarjeta':       label,
+                'Fecha':         (p.fecha || '').slice(0, 10),
+                'Monto':         (Number(p.monto) || 0).toFixed(2),
+              }));
+          });
+          _downloadCSV(
+            `contado_${(grupo.inst?.nombre || 'tarjeta').replace(/\s+/g, '_')}_${filtroContadoMes}.csv`,
+            [
+              { title: 'Compras', rows: mainRows },
+              ...(pagoRows.length ? [{ title: 'Pagos Diferidos', rows: pagoRows }] : []),
+            ]
+          );
         }));
     };
 
@@ -643,6 +717,63 @@ async function renderView(container, initialTab = 'contado') {
           }
           toast('Pago eliminado');
           _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
+        }));
+
+      content.querySelectorAll('.btn-csv-msi').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const grupo = groups[Number(btn.dataset.groupIdx)];
+          if (!grupo) return;
+          const _cardLabel = m => {
+            const tc   = cardMap[m.tarjetaId];
+            const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
+            const n    = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const l4   = n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
+            return { tc, label: tc ? `${tc.nombre}${l4 ? ' ···' + l4 : ''}` : '' };
+          };
+          const sorted = [...grupo.items].sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''));
+          const mainRows = sorted.map(m => {
+            const { label } = _cardLabel(m);
+            const pagosSumM = m.diferido
+              ? (pagosMap[m.id] || []).reduce((s, p) => s + (Number(p.mensualidad ?? m.mensualidad ?? p.monto) || 0), 0)
+              : 0;
+            const impactoM  = m.diferido ? pagosSumM : (Number(m.mensualidad) || 0);
+            return {
+              'Compra':        m.compra || '',
+              'Tarjeta':       label,
+              'Fecha Compra':  (m.fechaCompra || '').slice(0, 10),
+              'Mensualidad':   (Number(m.mensualidad) || 0).toFixed(2),
+              'Meses Pagados': Number(m.mesesPagados) || 0,
+              'Meses Total':   Number(m.mesesTotal) || 0,
+              'Restante':      (Number(m.restante) || 0).toFixed(2),
+              'Total':         (Number(m.total) || 0).toFixed(2),
+              'Diferido':      m.diferido ? 'Sí' : 'No',
+              'Liquidado':     m.liquidado ? 'Sí' : 'No',
+              'Impacto':       impactoM.toFixed(2),
+            };
+          });
+          const pagoRows = [];
+          sorted.filter(m => m.diferido).forEach(m => {
+            const { label } = _cardLabel(m);
+            (pagosMap[m.id] || [])
+              .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+              .forEach(p => pagoRows.push({
+                'Compra Padre':  m.compra || '',
+                'Tarjeta':       label,
+                'Fecha':         (p.fecha || '').slice(0, 10),
+                'Mensualidad':   (Number(p.mensualidad ?? m.mensualidad) || 0).toFixed(2),
+                'Meses Pagados': Number(p.mesesPagados) || 0,
+                'Restante':      (Number(p.restante) || 0).toFixed(2),
+                'Monto':         (Number(p.monto) || 0).toFixed(2),
+              }));
+          });
+          _downloadCSV(
+            `plazos_${(grupo.inst?.nombre || 'tarjeta').replace(/\s+/g, '_')}_${filtro}.csv`,
+            [
+              { title: 'Compras a Plazos', rows: mainRows },
+              ...(pagoRows.length ? [{ title: 'Pagos Diferidos', rows: pagoRows }] : []),
+            ]
+          );
         }));
 
       content.querySelectorAll('.btn-edit-pago-msi-plan').forEach(btn =>
@@ -920,12 +1051,65 @@ async function renderView(container, initialTab = 'contado') {
   }
 }
 
+// ── CSV download ────────────────────────────────────────────────────────────────
+
+// sections: Array<{ title?: string, rows: object[] }>
+// UTF-16 LE with BOM so Excel opens it correctly without import wizard.
+function _downloadCSV(filename, sections) {
+  const esc   = v => { const s = String(v ?? ''); return /[,"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const lines = [];
+  sections.forEach(({ title, rows }) => {
+    if (!rows?.length) return;
+    if (title) lines.push(esc(title));
+    const cols = Object.keys(rows[0]);
+    lines.push(cols.map(esc).join(','));
+    rows.forEach(r => lines.push(cols.map(c => esc(r[c])).join(',')));
+    lines.push('');
+  });
+  if (!lines.length) return;
+  const str  = 'sep=,\r\n' + lines.join('\r\n');
+  const buf  = new ArrayBuffer(2 + str.length * 2);
+  const view = new Uint16Array(buf);
+  view[0] = 0xFEFF; // UTF-16 LE BOM
+  for (let i = 0; i < str.length; i++) view[i + 1] = str.charCodeAt(i);
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(new Blob([buf], { type: 'text/csv;charset=utf-16le' })),
+    download: filename,
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // ── Render helpers ──────────────────────────────────────────────────────────────
 
-function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false, pagosMap = {}, expandedDiferidos = new Set()) {
+function _getPagosEnCiclo(pagos, tc, mes, festivosMX) {
+  if (!tc?.ciclo || !mes) return pagos || [];
+  return (pagos || []).filter(p => {
+    if (!p.fecha) return false;
+    const dt = new Date(String(p.fecha).includes('T') ? p.fecha : p.fecha + 'T12:00:00');
+    let y = dt.getFullYear(), m = dt.getMonth();
+    let ci = calcularMes(tc.ciclo, y, m, festivosMX);
+    if (ci.fechaCorte < dt) {
+      const nx = new Date(y, m + 1, 1);
+      ci = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+    }
+    if (!ci.fechaPago) return false;
+    const nom = anteriorNomina(ci.fechaPago, festivosMX);
+    return (nom ? toISODate(nom) : toISODate(ci.fechaPago)).slice(0, 7) === mes;
+  });
+}
+
+function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false, pagosMap = {}, expandedDiferidos = new Set(), filtroMes = null) {
   const label      = inst?.nombre || 'Sin institución';
   const color      = inst?.color  || '#607d8b';
-  const totalGrupo = items.reduce((s, c) => s + (Number(c.total) || 0), 0);
+  const totalGrupo = items.reduce((s, c) => {
+    if (!c.diferido) return s + (Number(c.total) || 0);
+    const tc = cardMap[c.tarjetaId];
+    const pp = (filtroMes && tc?.ciclo)
+      ? _getPagosEnCiclo(pagosMap[c.id], tc, filtroMes, festivosMX)
+      : (pagosMap[c.id] || []);
+    return s + pp.reduce((ps, p) => ps + (Number(p.monto) || 0), 0);
+  }, 0);
 
   return `
     <div class="accordion-item mb-2">
@@ -934,8 +1118,12 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                 data-bs-toggle="collapse" data-bs-target="#acc-c-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
-          <span class="ms-auto me-3" style="font-size:0.8rem;color:#888">
-            Total: <strong>${currency(totalGrupo)}</strong>
+          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:#888">
+            <span>Total: <strong>${currency(totalGrupo)}</strong></span>
+            <span class="btn-csv-contado" data-group-idx="${idx}" title="Descargar CSV"
+                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid #dee2e6;color:#6c757d;background:rgba(255,255,255,0.8);line-height:1.8">
+              <i class="bi bi-download" style="pointer-events:none"></i>
+            </span>
           </span>
         </button>
       </h2>
@@ -976,8 +1164,11 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                     };
 
                     if (c.diferido) {
-                      const pagos        = (pagosMap[c.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
-                      const regTotal     = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const allPagos     = (pagosMap[c.id] || []).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+                      const pagos        = (filtroMes && tc?.ciclo)
+                        ? _getPagosEnCiclo(pagosMap[c.id], tc, filtroMes, festivosMX).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+                        : allPagos;
+                      const regTotal     = allPagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
                       const totalVal     = Number(c.totalDiferido || c.total) || 0;
                       const pend         = totalVal - regTotal;
                       const allRegistered = pend < 0.005;
@@ -1083,7 +1274,10 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
   const color        = inst?.color  || '#607d8b';
   const mostrarTotal = filtro !== 'curso';
   const deuda        = items.reduce((s, m) => s + (Number(m.restante) || 0), 0);
-  const mens         = items.reduce((s, m) => s + (Number(m.mensualidad) || 0), 0);
+  const mens         = items.reduce((s, m) => {
+    if (!m.diferido) return s + (Number(m.mensualidad) || 0);
+    return s + (pagosMap[m.id] || []).reduce((ps, p) => ps + (Number(p.mensualidad ?? m.mensualidad ?? p.monto) || 0), 0);
+  }, 0);
   const totalGrupo   = items.reduce((s, m) => s + (Number(m.total) || 0), 0);
 
   const headerStats = mostrarTotal
@@ -1101,8 +1295,12 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                 data-bs-toggle="collapse" data-bs-target="#acc-m-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
-          <span class="ms-auto me-3 d-flex gap-3" style="font-size:0.8rem;color:#888">
-            ${headerStats}
+          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:#888">
+            <span class="d-flex gap-3">${headerStats}</span>
+            <span class="btn-csv-msi" data-group-idx="${idx}" title="Descargar CSV"
+                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid #dee2e6;color:#6c757d;background:rgba(255,255,255,0.8);line-height:1.8">
+              <i class="bi bi-download" style="pointer-events:none"></i>
+            </span>
           </span>
         </button>
       </h2>
@@ -1151,7 +1349,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
                     // Diferido parent row
                     if (m.diferido) {
-                      const pagos        = (pagosMap[m.id] || []).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+                      const pagos        = (pagosMap[m.id] || []).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
                       const pendingAmount = Number(m.total) || 0;
                       const allRegistered = pendingAmount < 0.005;
                       const bonif         = !!tc?.inst?.bonificacionConIva;
@@ -2068,8 +2266,8 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const data = Object.fromEntries(new FormData(form));
     data.monto = Number(data.monto);
-    const newMensualidad = data.mensualidad !== '' ? Number(data.mensualidad) : null;
-    const newRestante    = data.restante    !== '' ? Number(data.restante)    : null;
+    const newMensualidad = (data.mensualidad != null && data.mensualidad !== '') ? Number(data.mensualidad) : null;
+    const newRestante    = (data.restante    != null && data.restante    !== '') ? Number(data.restante)    : null;
     if (data.monto <= 0) { toast('El monto debe ser mayor a 0', 'warning'); return; }
     if (data.monto > pendiente + 0.01) { toast('El monto supera el pendiente', 'warning'); return; }
     if (newRestante != null && newRestante > data.monto + 0.005) { toast('El restante no puede ser mayor al monto', 'warning'); return; }

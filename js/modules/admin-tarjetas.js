@@ -183,6 +183,7 @@ async function renderView(container) {
                         <button class="btn-icon btn-fav-card" data-id="${c.id}" data-fav="${c.favorita ? '1' : ''}" title="${c.favorita ? 'Quitar favorita' : 'Marcar favorita'}">
                           <i class="bi bi-star${c.favorita ? '-fill text-warning' : ''}"></i>
                         </button>
+                        ${c.saldoDisponible != null ? `<button class="btn-icon btn-csv-saldo" data-id="${c.id}" title="Descargar CSV movimientos"><i class="bi bi-download"></i></button>` : ''}
                         <button class="btn-icon btn-edit-card" data-id="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
                         <button class="btn-icon danger btn-del-card" data-id="${c.id}" data-nombre="${c.nombre}" title="Eliminar"><i class="bi bi-trash3"></i></button>
                       </div>
@@ -269,9 +270,78 @@ async function renderView(container) {
         renderView(container);
       }));
 
+    document.querySelectorAll('.btn-csv-saldo').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const card = tarjetas.find(t => t.id === btn.dataset.id);
+        if (!card) return;
+        const fechaRef  = card.fechaActualizacionSaldo || null;
+        const refDate   = fechaRef ? new Date(fechaRef) : null;
+        const posterior = fecha => !!fecha && (refDate ? new Date(fecha) > refDate : true);
+        const d10       = s => (s || '').slice(0, 10);
+
+        const rowsContado = contado
+          .filter(c => c.tarjetaId === card.id && posterior(c.fechaCompra))
+          .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
+          .map(c => ({ 'Compra': c.compra || '', 'Fecha Compra': d10(c.fechaCompra), 'Total': (Number(c.total) || 0).toFixed(2) }));
+
+        const rowsMsi = msi
+          .filter(m => !m.diferido && m.tarjetaId === card.id && posterior(m.fechaCompra))
+          .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
+          .map(m => ({ 'Compra': m.compra || '', 'Fecha Compra': d10(m.fechaCompra), 'Mensualidad': (Number(m.mensualidad) || 0).toFixed(2), 'Meses': Number(m.mesesTotal) || 0, 'Total': (Number(m.total) || 0).toFixed(2) }));
+
+        const rowsGastos = gastos
+          .filter(g => g.tarjetaId === card.id && g.estado === 'registrado' && posterior(g.fechaPago))
+          .sort((a, b) => (b.fechaPago || '').localeCompare(a.fechaPago || ''))
+          .map(g => ({ 'Gasto': g.nombre || '', 'Fecha Pago': d10(g.fechaPago), 'Importe': (Number(g.importe) || 0).toFixed(2) }));
+
+        const rowsPagos = pagosDiferidos
+          .filter(p => p.tarjetaId === card.id && posterior(p.fecha))
+          .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+          .map(p => {
+            const compra = contado.find(c => c.id === p.compraId) || msi.find(m => m.id === p.compraId);
+            return { 'Compra Padre': compra?.compra || p.compraId || '', 'Fecha': d10(p.fecha), 'Monto': (Number(p.monto) || 0).toFixed(2) };
+          });
+
+        const since   = fechaRef ? `desde_${d10(fechaRef)}` : 'todos';
+        const nombre  = (card.nombre || 'tarjeta').replace(/\s+/g, '_');
+        _downloadCSV(`saldo_${nombre}_${since}.csv`, [
+          ...(rowsContado.length  ? [{ title: 'De Contado',      rows: rowsContado  }] : []),
+          ...(rowsMsi.length      ? [{ title: 'A Plazos (MSI)',  rows: rowsMsi      }] : []),
+          ...(rowsGastos.length   ? [{ title: 'Gastos Fijos',    rows: rowsGastos   }] : []),
+          ...(rowsPagos.length    ? [{ title: 'Pagos Diferidos', rows: rowsPagos    }] : []),
+        ]);
+      }));
+
   } catch (e) {
     container.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
   }
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+
+function _downloadCSV(filename, sections) {
+  const esc  = v => { const s = String(v ?? ''); return /[,"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const lines = [];
+  sections.forEach(({ title, rows }) => {
+    if (!rows?.length) return;
+    if (title) lines.push(esc(title));
+    const cols = Object.keys(rows[0]);
+    lines.push(cols.map(esc).join(','));
+    rows.forEach(r => lines.push(cols.map(c => esc(r[c])).join(',')));
+    lines.push('');
+  });
+  if (!lines.length) return;
+  const str  = 'sep=,\r\n' + lines.join('\r\n');
+  const buf  = new ArrayBuffer(2 + str.length * 2);
+  const view = new Uint16Array(buf);
+  view[0] = 0xFEFF;
+  for (let i = 0; i < str.length; i++) view[i + 1] = str.charCodeAt(i);
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(new Blob([buf], { type: 'text/csv;charset=utf-16le' })),
+    download: filename,
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Institution modal ─────────────────────────────────────────────────────────

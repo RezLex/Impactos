@@ -241,32 +241,58 @@ export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosI
 
   const pagosDifMes = getPagosDiferidosMes(pagosDiferidos, tid, ciclo, mes, festivosMX, diferidoMap);
 
-  const estimadoContado = getContadoMes(contadoItems, tid, ciclo, mes, festivosMX)
-    .reduce((s, c) => s + (Number(c.total) || 0), 0);
+  // Pre-compute total registered monto per compraId across ALL pagos (guards against stale c.total).
+  const pagosMontoMap = {};
+  pagosDiferidos.forEach(p => {
+    pagosMontoMap[p.compraId] = (pagosMontoMap[p.compraId] || 0) + (Number(p.monto) || 0);
+  });
 
-  const estimadoPlazos = getPlazosMes(msiItems, tid, ciclo, mes, festivosMX)
-    .reduce((s, m) => {
-      if (!m.diferido) return s + (Number(m.mensualidad) || 0);
-      // m.total is already reduced by every registered pago's monto,
-      // so total/mesesTotal gives the true unregistered monthly portion.
-      return s + r2(Number(m.total) / Math.max(1, Number(m.mesesTotal)));
-    }, 0);
+  // estimadoContado: non-diferido at full total; diferido at trueRemaining (totalDiferido − pagos).
+  // pendienteContado: the diferido portion only — used in the tooltip.
+  let estimadoContado  = 0;
+  let pendienteContado = 0;
+  getContadoMes(contadoItems, tid, ciclo, mes, festivosMX).forEach(c => {
+    if (!c.diferido) { estimadoContado += Number(c.total) || 0; return; }
+    const totalOrig     = Number(c.totalDiferido || c.total) || 0;
+    const trueRemaining = Math.max(0, totalOrig - (pagosMontoMap[c.id] || 0));
+    estimadoContado  += trueRemaining;
+    pendienteContado += trueRemaining;
+  });
+
+  // estimadoPlazos: non-diferido at mensualidad; diferido at total/mesesTotal (m.total decrements with pagos).
+  // pendientePlazos: the diferido monthly portion only — used in the tooltip.
+  let estimadoPlazos  = 0;
+  let pendientePlazos = 0;
+  getPlazosMes(msiItems, tid, ciclo, mes, festivosMX).forEach(m => {
+    if (!m.diferido) { estimadoPlazos += Number(m.mensualidad) || 0; return; }
+    const portion = r2(Number(m.total) / Math.max(1, Number(m.mesesTotal)));
+    estimadoPlazos  += portion;
+    pendientePlazos += portion;
+  });
 
   const estimadoGastos = getGastosCreditoMes(gastosItems, tid, ciclo, mes, festivosMX)
     .reduce((s, g) => s + (Number(g.importe) || 0), 0);
 
-  const estimadoPagosDif = pagosDifMes.reduce((s, p) => {
+  let pagosDifContado = 0;
+  let pagosDifPlazos  = 0;
+  pagosDifMes.forEach(p => {
     const compra = diferidoMap[p.compraId];
-    // Contado diferido pagos have no mensualidad — the full monto is due in one payment.
-    const men = p.mensualidad != null ? Number(p.mensualidad)
-              : compra?.mensualidad  != null ? Number(compra.mensualidad)
-              : Number(p.monto);
-    return s + (men || 0);
-  }, 0);
+    // Contado: single payment, always use p.monto (mesesTotal absent → NaN → falsy).
+    // MSI: mensualidad chain → compra.mensualidad → p.monto fallback.
+    const men = Number(compra?.mesesTotal)
+      ? (p.mensualidad != null ? Number(p.mensualidad)
+        : compra?.mensualidad != null ? Number(compra.mensualidad)
+        : Number(p.monto))
+      : Number(p.monto);
+    if (Number(compra?.mesesTotal)) pagosDifPlazos  += men || 0;
+    else                             pagosDifContado += men || 0;
+  });
 
   return {
     estimadoContado, estimadoPlazos, estimadoGastos,
-    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + estimadoPagosDif),
+    pendienteContado, pendientePlazos,
+    pagosDifContado, pagosDifPlazos,
+    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos),
   };
 }
 

@@ -86,10 +86,14 @@ async function renderView(container, mes) {
             const tarjeta = cardMap[t.tarjetaId];
             if (!tarjeta) return t;
             const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
-            const estSame = est.estimadoContado === t.estimadoContado &&
-                            est.estimadoPlazos  === t.estimadoPlazos  &&
-                            est.estimadoGastos  === t.estimadoGastos  &&
-                            est.estimadoTotal   === t.estimadoTotal;
+            const estSame = est.estimadoContado  === t.estimadoContado  &&
+                            est.estimadoPlazos   === t.estimadoPlazos   &&
+                            est.estimadoGastos   === t.estimadoGastos   &&
+                            est.estimadoTotal    === t.estimadoTotal    &&
+                            est.pendienteContado === t.pendienteContado &&
+                            est.pendientePlazos  === t.pendientePlazos  &&
+                            est.pagosDifContado  === t.pagosDifContado  &&
+                            est.pagosDifPlazos   === t.pagosDifPlazos;
             // Always recalculate dates to catch stale/wrong values from previous versions
             let dateUpdate = {};
             if (tarjeta.ciclo) {
@@ -472,10 +476,11 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           </div>`;
         })()}</td>
       <td class="text-end" style="white-space:nowrap;${P}" title="${[
-          `Estimado: ${currency(t.estimadoTotal)}`,
-          t.estimadoContado > 0 ? `  Contado: ${currency(t.estimadoContado)}` : '',
-          t.estimadoPlazos  > 0 ? `  Plazos:  ${currency(t.estimadoPlazos)}`  : '',
-          t.estimadoGastos  > 0 ? `  Gastos:  ${currency(t.estimadoGastos)}`  : '',
+          (t.estimadoContado + (t.pagosDifContado || 0)) > 0 ? `Contado: ${currency(t.estimadoContado + (t.pagosDifContado || 0))}` : '',
+          (t.estimadoContado + (t.pagosDifContado || 0)) > 0 && t.pendienteContado > 0 ? `  Pendiente: ${currency(t.pendienteContado)}` : '',
+          (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 ? `Plazos: ${currency(t.estimadoPlazos + (t.pagosDifPlazos || 0))}`  : '',
+          (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 && t.pendientePlazos  > 0 ? `  Pendiente: ${currency(t.pendientePlazos)}` : '',
+          t.estimadoGastos  > 0 ? `Gastos: ${currency(t.estimadoGastos)}`  : '',
         ].filter(Boolean).join('\n')}">
         ${numCell(t.estimadoTotal, t.montoAPagar, idx, 'montoAPagar')}
         ${t.pagado ? `<div class="text-muted" style="font-size:0.7rem">${fmtDate(t.fechaPagado)}</div>` : ''}
