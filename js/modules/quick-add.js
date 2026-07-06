@@ -10,6 +10,46 @@ const _addTime = s => {
     : `${s}T12:00:00`;
 };
 
+const _applyTime = (dateStr, timeStr) => {
+  if (!dateStr || dateStr.length !== 10) return dateStr;
+  if (timeStr) return `${dateStr}T${timeStr}:00`;
+  return _addTime(dateStr);
+};
+
+const _wireTimeToggle = () => {
+  const todayStr = () => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+  };
+  const nowTime = () => {
+    const n = new Date();
+    return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
+  };
+  document.querySelectorAll('[data-toggle-time]').forEach(btn => {
+    const input      = document.querySelector(`[name="${btn.dataset.toggleTime}"]`);
+    if (!input) return;
+    const wrapper    = input.closest('.time-toggle-wrapper') || input;
+    const dateInput  = document.querySelector(`[name="${btn.dataset.toggleTime.replace(/Time$/, '')}"]`);
+    btn.addEventListener('click', () => {
+      const visible = wrapper.style.display !== 'none';
+      wrapper.style.display = visible ? 'none' : '';
+      btn.querySelector('i').style.color = visible ? '' : 'var(--bs-primary)';
+      if (visible) {
+        input.value = '';
+      } else if (!input.value && dateInput?.value === todayStr()) {
+        input.value = nowTime();
+      }
+    });
+  });
+};
+
+const _wireTimePicker = () => {
+  document.querySelectorAll('input[type=time]').forEach(el => {
+    el.addEventListener('click', () => { try { el.showPicker(); } catch(e) {} });
+    el.addEventListener('keydown', e => e.preventDefault());
+  });
+};
+
 const _bonifFieldsQA = (item) => {
   const b = item?.bonificacion;
   return `
@@ -317,7 +357,13 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${toISODate(new Date())}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${toISODate(new Date())}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="">
+              </div>
+            </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Total *</label>
@@ -344,6 +390,8 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   });
 
   _wireBonifQA();
+  _wireTimeToggle();
+  _wireTimePicker();
   _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX, null, contado, msi, gastos, gastosFijos);
 
   document.getElementById('qa-save-contado').addEventListener('click', async () => {
@@ -355,7 +403,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     data.numeroTarjeta = numeroTarjeta || '';
     data.total = Number(data.total);
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonifQA(data);
     try {
       await create('contado', data);
@@ -383,7 +431,13 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${toISODate(new Date())}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${toISODate(new Date())}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="">
+              </div>
+            </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Total *</label>
@@ -430,6 +484,8 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   document.getElementById('qa-meses').addEventListener('input', recalc);
 
   _wireBonifQA();
+  _wireTimeToggle();
+  _wireTimePicker();
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
     form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos);
 
@@ -446,7 +502,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     data.mesesPagados  = 0;
     data.restante      = r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonifQA(data);
     try {
       await create('msi', data);
@@ -480,9 +536,15 @@ function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, g
               <option value="transferencia">Transferencia</option>
             </select>
           </div>
-          <div class="col-md-6">
+          <div class="col-12">
             <label class="form-label">Fecha *</label>
-            <input type="date" class="form-control" name="fechaPago" value="${toISODate(new Date())}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaPago" value="${toISODate(new Date())}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaPagoTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaPagoTime" value="">
+              </div>
+            </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Importe *</label>
@@ -503,6 +565,8 @@ function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, g
       <button type="button" class="btn btn-primary btn-sm" id="qa-save-gasto">Registrar</button>`,
   });
 
+  _wireTimeToggle();
+  _wireTimePicker();
   _wirePreview('qa-gasto-form', 'tarjetaId', 'fechaPago', 'importe', tarjetas, festivosMX,
     form => Number(form.querySelector('[name=importe]')?.value) || 0, contado, msi, gastos, gastosFijos);
 
@@ -516,7 +580,7 @@ function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, g
     data.importe       = Number(data.importe);
     data.tipo          = 'manual';
     data.estado        = 'registrado';
-    if (data.fechaPago?.length === 10) data.fechaPago = _addTime(data.fechaPago);
+    data.fechaPago = _applyTime(data.fechaPago, data.fechaPagoTime); delete data.fechaPagoTime;
     data.mes           = data.fechaPago.slice(0, 7);
     if (!data.numeroTarjeta) delete data.numeroTarjeta;
     try {

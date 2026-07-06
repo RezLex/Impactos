@@ -1,5 +1,48 @@
 import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 
+const _hasRealTime = dt => dt?.length > 10 && !dt.includes('T12:00:00');
+
+const _wireTimeToggle = () => {
+  const todayStr = () => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
+  };
+  const nowTime = () => {
+    const n = new Date();
+    return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
+  };
+  document.querySelectorAll('[data-toggle-time]').forEach(btn => {
+    const input      = document.querySelector(`[name="${btn.dataset.toggleTime}"]`);
+    if (!input) return;
+    const wrapper    = input.closest('.time-toggle-wrapper') || input;
+    const dateInput  = document.querySelector(`[name="${btn.dataset.toggleTime.replace(/Time$/, '')}"]`);
+    btn.addEventListener('click', () => {
+      const visible = wrapper.style.display !== 'none';
+      wrapper.style.display = visible ? 'none' : '';
+      btn.querySelector('i').style.color = visible ? '' : 'var(--bs-primary)';
+      if (visible) {
+        input.value = '';
+      } else if (!input.value && dateInput?.value === todayStr()) {
+        input.value = nowTime();
+      }
+    });
+  });
+};
+
+const _wireTimePicker = () => {
+  document.querySelectorAll('input[type=time]').forEach(el => {
+    el.addEventListener('click', () => { try { el.showPicker(); } catch(e) {} });
+    el.addEventListener('keydown', e => e.preventDefault());
+  });
+};
+
+const _applyTime = (dateStr, timeStr) => {
+  if (!dateStr || dateStr.length !== 10) return dateStr;
+  if (timeStr) return `${dateStr}T${timeStr}:00`;
+  return _addTime(dateStr);
+};
+
+
 const _addTime = s => {
   if (!s || s.length !== 10) return s;
   const n = new Date();
@@ -331,7 +374,7 @@ async function renderView(container, initialTab = 'contado') {
                 <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
                 <td></td>
                 <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
-                <td style="white-space:nowrap">${_buildPagoCellHtml(tc, p.fecha)}</td>
+                <td>—</td>
                 <td class="text-end">${currency(p.monto)}</td>
                 <td>
                   <div class="d-flex gap-1">
@@ -1187,7 +1230,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                         </td>
                         <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                         <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
-                        <td style="white-space:nowrap">${_pagoCell(c.fechaCompra)}</td>
+                        <td style="white-space:nowrap">${_pagoCell(filtroMes && pagos.length ? pagos[0].fecha : c.fechaCompra)}</td>
                         <td class="text-end">
                           ${_bonifTotal(c, totalVal, bonif)}
                         </td>
@@ -1205,7 +1248,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
                           <td></td>
                           <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
-                          <td style="white-space:nowrap">${_pagoCell(p.fecha)}</td>
+                          <td>—</td>
                           <td class="text-end">${currency(p.monto)}</td>
                           <td>
                             <div class="d-flex gap-1">
@@ -1731,7 +1774,13 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${(compra?.fechaCompra || '').slice(0, 10)}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${(compra?.fechaCompra || toISODate(new Date())).slice(0, 10)}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="${_hasRealTime(compra?.fechaCompra) ? compra.fechaCompra.slice(11, 16) : ''}">
+              </div>
+            </div>
           </div>
           <div class="col-12">
             <div class="form-check form-switch mb-1">
@@ -1763,6 +1812,8 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
   });
 
   _wireBonif();
+  _wireTimeToggle();
+  _wireTimePicker();
 
   const chkDif  = document.getElementById('chk-diferido-contado');
   const hintDif = document.getElementById('diferido-hint-contado');
@@ -1788,7 +1839,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
       data.total = totalVal;
     }
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
     try {
       if (isEdit) await update('contado', compra.id, data);
@@ -1824,7 +1875,13 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
-            <input type="date" class="form-control" name="fechaCompra" value="${(msi?.fechaCompra || '').slice(0, 10)}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${(msi?.fechaCompra || toISODate(new Date())).slice(0, 10)}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="${_hasRealTime(msi?.fechaCompra) ? msi.fechaCompra.slice(11, 16) : ''}">
+              </div>
+            </div>
           </div>
           <div class="col-12">
             <div class="form-check form-switch mb-1">
@@ -1880,6 +1937,8 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
   });
 
   _wireBonif();
+  _wireTimeToggle();
+  _wireTimePicker();
 
   const chkDifMsi  = document.getElementById('chk-diferido-msi');
   const hintDifMsi = document.getElementById('diferido-hint-msi');
@@ -1930,7 +1989,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     }
     data.restante      = data.restante !== '' ? r2(Number(data.restante)) : r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
-    if (data.fechaCompra?.length === 10) data.fechaCompra = _addTime(data.fechaCompra);
+    data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
     try {
       let savedId;
@@ -2123,9 +2182,15 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
               <option value="transferencia" ${gasto?.formaPago === 'transferencia' ? 'selected' : ''}>Transferencia</option>
             </select>
           </div>
-          <div class="col-md-6">
+          <div class="col-12">
             <label class="form-label">Fecha de Pago *</label>
-            <input type="date" class="form-control" name="fechaPago" value="${(gasto?.fechaPago || '').slice(0, 10)}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fechaPago" value="${(gasto?.fechaPago || toISODate(new Date())).slice(0, 10)}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaPagoTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaPagoTime" value="${_hasRealTime(gasto?.fechaPago) ? gasto.fechaPago.slice(11, 16) : ''}">
+              </div>
+            </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Importe *</label>
@@ -2141,6 +2206,9 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-nuevo-gasto">${isEdit ? 'Guardar' : 'Registrar'}</button>`
   });
 
+  _wireTimeToggle();
+  _wireTimePicker();
+
   document.getElementById('btn-save-nuevo-gasto').addEventListener('click', async () => {
     const form = document.getElementById('nuevo-gasto-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
@@ -2151,7 +2219,7 @@ function showModalNuevoGasto(gasto, instituciones, tarjetas, onSaved) {
     data.importe       = Number(data.importe);
     data.tipo          = 'manual';
     data.estado        = 'registrado';
-    if (data.fechaPago?.length === 10) data.fechaPago = _addTime(data.fechaPago);
+    data.fechaPago = _applyTime(data.fechaPago, data.fechaPagoTime); delete data.fechaPagoTime;
     data.mes           = (data.fechaPago || '').slice(0, 7) || (gasto?.mes || toISODate(new Date()).slice(0, 7));
     if (!data.numeroTarjeta) delete data.numeroTarjeta;
     try {
@@ -2210,18 +2278,23 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
               <strong>Pendiente por registrar:</strong> ${currency(Math.max(0, pendiente))}
             </div>
           </div>
-          <div class="col-md-6">
+          <div class="col-md-6" id="pd-fecha-col">
             <label class="form-label">Fecha de pago *</label>
-            <input type="date" class="form-control" name="fecha" value="${(pago?.fecha || '').slice(0, 10)}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fecha" value="${(pago?.fecha || toISODate(new Date())).slice(0, 10)}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaTime" value="${_hasRealTime(pago?.fecha) ? pago.fecha.slice(11, 16) : ''}">
+              </div>
+            </div>
           </div>
-          <div class="col-md-6">
+          <div class="col-md-6" id="pd-monto-col">
             <label class="form-label">Monto *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" id="pd-monto" name="monto" value="${montoInicial || ''}"
+              <input type="number" class="form-control" id="pd-monto" name="monto" value="${isEdit ? (montoInicial || '') : Math.max(0, pendiente).toFixed(2)}"
                 required min="0.01" step="0.01" max="${pendiente.toFixed(2)}" placeholder="0.00">
             </div>
-            <div class="form-text">Máximo: ${currency(Math.max(0, pendiente))}</div>
           </div>
           ${!isContado ? `
           <div class="col-md-6">
@@ -2258,6 +2331,27 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
     if (restEl) restEl.value = mt.toFixed(2);
   };
 
+  _wireTimeToggle();
+  _wireTimePicker();
+
+  const _pdAdjustCols = (on) => {
+    const fechaCol = document.getElementById('pd-fecha-col');
+    const montoCol = document.getElementById('pd-monto-col');
+    if (!fechaCol || !montoCol) return;
+    fechaCol.classList.toggle('col-md-8', on);
+    fechaCol.classList.toggle('col-md-6', !on);
+    montoCol.classList.toggle('col-md-4', on);
+    montoCol.classList.toggle('col-md-6', !on);
+  };
+  _pdAdjustCols(false);
+  document.querySelector('[data-toggle-time="fechaTime"]')
+    ?.addEventListener('click', () => {
+      const on = document.querySelector('[name="fechaTime"]')
+        ?.closest('.time-toggle-wrapper')?.style.display !== 'none';
+      _pdAdjustCols(on);
+    });
+
+  if (!isEdit) _recalcMens();
   montoEl?.addEventListener('input', _recalcMens);
   document.getElementById('pd-btn-recalc')?.addEventListener('click', _recalcMens);
 
@@ -2271,7 +2365,7 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
     if (data.monto <= 0) { toast('El monto debe ser mayor a 0', 'warning'); return; }
     if (data.monto > pendiente + 0.01) { toast('El monto supera el pendiente', 'warning'); return; }
     if (newRestante != null && newRestante > data.monto + 0.005) { toast('El restante no puede ser mayor al monto', 'warning'); return; }
-    if (data.fecha?.length === 10) data.fecha = _addTime(data.fecha);
+    data.fecha = _applyTime(data.fecha, data.fechaTime); delete data.fechaTime;
 
     try {
       if (isEdit) {
@@ -2331,12 +2425,19 @@ function _showModalEditPagoPlan(pago, compra, pagosDiferidos, onSaved) {
               ${mesesTotal} meses · Disponible para reasignar: <strong>${currency(maxMonto)}</strong>
             </div>
           </div>
-          <div class="col-md-6">
+          <div class="col-md-6" id="pp-fecha-col">
             <label class="form-label">Fecha de pago</label>
-            <input type="date" class="form-control" name="fecha" id="pp-fecha"
-              value="${(pago.fecha || '').slice(0, 10)}" required>
+            <div class="d-flex align-items-center gap-1">
+              <input type="date" class="form-control" style="min-width:0" name="fecha" id="pp-fecha"
+                value="${(pago.fecha || '').slice(0, 10)}" required>
+              <button type="button" class="btn-icon" data-toggle-time="fechaTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
+              <div class="time-toggle-wrapper" style="display:none">
+                <input type="time" class="form-control form-control-sm" name="fechaTime"
+                  value="${_hasRealTime(pago.fecha) ? pago.fecha.slice(11, 16) : ''}">
+              </div>
+            </div>
           </div>
-          <div class="col-md-6">
+          <div class="col-md-6" id="pp-monto-col">
             <label class="form-label">Total pago</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
@@ -2372,6 +2473,26 @@ function _showModalEditPagoPlan(pago, compra, pagosDiferidos, onSaved) {
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-pago-plan">Guardar</button>`
   });
+
+  _wireTimeToggle();
+  _wireTimePicker();
+
+  const _ppAdjustCols = (on) => {
+    const fechaCol = document.getElementById('pp-fecha-col');
+    const montoCol = document.getElementById('pp-monto-col');
+    if (!fechaCol || !montoCol) return;
+    fechaCol.classList.toggle('col-md-8', on);
+    fechaCol.classList.toggle('col-md-6', !on);
+    montoCol.classList.toggle('col-md-4', on);
+    montoCol.classList.toggle('col-md-6', !on);
+  };
+  _ppAdjustCols(false);
+  document.querySelector('[data-toggle-time="fechaTime"]')
+    ?.addEventListener('click', () => {
+      const on = document.querySelector('[name="fechaTime"]')
+        ?.closest('.time-toggle-wrapper')?.style.display !== 'none';
+      _ppAdjustCols(on);
+    });
 
   const montoEl = document.getElementById('pp-monto');
   const mesesEl = document.getElementById('pp-meses-pagados');
@@ -2409,8 +2530,8 @@ function _showModalEditPagoPlan(pago, compra, pagosDiferidos, onSaved) {
       toast(`El total no puede ser mayor a ${currency(maxMonto)}`, 'danger'); return;
     }
 
-    let newFecha = data.fecha || '';
-    if (newFecha.length === 10) newFecha = _addTime(newFecha);
+    const newFecha = _applyTime(data.fecha, data.fechaTime);
+    delete data.fechaTime;
     const updates = {
       fecha:        newFecha,
       monto:        newMonto,

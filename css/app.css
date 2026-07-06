@@ -1271,3 +1271,6 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   transition: box-shadow 0.15s, transform 0.15s;
 }
 .fab-item:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.2); transform: translateX(-2px); }
+
+input[type="time"] { cursor: pointer; }
+input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
