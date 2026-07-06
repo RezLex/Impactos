@@ -117,6 +117,7 @@ function setupFab() {
 // ── Service Worker ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
