@@ -337,10 +337,14 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
       <div class="col-12 col-lg-3">
         <div class="metric-card">
           <div class="metric-icon" style="background:#fce4ec"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
-          ${isProyeccion || isCerrado ? `
+          ${isProyeccion ? `
+          <div class="metric-info">
+            <div class="metric-value">${currency(totalAPagar)}</div>
+            <div class="metric-label">Total a pagar</div>
+          </div>` : isCerrado ? `
           <div class="metric-info">
             <div class="metric-value">${currency(totales.pagoCredito + debitoRegistrado)}</div>
-            <div class="metric-label">${isCerrado ? 'Total pagado' : 'Total a pagar'}</div>
+            <div class="metric-label">Total pagado</div>
           </div>` : `
           <div class="metric-info d-flex gap-0" style="min-width:0">
             <div style="flex:1;min-width:0">

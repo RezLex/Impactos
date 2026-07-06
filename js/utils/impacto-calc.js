@@ -403,7 +403,7 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
       fechaCorte, fechaPago,
       ...est,
       estimadoGastos,
-      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos),
+      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos + (est.pagosDifContado || 0) + (est.pagosDifPlazos || 0)),
       confirmado: false, pagado: false,
     };
   });
