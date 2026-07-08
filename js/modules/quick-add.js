@@ -211,7 +211,7 @@ const PREVIEW_HTML = `
     </div>
   </div>`;
 
-async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado = [], msi = [], gastos = [], gastosFijos = []) {
+async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = []) {
   const preview = document.getElementById('qa-preview');
   if (!preview) return;
 
@@ -303,7 +303,7 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
 }
 
 let _previewTimer = null;
-function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = []) {
+function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = []) {
   const getValues = () => {
     const form = document.getElementById(formId);
     if (!form) return;
@@ -312,7 +312,7 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
     const total         = Number(form.querySelector(`[name="${totalField}"]`)?.value) || 0;
     const monthlyAmount = monthlyAmountFn ? monthlyAmountFn(form) : total;
     clearTimeout(_previewTimer);
-    _previewTimer = setTimeout(() => _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado, msi, gastos, gastosFijos), 250);
+    _previewTimer = setTimeout(() => _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos), 250);
   };
 
   const watchFields = new Set([tarjetaValField, fechaField, totalField]);
@@ -333,15 +333,15 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
 // ── Public ────────────────────────────────────────────────────────────────────
 
 export async function openQuickAdd(action) {
-  const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos } = await _loadData();
-  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos);
-  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos);
-  else if (action === 'gasto')  _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos);
+  const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos } = await _loadData();
+  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
+  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
+  else if (action === 'gasto')  _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
 }
 
 // ── De Contado ────────────────────────────────────────────────────────────────
 
-function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos) {
+function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = []) {
   openModal({
     title: 'Nueva Compra De Contado',
     size: 'lg',
@@ -392,7 +392,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   _wireBonifQA();
   _wireTimeToggle();
   _wireTimePicker();
-  _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX, null, contado, msi, gastos, gastosFijos);
+  _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos);
 
   document.getElementById('qa-save-contado').addEventListener('click', async () => {
     const form = document.getElementById('qa-contado-form');
@@ -415,7 +415,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
 
 // ── A Plazos ──────────────────────────────────────────────────────────────────
 
-function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos) {
+function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = []) {
   openModal({
     title: 'Nueva Compra A Plazos',
     size: 'lg',
@@ -487,7 +487,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
-    form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos);
+    form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos);
 
   document.getElementById('qa-save-plazos').addEventListener('click', async () => {
     const form = document.getElementById('qa-plazos-form');
@@ -514,7 +514,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
 
 // ── Gasto ─────────────────────────────────────────────────────────────────────
 
-function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos) {
+function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = []) {
   const debitoCards = tarjetas.filter(t => t.tipo === 'debito');
   openModal({
     title: 'Nuevo Gasto',
@@ -568,7 +568,7 @@ function _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, g
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-gasto-form', 'tarjetaId', 'fechaPago', 'importe', tarjetas, festivosMX,
-    form => Number(form.querySelector('[name=importe]')?.value) || 0, contado, msi, gastos, gastosFijos);
+    form => Number(form.querySelector('[name=importe]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos);
 
   document.getElementById('qa-save-gasto').addEventListener('click', async () => {
     const form = document.getElementById('qa-gasto-form');
