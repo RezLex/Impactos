@@ -1723,7 +1723,7 @@ function _saveBonif(data) {
       ...(aplicada ? { aplicada } : {}),
     };
   } else {
-    delete data.bonificacion;
+    data.bonificacion = null;
   }
 }
 
