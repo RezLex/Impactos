@@ -134,7 +134,7 @@ async function _loadData() {
 
 function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const lista   = soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas;
+  const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
 
   const _opts = (cards, showInst = false) => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
@@ -352,7 +352,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
             <label class="form-label">Tarjeta *</label>
             <select class="form-select" name="tarjetaId" required>
               <option value="">— Seleccionar —</option>
-              ${_buildCardOptions(null, instituciones, tarjetas, false)}
+              ${_buildCardOptions(null, instituciones, tarjetas, true)}
             </select>
           </div>
           <div class="col-md-6">

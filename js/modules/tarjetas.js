@@ -75,7 +75,7 @@ async function renderView(container) {
       <div class="page-header">
         <div class="page-header-text">
           <h2>Tarjetas</h2>
-          <p>${tarjetas.length} tarjetas</p>
+          <p>${tarjetas.filter(t => !t.oculta).length} tarjetas</p>
         </div>
       </div>
       <div class="filter-bar">
@@ -103,6 +103,7 @@ async function renderView(container) {
 
       const filtered = tarjetas
         .filter(t => {
+          if (t.oculta) return false;
           if (filtroTipo !== 'todos' && t.tipo !== filtroTipo) return false;
           if (filtroInst && t.institucionId !== filtroInst) return false;
           if (filtroDigitos) {

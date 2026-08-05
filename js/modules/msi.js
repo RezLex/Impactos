@@ -1613,7 +1613,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const lista   = soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas;
+  const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
 
   const _cardOpts = (cards, showInst = false) => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
@@ -1769,7 +1769,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
             <label class="form-label">Tarjeta *</label>
             <select class="form-select" name="tarjetaId" required>
               <option value="">— Seleccionar —</option>
-              ${buildCardOptions(compra, instituciones, tarjetas, false)}
+              ${buildCardOptions(compra, instituciones, tarjetas, true)}
             </select>
           </div>
           <div class="col-md-6">

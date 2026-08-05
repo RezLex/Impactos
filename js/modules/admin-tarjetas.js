@@ -180,8 +180,11 @@ async function renderView(container) {
                     <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap">${fmtCiclo(c)}</td>
                     <td>
                       <div class="d-flex gap-1">
-                        <button class="btn-icon btn-fav-card" data-id="${c.id}" data-fav="${c.favorita ? '1' : ''}" title="${c.favorita ? 'Quitar favorita' : 'Marcar favorita'}">
+                        <button class="btn-icon btn-fav-card" data-id="${c.id}" data-fav="${c.favorita ? '1' : ''}" title="${c.oculta ? 'No se puede marcar favorita una tarjeta oculta' : (c.favorita ? 'Quitar favorita' : 'Marcar favorita')}" ${c.oculta ? 'disabled' : ''}>
                           <i class="bi bi-star${c.favorita ? '-fill text-warning' : ''}"></i>
+                        </button>
+                        <button class="btn-icon btn-hide-card" data-id="${c.id}" data-oculta="${c.oculta ? '1' : ''}" title="${c.favorita ? 'No se puede ocultar una tarjeta favorita' : (c.oculta ? 'Mostrar tarjeta' : 'Ocultar tarjeta')}" ${c.favorita ? 'disabled' : ''}>
+                          <i class="bi bi-eye${c.oculta ? '-slash text-muted' : ''}"></i>
                         </button>
                         ${c.saldoDisponible != null ? `<button class="btn-icon btn-csv-saldo" data-id="${c.id}" title="Descargar CSV movimientos"><i class="bi bi-download"></i></button>` : ''}
                         <button class="btn-icon btn-edit-card" data-id="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
@@ -252,6 +255,13 @@ async function renderView(container) {
       btn.addEventListener('click', async () => {
         const isFav = !!btn.dataset.fav;
         await update('tarjetas', btn.dataset.id, { favorita: !isFav });
+        renderView(container);
+      }));
+
+    document.querySelectorAll('.btn-hide-card').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        const isHidden = !!btn.dataset.oculta;
+        await update('tarjetas', btn.dataset.id, { oculta: !isHidden });
         renderView(container);
       }));
 

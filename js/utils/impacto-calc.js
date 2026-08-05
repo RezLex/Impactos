@@ -382,8 +382,18 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
     if (gastosFijosItems.length && t.ciclo) {
       const periodo = calcularCicloParaMes(t.ciclo, mes, festivosMX);
       if (periodo?.fechaPago) {
+        // El ciclo de pago de este mes cubre cargos hasta la fecha de corte.
+        // Un gasto confirmado en el mes del corte (mesCorte) o en el mes proyectado
+        // ya está capturado por getGastosCreditoMes — no duplicar en estimadoGastosFijos.
+        const mesCorte = periodo.fechaCorte ? toISODate(periodo.fechaCorte).slice(0, 7) : mes;
         gastosFijosItems.forEach(gf => {
           if (gf.tarjetaId !== t.id) return;
+          const yaRegistrado = gastosItems.some(g =>
+            g.gastaFijoId === gf.id &&
+            g.estado === 'registrado' &&
+            (g.mes === mes || g.mes === mesCorte)
+          );
+          if (yaRegistrado) return;
           const fecha = _calcularFechaGastoMes(gf, py, pmo - 1, festivosMX);
           if (fecha && toISODate(fecha).startsWith(mes))
             estimadoGastosFijos += Number(gf.importe) || 0;
