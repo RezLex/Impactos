@@ -1212,6 +1212,260 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .admin-num-badge.fisica  { background: #e0e0e0; color: #424242; }
 .admin-num-badge.digital { background: #e3f2fd; color: #1565c0; }
 
+/* ==================== RENDIMIENTOS ==================== */
+
+/* Línea auxiliar bajo el label de una metric card */
+.metric-sub {
+  font-size: 0.68rem;
+  color: #9e9e9e;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Tarjeta de cuenta de inversión ── */
+.inv-card {
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.inv-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
+
+.inv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  color: #fff;
+  /* Alto fijo para que el cuerpo alinee entre tarjetas con y sin alias */
+  min-height: 53px;
+}
+.inv-head-txt { min-width: 0; flex: 1; }
+.inv-inst {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  opacity: 0.8;
+  line-height: 1.2;
+}
+.inv-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inv-head-actions { display: flex; gap: 3px; flex-shrink: 0; }
+.btn-inv-act {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.9);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-inv-act:hover { background: rgba(255,255,255,0.3); color: #fff; }
+
+.inv-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+
+.inv-saldo { text-align: center; }
+.inv-saldo-val { font-size: 1.6rem; font-weight: 700; line-height: 1.1; color: var(--text); }
+.inv-saldo-lbl {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-top: 2px;
+}
+
+.inv-base {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: #616161;
+  padding: 6px 10px;
+  background: #f7f8fa;
+  border-radius: var(--radius-sm);
+}
+
+.inv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.inv-cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+}
+.inv-cell-lbl {
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.inv-cell-val { font-size: 0.95rem; font-weight: 600; margin-top: 1px; }
+.inv-cell.hoy { background: #e8f5e9; border-color: #c8e6c9; }
+.inv-cell.hoy .inv-cell-lbl { color: #2e7d32; }
+.inv-cell.hoy .inv-cell-val { color: var(--success); font-weight: 700; }
+
+/* Desglose bruto → ISR → neto del interés diario */
+.inv-isr {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 5px 10px;
+  background: #fff8e1;
+  border-radius: var(--radius-sm);
+}
+.inv-isr-neg  { color: var(--danger); }
+.inv-isr-neto { font-weight: 700; color: var(--text); }
+.inv-isr-tasa { margin-left: auto; font-size: 0.66rem; opacity: 0.8; white-space: nowrap; }
+
+.inv-tramos { display: flex; flex-direction: column; gap: 2px; }
+/* Tasa única: los tramos que no aplican se atenúan */
+.inv-tramos.unico .inv-tramo:not(.activo) { opacity: 0.4; }
+
+/* Separadores de la sección Avanzado del modal */
+.inv-adv-sep {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+  margin-top: 6px;
+}
+.inv-tramo {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: 5px;
+  border-left: 3px solid transparent;
+}
+.inv-tramo-tasa { font-weight: 600; white-space: nowrap; }
+.inv-tramo.activo {
+  background: #eef2fb;
+  border-left-color: var(--primary-light);
+  color: var(--text);
+}
+.inv-tramo.activo .inv-tramo-tasa { color: var(--primary-light); }
+
+.inv-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 0.68rem;
+  color: #9e9e9e;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: auto;
+}
+
+/* ── Calculadora entre 2 fechas ── */
+.inv-calc {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.inv-calc-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.inv-calc-val { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+.inv-calc-lbl {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.inv-calc-meta { font-size: 0.8rem; color: #616161; line-height: 1.7; }
+.inv-calc-msg { font-size: 0.78rem; margin-top: 8px; }
+
+/* ── Editor de tramos (modal) ── */
+.inv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.inv-row .t-desde {
+  flex: 0 0 96px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.inv-row-sep { font-size: 0.75rem; color: var(--text-muted); }
+.inv-row-hasta   { flex: 1 1 120px; }
+.inv-row-abierto {
+  flex: 1 1 120px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.inv-row-tasa { flex: 0 0 140px; }
+.inv-row .btn-icon { width: 30px; height: 30px; }
+
+@media (max-width: 575.98px) {
+  /* Cada tramo se agrupa en un bloque de 2 líneas: rango arriba, tasa abajo */
+  .inv-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 8px;
+    background: #f7f8fa;
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+  }
+  .inv-row .t-desde { flex: 0 0 auto; text-align: left; }
+  .inv-row-hasta   { flex: 1 1 100px; }
+  .inv-row-abierto { flex: 1 1 100px; }
+  .inv-row-tasa    { flex: 1 1 calc(100% - 42px); }
+}
+
+/* ── Modal actualizar monto ── */
+.inv-upd-est {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: #f7f8fa;
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+}
+.inv-upd-est-lbl {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.inv-upd-est-val { font-size: 1.35rem; font-weight: 700; line-height: 1.2; }
+.inv-upd-delta { font-size: 0.78rem; margin-top: 10px; min-height: 1.2em; }
+
 /* ==================== UTILITIES ==================== */
 .text-success { color: var(--success) !important; }
 .text-danger  { color: var(--danger) !important; }

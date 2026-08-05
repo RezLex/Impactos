@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.7.8';
+const APP_VERSION = '1.8.0';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -43,6 +43,7 @@ function setupRouter() {
   register('/msi',       ()       => navigate('/compras'));
   register('/fijos',     ()       => load('fijos'));
   register('/impacto',   (p, pts) => load('impacto', pts[1] || null));
+  register('/rendimientos', ()    => load('rendimientos'));
   register('/eventos',   (p, pts) => {
     if (pts[1]) load('evento-detalle', pts[1]);
     else        load('eventos');

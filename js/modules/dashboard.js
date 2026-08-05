@@ -7,6 +7,7 @@ import {
   getPlazosMes, getGastosDebitoCompleto, calcularTotalesCredito,
   recalcTotalesImpacto,
 } from '../utils/impacto-calc.js';
+import { resumenCuenta, totalizarResumenes } from '../utils/rendimiento.js';
 
 export async function render(container) {
   container.innerHTML = `<div class="loading-overlay"><div class="spinner-border text-primary" role="status"></div></div>`;
@@ -19,11 +20,17 @@ export async function render(container) {
   }
   // :has() handles overflow automatically — activates on desktop only when dashboard is visible,
   // reverts instantly when navigating away (no JS state needed)
-  styleEl.textContent = `
+  // `extra` compensa la fila adicional cuando las 3 metric cards no caben en
+  // una sola línea (por debajo de xxl la tercera baja a su propio renglón)
+  const setPanel = (extra = 0) => styleEl.textContent = `
     @media (min-width:992px){
       body:has(#app-content .dash-panel-content){overflow:hidden}
-      .dash-panel-content{max-height:calc((100dvh - 458px)/2)!important;overflow-y:auto}
-    }`;
+      .dash-panel-content{max-height:calc((100dvh - ${458 + extra}px)/2)!important;overflow-y:auto}
+    }
+    ${extra ? `@media (min-width:1400px){
+      .dash-panel-content{max-height:calc((100dvh - 458px)/2)!important}
+    }` : ''}`;
+  setPanel();
 
   new MutationObserver((_, obs) => {
     if (!container.querySelector('.dash-panel-content')) { styleEl.remove(); obs.disconnect(); }
@@ -31,7 +38,7 @@ export async function render(container) {
   try {
     const mes = currentYYYYMM();
 
-    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos] =
+    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, inversiones] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -43,6 +50,7 @@ export async function render(container) {
         getAll('festivosMX'),
         getById('config', 'general'),
         getAll('pagosDiferidos'),
+        getAll('inversiones'),
       ]);
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -64,6 +72,14 @@ export async function render(container) {
     });
     const deudaTotal     = Math.max(0, creditoTotal - creditoDisponible);
     const usadoPct       = creditoTotal > 0 ? Math.round((deudaTotal / creditoTotal) * 100) : 0;
+
+    // ── Rendimientos de las cuentas de inversión ─────────────────────────────
+    const rend = totalizarResumenes(inversiones.map(c => resumenCuenta(c, hoy)));
+    // Con 3 tarjetas hacen falta ~313px cada una para que el importe no se
+    // corte; con el sidebar eso solo se cumple desde xxl. Debajo, la tercera
+    // baja a su propio renglón en vez de estrujar a las tres.
+    const colMetric = rend.cuentas ? 'col-12 col-lg-6 col-xxl-4' : 'col-12 col-lg-6';
+    if (rend.cuentas) setPanel(92);
 
     // ── Impacto del mes ──────────────────────────────────────────────────────
     let impactoTarjetas = [];
@@ -158,7 +174,7 @@ export async function render(container) {
 
       <!-- ── Métricas ── -->
       <div class="row g-3 mb-3">
-        <div class="col-12 col-lg-6">
+        <div class="${colMetric}">
           <div class="metric-card h-100">
             <div class="metric-icon" style="background:#ffebee"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
             <div class="metric-info d-flex gap-0" style="min-width:0">
@@ -175,7 +191,7 @@ export async function render(container) {
             </div>
           </div>
         </div>
-        <div class="col-12 col-lg-6">
+        <div class="${colMetric}">
           <div class="metric-card h-100">
             <div class="metric-icon" style="background:#e3f2fd"><i class="bi bi-calculator" style="color:#1565c0"></i></div>
             <div class="metric-info d-flex gap-0" style="min-width:0">
@@ -191,6 +207,24 @@ export async function render(container) {
             </div>
           </div>
         </div>
+        ${rend.cuentas ? `
+        <div class="${colMetric}">
+          <a href="#/rendimientos" class="metric-card h-100 text-reset">
+            <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-piggy-bank-fill" style="color:#2e7d32"></i></div>
+            <div class="metric-info d-flex gap-0" style="min-width:0">
+              <div style="flex:1;min-width:0">
+                <div class="metric-value text-success">${currency(rend.diario)}</div>
+                <div class="metric-label">Diario</div>
+                <div class="metric-sub">Saldo ${currency(rend.saldoActual)}</div>
+              </div>
+              <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+              <div style="flex:1;min-width:0">
+                <div class="metric-value text-success">${currency(rend.rendimientoHastaHoy)}</div>
+                <div class="metric-label">Hasta hoy</div>
+              </div>
+            </div>
+          </a>
+        </div>` : ''}
       </div>
 
       <!-- ── Crédito health bar ── -->

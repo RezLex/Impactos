@@ -7,6 +7,7 @@ const COLLECTIONS = [
   { key: 'msi',            label: 'MSI'              },
   { key: 'pagosDiferidos', label: 'Pagos Diferidos'  },
   { key: 'fijos',          label: 'Gastos Fijos'     },
+  { key: 'inversiones',    label: 'Inversiones'      },
   { key: 'eventos',        label: 'Eventos'          },
   { key: 'festivosMX',     label: 'Festivos MX'      },
 ];

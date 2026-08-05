@@ -36,6 +36,7 @@ function _updateNav(base) {
     '/compras':   'Compras y Gastos',
     '/fijos':     'Gastos Fijos',
     '/impacto':   'Impacto Mensual',
+    '/rendimientos': 'Rendimientos',
     '/eventos':   'Eventos de Ofertas',
     '/exportar':  'Exportar Datos',
     '/festivos':  'Días Festivos',

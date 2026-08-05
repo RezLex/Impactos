@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v8';
+const CACHE = 'impactos-v9';
 
 const SHELL = [
   './',
@@ -18,11 +18,13 @@ const SHELL = [
   './js/modules/migracion.js',
   './js/modules/msi.js',
   './js/modules/quick-add.js',
+  './js/modules/rendimientos.js',
   './js/modules/tarjetas.js',
   './js/utils/ciclo.js',
   './js/utils/db.js',
   './js/utils/formatters.js',
   './js/utils/impacto-calc.js',
+  './js/utils/rendimiento.js',
   './js/utils/saldo.js',
   './js/utils/ui.js',
 ];

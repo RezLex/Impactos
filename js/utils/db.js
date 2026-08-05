@@ -14,7 +14,7 @@ const userDoc  = (name, id) => doc(db, 'users', uid(), name, id);
 // Session-level in-memory cache (5-min TTL) — resets on page reload
 const _mem = new Map();
 const MEM_TTL  = 5 * 60 * 1000;
-const MEM_COLS = new Set(['tarjetas', 'instituciones', 'gastosFijos']);
+const MEM_COLS = new Set(['tarjetas', 'instituciones', 'gastosFijos', 'inversiones']);
 
 // localStorage cache (30-day TTL) — survives page reload
 const LS_PREFIX = 'impactos_c_';

@@ -16,10 +16,12 @@
 8. [Navegación y Routing](#navegación-y-routing)
 9. [Ciclo de Facturación](#ciclo-de-facturación)
 10. [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)
-11. [Cálculo de Nómina](#cálculo-de-nómina)
-12. [Ejecución Local](#ejecución-local)
-13. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-14. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+11. [Cálculo de Impacto Mensual](#cálculo-de-impacto-mensual)
+12. [Cálculo de Rendimientos](#cálculo-de-rendimientos)
+13. [Cálculo de Nómina](#cálculo-de-nómina)
+14. [Ejecución Local](#ejecución-local)
+15. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+16. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -40,7 +42,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.3.0`)
+- Versión de la app visible en el footer del sidebar (`v1.8.0`)
 
 ---
 
@@ -89,6 +91,7 @@ impactos/
     │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
     │   ├── impacto.js          # Impacto mensual rediseñado — confirmación, pago, cierre
+    │   ├── rendimientos.js     # Cuentas de inversión y cálculo de rendimientos compuestos
     │   ├── eventos.js          # Lista de eventos de ofertas
     │   ├── evento-detalle.js   # Detalle de evento: planeación, realizadas, promos
     │   ├── festivos.js         # CRUD de días festivos oficiales MX
@@ -101,6 +104,7 @@ impactos/
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
         ├── saldo.js            # Cálculo de saldo disponible/usado con ajuste por compras
         ├── impacto-calc.js     # Cálculos del Impacto mensual (filtrado, estimados, proyección)
+        ├── rendimiento.js      # Motor de rendimientos compuestos con tramos progresivos
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
 
@@ -205,6 +209,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `clabe` | string? | CLABE interbancaria (18 dígitos) |
 | `numeros` | array | Números de tarjeta (ver estructura abajo) |
 | `favorita` | boolean? | Si está marcada como favorita para aparecer primero en los selects |
+| `oculta` | boolean? | Si está oculta — no aparece en `/tarjetas` ni en ningún selector. Una tarjeta favorita no puede ocultarse y una oculta no puede marcarse como favorita |
 
 **Campos de `credito` y `prestamo`:**
 
@@ -343,7 +348,7 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 | `presupuesto` | number | Ingresos reales del mes (editable mientras activo) |
 | `nominaRef` | number | Snapshot de `nominaAprox` al crear el impacto |
 | `fechaCierre` | string? | Fecha ISO de cierre |
-| `tarjetas` | array | Un registro por cada tarjeta de crédito/préstamo (ver abajo) |
+| `tarjetas` | array | Un registro por cada tarjeta de crédito/préstamo visible (no oculta) |
 | `gastosDebito` | array | Snapshot de gastos débito guardado al cerrar |
 | `totales` | object | Resúmenes calculados (ver abajo) |
 
@@ -388,6 +393,37 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 
 > Los estimados se recalculan automáticamente al abrir el Impacto activo. Si hay nuevas compras desde la última apertura, los estimados se actualizan en Firestore.
 
+### `inversiones/{id}`
+Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una institución ya registrada.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `institucionId` | string | ID de la institución padre |
+| `nombre` | string? | Alias de la cuenta (ej. Cajita, Ahorro+). Opcional — si está vacío se muestra el nombre de la institución |
+| `montoInvertido` | number | Último saldo **real observado** de la cuenta |
+| `fechaActualizacion` | string | Fecha (`YYYY-MM-DD`) en que ese monto era el saldo real |
+| `tramos` | array | Límites de rendimiento (ver estructura abajo) |
+| `modoTramos` | string? | Cómo se aplican los tramos: `progresivo` (default) o `unico` |
+| `baseAnual` | number? | Días del año para el **interés**: `365` (default) o `360` |
+| `isrAnual` | number? | Retención en %. `0` o ausente = cálculo bruto. Su significado depende de `isrSobre` |
+| `isrSobre` | string? | Base de la retención: `capital` (default, tasa anual) o `interes` (% directo de lo ganado) |
+| `baseIsr` | number? | Días del año para la **retención**: `365` (default) o `360`. Solo aplica con `isrSobre: 'capital'` |
+| `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
+| `historial` | array? | Capturas anteriores `{ fecha, monto }`, máximo 60, ascendente |
+| `referencia` | string? | CLABE o referencia de la cuenta |
+| `notas` | string? | Notas libres |
+
+**Estructura de cada elemento en `tramos`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `hasta` | number\|null | Límite superior del tramo; `null` en el último tramo (*en adelante*) |
+| `tasa` | number | Tasa **anual nominal** del tramo en porcentaje (ej. `15`) |
+
+> El `desde` de cada tramo **no se almacena**: se deriva del `hasta` del tramo anterior. Esto elimina huecos y solapes por captura. El array se normaliza al leerlo (`normalizarTramos`), que además ordena los tramos y garantiza que siempre exista un tramo abierto final.
+
+> `montoInvertido` + `fechaActualizacion` son el punto observado más reciente; las capturas anteriores viven en `historial[]`. Entre dos puntos observados el saldo se proyecta; al llegar a un punto observado el saldo se reemplaza por el valor real y la diferencia se reporta como **aportación** (o retiro), nunca como rendimiento.
+
 ### `eventos/{id}`
 
 | Campo | Tipo | Descripción |
@@ -413,7 +449,10 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 ### Dashboard (`#/`)
 Vista principal rediseñada con datos en tiempo real del mes actual:
 - **2 metric cards:** Total a pagar (`estimadoCredito + gastoDebito`, con desglose Contado/Plazos/Gastos) · Restante y Esperado (divisor vertical)
-- **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual
+- **3ª metric card — Rendimientos** (solo si hay cuentas de inversión): **Diario** y **Hasta hoy** con el mismo patrón dividido de las otras dos, y el saldo total como subtexto. Toda la tarjeta enlaza a `#/rendimientos`
+- **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual, a todo lo ancho
+
+> **Por qué las metric cards usan `col-xxl-4` y no `col-lg-4`:** con tres tarjetas en una fila, cada una necesita ~313px para que el importe no se corte con elipsis. Descontando el sidebar eso solo se cumple desde ~1400px de viewport. Por debajo de `xxl` la tercera baja a su propio renglón (`col-lg-6`) en vez de estrujar a las tres. Sin cuentas de inversión la fila vuelve a ser de dos tarjetas a `col-lg-6` y el layout es idéntico al original.
 - **Últimas compras** — hasta 20 compras recientes unificando De Contado y A Plazos, ordenadas por fecha:
   - Badge `Contado` (gris) para compras de contado
   - Badge `X/Y msi` (azul) con mensualidad/mes y total subtexto para A Plazos en curso
@@ -447,9 +486,13 @@ CRUD completo de instituciones y tarjetas:
   - Crédito: ciclo de facturación
   - Préstamo: número de pago
 - Instituciones agrupadas con acordeón plegable/expandible por institución
-- Tarjetas con botón ⭐ para marcar/desmarcar favoritas
+- Tarjetas con botón ⭐ para marcar/desmarcar favoritas y botón 👁 para ocultar/mostrar
+  - Una tarjeta **favorita** no puede ocultarse (botón 👁 deshabilitado)
+  - Una tarjeta **oculta** no puede marcarse como favorita (botón ⭐ deshabilitado)
 
-> Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). En ese grupo, cada opción muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`) para identificarlas sin el contexto del optgroup de institución.
+> Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). En ese grupo, cada opción muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`) para identificarlas sin el contexto del optgroup de institución. Las tarjetas del grupo Favoritas no se duplican en los grupos de institución del mismo selector.
+
+> Las tarjetas **ocultas** (`oculta: true`) se excluyen automáticamente de `/tarjetas` y de todos los selectores del sistema. Para **De Contado** y **A Plazos** (formulario normal y registro rápido) los selectores muestran únicamente tarjetas de **crédito** (no débito ni préstamo).
 
 ### Compras y Gastos (`#/compras`)
 Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
@@ -517,6 +560,49 @@ Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
 
 **Meses futuros (proyección):** estimados calculados al vuelo con pago progresivo simulado de A Plazos y gastos fijos; no muestra columnas de Límite/Disponible
 
+> **Deduplicación de gastos fijos en proyección:** si un gasto fijo ya fue confirmado (`estado: 'registrado'`) en el mes del corte del ciclo de pago proyectado (`mesCorte = periodo.fechaCorte.slice(0,7)`) o en el mes proyectado mismo, se omite de `estimadoGastosFijos` para esa tarjeta — el registro confirmado ya es capturado por `getGastosCreditoMes` en `estimadoGastos`, incluso si fue cambiado a otra tarjeta al editar.
+
+### Rendimientos (`#/rendimientos`)
+Alta y administración de cuentas de inversión, con el cálculo de rendimientos compuestos de cada una.
+
+**Encabezado — acumulado de todas las cuentas** (4 metric cards):
+- **Saldo actual** (capital + rendimiento generado) con el capital como subtexto
+- **Hasta hoy** — rendimiento acumulado desde la última actualización de cada cuenta
+- **Rendimiento diario** con el mensual (30 d) como subtexto
+- **Proyección anual** (365 d) con el GAT efectivo como subtexto
+
+**Calcular entre 2 fechas:** selector de cuenta (una o todas) + rango de fechas. Devuelve el rendimiento del periodo, los días, el saldo inicial y final, y las aportaciones netas (separadas del rendimiento). Con más de una cuenta agrega un desglose por cuenta. Avisos:
+- Si el inicio es anterior al primer saldo registrado de una cuenta, su cálculo arranca en ese primer registro y se marca el recorte
+- Si la fecha final es futura, se indica que el resultado incluye proyección
+
+**Tarjeta por cuenta** (encabezado con el color de la institución):
+- Encabezado: institución arriba y alias abajo; si la cuenta no tiene alias, la institución ocupa la línea principal
+- Saldo actual estimado · Capital y fecha de última actualización con los días transcurridos
+- Rejilla de **Diario · Mensual (30 d) · Anual (365 d) · Hasta hoy** (este último resaltado en verde). Los montos son netos de ISR
+- Si la cuenta tiene ISR configurado, franja con el desglose del día: `Diario bruto − ISR = Neto` y la retención, etiquetada según `isrSobre` (*anual s/ capital* o *del interés*)
+- Lista de tramos con el tramo activo resaltado. En modo `unico` los tramos que no aplican se atenúan
+- Pie: GAT, tasa anual (*ponderada* o *tasa única*), rendimiento histórico (si hay historial) y las bases cuando no son 365
+- Acciones: **Actualizar monto** (🔄), **Editar** (✏️), **Eliminar** (🗑️)
+
+**Modal de cuenta:** institución, nombre (opcional), monto invertido, fecha de actualización, selector de **modo de tramos**, editor de tramos y sección *Avanzado*.
+- El editor de tramos muestra el **Desde** derivado en tiempo real y el último tramo siempre es *En adelante*
+- Validación: todo tramo salvo el último requiere límite superior, y los límites deben ir en aumento
+- Al cambiar la fecha de actualización, la captura anterior pasa automáticamente al `historial`
+
+*Avanzado* agrupa en tres bloques todo lo que varía entre instituciones:
+
+| Bloque | Campos |
+|---|---|
+| Retención de ISR | Tasa · Se calcula sobre (capital / interés) |
+| Convenciones de cálculo | Base anual del interés · Base anual del ISR · Tasa ponderada (truncar / redondear) |
+| Otros | CLABE/Referencia · Notas |
+
+Las etiquetas y las ayudas se reescriben al vuelo según el modo elegido, y *Base anual — ISR* se oculta cuando la retención es sobre el interés (ahí no se anualiza).
+
+**Modal Actualizar monto:** muestra el saldo estimado a hoy con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado (aportación, retiro o ajuste de tasa). Guarda la captura anterior en el `historial`.
+
+> **Qué capturar:** el saldo que muestra la app del banco en ese momento, tal cual. Ese saldo **ya incluye** el interés abonado esa madrugada, así que al capturarlo con la fecha de hoy la tarjeta mostrará `Hasta hoy $0.00` y `Diario` será el interés que se abonará la próxima madrugada. Al día siguiente, `Hasta hoy` ya reflejará ese abono.
+
 ### Eventos de Ofertas (`#/eventos`)
 Lista de eventos registrados con acceso rápido a cada uno.
 
@@ -575,6 +661,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 | `#/fijos` | fijos.js | Gastos fijos |
 | `#/impacto` | impacto.js | Mes actual |
 | `#/impacto/2026-05` | impacto.js | Mes específico |
+| `#/rendimientos` | rendimientos.js | Cuentas de inversión y sus rendimientos |
 | `#/eventos` | eventos.js | Lista de eventos |
 | `#/eventos/{id}` | evento-detalle.js | Detalle de evento |
 | `#/admin` | admin-tarjetas.js | CRUD instituciones y tarjetas |
@@ -584,7 +671,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
 **Navegación (sidebar desktop / bottom nav móvil):**
-- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Impacto Mensual
+- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Impacto Mensual, Rendimientos
 - **Eventos:** Eventos de Ofertas
 - **Ajustes:** Administración, Gastos Fijos, Días Festivos
 - **Footer sidebar:** Exportar Datos, Cerrar Sesión
@@ -704,10 +791,149 @@ calcularTotalesCredito(tarjetasImpacto) → { creditoTotal, creditoDisponible, d
 recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?, saldoVivoMap?) → totales
 
 // Proyección de un mes futuro con pago progresivo simulado
-proyectarMes(mes, currentMes, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos?, todasTarjetas?) → impactoData
+// gastosFijosItems se incluyen solo si no existe ya un registro confirmado cuyo `mes`
+// coincida con el mes proyectado o con el mes del corte del ciclo de pago (mesCorte)
+proyectarMes(mes, currentMes, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos?, todasTarjetas?, pagosDiferidos?) → impactoData
 ```
 
 **Criterio clave de asignación al mes**: una compra/gasto pertenece al Impacto del mes `M` si `anteriorNomina(fechaPago_del_ciclo_que_contiene_la_fecha_de_compra)` cae dentro del mes `M`.
+
+---
+
+## Cálculo de Rendimientos
+
+El módulo `js/utils/rendimiento.js` concentra el cálculo de rendimientos de las cuentas de inversión.
+
+### Modelo de tasa
+
+**Aplicación de los tramos** — configurable por cuenta en `modoTramos`. Con tramos `0–25k @15%`, `25k–100k @7%`, `100k+ @5%` y un saldo de $150,000:
+
+| Modo | Cálculo | Anual |
+|---|---|---|
+| `progresivo` (default) | `$25,000×15% + $75,000×7% + $50,000×5%` | $11,500 |
+| `unico` | `$150,000 × 5%` — solo el tramo donde cae el saldo | $7,500 |
+
+`progresivo` es el modelo de las cuentas de rendimiento mexicanas; Revolut lo llama *"tasa promedio ponderada, según el monto de dinero que tengas en cada nivel"*.
+
+`unico` existe para productos que operan por escalón. Produce discontinuidades — con $100,000 se ganan $7,000 anuales y con $100,001 solo $5,000 — que en `progresivo` no ocurren. En la tarjeta, los tramos que no aplican se muestran atenuados y el pie dice *"tasa única"* en lugar de *"ponderada"*.
+
+**Capitalización diaria nominal.** La tasa anual del tramo es **nominal** (estándar de las cuentas mexicanas: Nu, Klar, Mercado Pago, Stori, Revolut):
+
+```
+tasaDiaria = tasaAnual / baseAnual        (baseAnual = 365 por default, o 360)
+saldo_{d+1} = saldo_d + interesDiario(saldo_d) − isrDiario(saldo_d)
+```
+
+Como la tasa depende del saldo y el saldo crece cada día, la composición se resuelve **iterando día a día**; no hay fórmula cerrada. El bucle está acotado a 100 años para blindar el cálculo contra fechas mal capturadas.
+
+**GAT Nominal.** Se reporta como lo publican las instituciones: **antes de impuestos** y con tantas capitalizaciones como días tenga la base del producto — no 365 días reales. Con `baseAnual: 360`, una tasa de 15% da `(1 + 0.15/360)^360 − 1 = 16.18%`, exactamente el GAT que publica Revolut. Usar 365 iteraciones sobre una base de 360 daría 16.42% y no cuadraría con el folleto.
+
+**Retención de ISR** — configurable por cuenta en `isrSobre`:
+
+| Modo | Fórmula | Significado de `isrAnual` |
+|---|---|---|
+| `capital` (default) | `saldo × (isrAnual/100) / baseIsr` | Tasa **anual** sobre el capital — así opera México |
+| `interes` | `interesBruto × (isrAnual/100)` | Porcentaje **directo** de lo ganado; no se anualiza ni usa `baseIsr` |
+
+En ambos casos se descuenta cada día **antes** de capitalizar, porque lo que se reinvierte es el interés neto. Los montos que muestra la UI (diario, mensual, anual, hasta hoy) son **netos** — es lo que realmente se abona. La tasa ponderada y el GAT se reportan **brutos**, que es como los publica la institución.
+
+> Con `isrSobre: 'interes'` el neto nunca puede ser negativo (la retención es una fracción de lo ganado). Con `isrSobre: 'capital'` sí puede serlo si la retención supera al interés — es un escenario real y el motor lo permite, acotando el saldo a cero.
+
+> **Por qué `baseIsr` es un campo aparte:** las dos bases no siempre coinciden. Revolut MX lo documenta explícitamente — *"las retenciones fiscales […] se calculan sobre la base de un año de 365 días, mientras que los pagos de intereses diarios se calculan sobre la base de un año de 360 días"*.
+
+### Verificación contra Revolut MX (2026-08-05)
+
+Configuración: tramos 15% / 7% / 4.5%, `baseAnual: 360`, `isrAnual: 0.90`, `baseIsr: 365`.
+
+| Concepto | Módulo | Revolut |
+|---|---|---|
+| Interés bruto del día (saldo $25,468.87) | $10.5078 | — |
+| Retención ISR | −$0.6280 | — |
+| **Interés neto abonado** | **$9.8798 → $9.88** | **$9.88** |
+| **Saldo resultante** | **$25,478.7498** | **$25,478.75** |
+| **Tasa ponderada** | 14.849679% → **14.84%** | **14.84%** |
+| GAT Nominal del tramo 15% | 16.1798% → 16.18% | 16.18% |
+| GAT Nominal del tramo 7% (Estándar) | 7.2501% → 7.25% | 7.25% |
+| GAT Nominal del tramo 7.50% (Metal, sin costo de plan) | 7.7876% → 7.79% | 7.79% |
+
+> **Convenciones de despliegue** (verificadas, no supuestas):
+> - La **tasa ponderada se trunca**: 14.849679% se muestra como `14.84%`, no `14.85%`. Se descartó el redondeo por eliminación — ningún saldo cercano al real redondea a 14.84%. Las instituciones no exhiben la tasa por encima de lo que pagan. Configurable por cuenta en `redondeoTasa` para instituciones que sí redondeen.
+> - El **GAT se redondea**: 16.1798% → `16.18%` y 7.7876% → `7.79%`, tal como aparecen en los pies de página de Revolut (truncados darían 16.17% y 7.78%). No es configurable — es una cifra regulada con convención uniforme.
+>
+> Por eso el módulo usa dos formateadores: `pctTrunc` y `pct`. La tasa ponderada elige uno según `redondeoTasa`; el resto siempre usa `pct`.
+
+> Los GAT del folleto que incluyen el costo anual del Plan (Metal −0.57%, Premium 9.03%) quedan fuera de alcance: el módulo no modela comisiones de plan.
+
+> **Tasas de retención de Revolut MX:** 0.90% clientes nacionales · 4.90% extranjeros. Para otras instituciones hay que consultar la tasa vigente de la LIF.
+
+### Línea de tiempo y aportaciones
+
+`montoInvertido` + `fechaActualizacion` son el saldo real observado más reciente; las capturas anteriores viven en `historial[]`. Entre dos puntos observados el saldo se proyecta; al llegar a un punto observado el saldo se **reemplaza** por el valor real y la diferencia se reporta como aportación (o retiro), nunca como rendimiento. Se cumple siempre:
+
+```
+saldoFinal = saldoInicial + rendimiento + aportaciones
+```
+
+### API pública de `rendimiento.js`
+
+```javascript
+// Fechas
+isoDay(dateOStringISO) → 'YYYY-MM-DD'
+hoyISO()               → 'YYYY-MM-DD'
+diasEntre(inicio, fin) → number     // días calendario completos, negativo si fin < inicio
+sumarDias(iso, n)      → 'YYYY-MM-DD'
+
+// Tramos — deriva el `desde` de cada tramo, ordena, elimina solapes
+// y garantiza un tramo abierto final
+normalizarTramos(tramos)          → [{ desde, hasta, tasa }]
+tramoActivo(tramosNorm, saldo)    → index | -1
+
+// Constantes de modo
+MODO_PROGRESIVO 'progresivo' · MODO_UNICO 'unico'
+ISR_CAPITAL     'capital'    · ISR_INTERES 'interes'
+
+// Configuración de cálculo — todas las funciones la reciben en lugar de una
+// lista larga de parámetros posicionales. Normaliza y aplica defaults.
+configCuenta(cuenta) → { tramos, modo, base, isrAnual, isrSobre, baseIsr }
+
+// Composición
+interesDiario(saldo, cfg)                 → number   // bruto, según cfg.modo
+isrDiario(saldo, cfg, interesBruto?)      → number   // según cfg.isrSobre; el 3er arg
+                                                     // solo se usa en modo 'interes'
+componer(saldoInicial, dias, cfg)  → { saldoFinal, rendimiento, bruto, isr, dias }  // rendimiento = bruto − isr
+tasaNominal(saldo, cfg)            → number   // % anual bruto: ponderado o del tramo activo
+
+// Línea de tiempo de una cuenta
+timelineCuenta(cuenta)                        → [{ fecha, monto }]  // ascendente, sin fechas repetidas
+saldoEnFecha(timeline, fecha, cfg)            → number | null
+rendimientoEntre(timeline, fIni, fFin, cfg)
+  → { rendimiento, bruto, isr, saldoInicial, saldoFinal, aportaciones, desde, hasta, dias, recortado } | null
+
+// Resumen completo de una cuenta a una fecha de corte
+resumenCuenta(cuenta, hoy?) → {
+  tramos, modo, base, isrAnual, isrSobre, baseIsr,   // = configCuenta(cuenta)
+  timeline, fechaBase, dias,
+  capital, saldoActual,
+  rendimientoHastaHoy,          // neto, desde la última actualización
+  brutoHastaHoy, isrHastaHoy,
+  rendimientoHistorico,         // desde el primer registro, sin aportaciones
+  aportacionesHistoricas, diasHistoricos,
+  diario, mensual, anual,       // NETOS, sobre el saldo YA actualizado a hoy
+  diarioBruto, isrDiario,
+  tasaNominal,                  // % anual ponderado bruto
+  gat,                          // GAT Nominal: antes de impuestos, `base` capitalizaciones
+  idxTramo
+}
+
+// Acumulado de varias cuentas para el encabezado del módulo y del dashboard
+totalizarResumenes(resumenes) → { capital, saldoActual, rendimientoHastaHoy,
+                                  rendimientoHistorico, diario, mensual, anual,
+                                  isrHastaHoy, gat, cuentas }
+```
+
+**Orden del cálculo** (el punto clave del módulo): primero se actualiza el monto invertido desde su última fecha de actualización hasta hoy, y **sobre ese saldo ya actualizado** se calculan los rendimientos diario, mensual y anual.
+
+`rendimientoEntre` devuelve `null` si el rango completo es previo al primer saldo registrado o si las fechas están invertidas. Si solo el inicio es previo, recorta al primer registro y marca `recortado: true`.
 
 ---
 
@@ -824,7 +1050,7 @@ Los siguientes campos existieron en versiones anteriores y pueden estar presente
 
 > Las colecciones `contado` y `gastos` son nuevas — no tienen campos obsoletos.
 
-> `favorita` en `tarjetas/{id}` es un campo nuevo opcional — **no es obsoleto**. Puede estar ausente en tarjetas existentes (se trata como `false`).
+> `favorita` y `oculta` en `tarjetas/{id}` son campos opcionales — **no son obsoletos**. Pueden estar ausentes en tarjetas existentes (se tratan como `false`). Son mutuamente excluyentes: no puede ser `favorita: true` y `oculta: true` al mismo tiempo.
 
 ---
 
@@ -845,4 +1071,11 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-06-10 — PWA (manifest, service worker network-first, íconos), versión en sidebar, últimas compras unificadas (contado+plazos) en dashboard, totalAPagar incluye gastoDebito, mantenimiento de caché en /exportar, saldo disponible en tiempo real en /impacto (calcularSaldo), calcularSaldo resta todas las compras cuando fechaActualizacionSaldo es null*
+*Última actualización: 2026-08-05 (v1.8.0) — nuevo módulo Rendimientos: cuentas de inversión con tramos configurables (progresivo o tasa única), capitalización diaria, retención de ISR configurable (sobre capital o sobre interés) con base independiente, convención de despliegue de la tasa por cuenta, cálculo entre 2 fechas y sección de rendimientos en el dashboard. Motor verificado contra los datos publicados y reales de Revolut MX*
+
+**Cambios recientes:**
+- **Bonificación:** al desmarcar "esperar bonificación" en edición de compra ahora se escribe `bonificacion: null` en Firestore (antes `delete` solo borraba la clave local, dejando el campo intacto en la BD)
+- **Tarjetas ocultas:** nuevo campo `oculta` en `tarjetas/{id}`; botón 👁 en admin para ocultar/mostrar; tarjetas ocultas excluidas de `/tarjetas` y todos los selectores; constraint mutuamente exclusivo con `favorita`
+- **Selectores De Contado y A Plazos:** ahora filtran solo tarjetas de crédito (`soloCredito = true`)
+- **Proyección gastos fijos:** `proyectarMes` ya no duplica un gasto fijo en `estimadoGastosFijos` cuando existe un registro confirmado cuyo `mes` corresponde al mes del corte del ciclo proyectado — evita que un gasto confirmado con otra tarjeta siga apareciendo en la proyección de la tarjeta original
+- **PWA / Service Worker:** cache bumpeado a `impactos-v8`; `controllerchange` → `location.reload()` para forzar actualización en Android sin intervención manual*
