@@ -335,11 +335,21 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     ? rendimientoEntre(timeline, timeline[0].fecha, hoy, cfg)
     : null;
 
+  // Rendimiento obtenido: captura real del usuario (ej. estado de cuenta) +
+  // lo generado desde esa fecha hasta hoy. Sin captura, equivale exactamente
+  // a proyectar el capital (mismo resultado que antes de este campo).
+  const rendimientoObtenido = Number(cuenta.rendimientoObtenido) || 0;
+  const fechaRendimiento    = isoDay(cuenta.fechaActualizacionRendimiento) || fechaBase;
+  const diasRendimiento     = Math.max(0, diasEntre(fechaRendimiento, hoy));
+  const proyRendimiento     = timeline.length ? rendimientoEntre(timeline, fechaRendimiento, hoy, cfg) : null;
+  const rendimientoHastaHoy = rendimientoObtenido + (proyRendimiento ? proyRendimiento.rendimiento : hastaHoy.rendimiento);
+
   return {
     ...cfg, timeline, fechaBase, dias,
     capital,
     saldoActual,
-    rendimientoHastaHoy:  hastaHoy.rendimiento,
+    rendimientoObtenido, fechaRendimiento, diasRendimiento,
+    rendimientoHastaHoy,
     brutoHastaHoy:        hastaHoy.bruto,
     isrHastaHoy:          hastaHoy.isr,
     rendimientoHistorico: historico ? historico.rendimiento : hastaHoy.rendimiento,

@@ -402,6 +402,8 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `nombre` | string? | Alias de la cuenta (ej. Cajita, Ahorro+). Opcional — si está vacío se muestra el nombre de la institución |
 | `montoInvertido` | number | Último saldo **real observado** de la cuenta |
 | `fechaActualizacion` | string | Fecha (`YYYY-MM-DD`) en que ese monto era el saldo real |
+| `rendimientoObtenido` | number? | Último rendimiento **real observado** (ej. del estado de cuenta). `0`/ausente = no hay captura, se usa solo la proyección |
+| `fechaActualizacionRendimiento` | string? | Fecha (`YYYY-MM-DD`) en que ese rendimiento era el real. Ausente = se usa `fechaActualizacion` |
 | `tramos` | array | Límites de rendimiento (ver estructura abajo) |
 | `modoTramos` | string? | Cómo se aplican los tramos: `progresivo` (default) o `unico` |
 | `baseAnual` | number? | Días del año para el **interés**: `365` (default) o `360` |
@@ -409,7 +411,8 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `isrSobre` | string? | Base de la retención: `capital` (default, tasa anual) o `interes` (% directo de lo ganado) |
 | `baseIsr` | number? | Días del año para la **retención**: `365` (default) o `360`. Solo aplica con `isrSobre: 'capital'` |
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
-| `historial` | array? | Capturas anteriores `{ fecha, monto }`, máximo 60, ascendente |
+| `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
+| `historialRendimiento` | array? | Capturas anteriores de `rendimientoObtenido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `referencia` | string? | CLABE o referencia de la cuenta |
 | `notas` | string? | Notas libres |
 
@@ -423,6 +426,8 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 > El `desde` de cada tramo **no se almacena**: se deriva del `hasta` del tramo anterior. Esto elimina huecos y solapes por captura. El array se normaliza al leerlo (`normalizarTramos`), que además ordena los tramos y garantiza que siempre exista un tramo abierto final.
 
 > `montoInvertido` + `fechaActualizacion` son el punto observado más reciente; las capturas anteriores viven en `historial[]`. Entre dos puntos observados el saldo se proyecta; al llegar a un punto observado el saldo se reemplaza por el valor real y la diferencia se reporta como **aportación** (o retiro), nunca como rendimiento.
+
+> `rendimientoObtenido` + `fechaActualizacionRendimiento` funcionan igual que `montoInvertido` + `fechaActualizacion`, pero para el rendimiento: es la última cifra real capturada (ej. del estado de cuenta), y `"Hasta hoy"` se calcula como esa captura **más** lo generado desde esa fecha hasta hoy (proyectado con la tasa de la cuenta). Sin captura (`0`/ausente), el resultado es idéntico a proyectar únicamente el capital — no cambia el comportamiento de cuentas existentes hasta que se actualice el rendimiento.
 
 ### `eventos/{id}`
 
@@ -578,16 +583,17 @@ Alta y administración de cuentas de inversión, con el cálculo de rendimientos
 **Tarjeta por cuenta** (encabezado con el color de la institución):
 - Encabezado: institución arriba y alias abajo; si la cuenta no tiene alias, la institución ocupa la línea principal
 - Saldo actual estimado · Capital y fecha de última actualización con los días transcurridos
+- Rendimiento obtenido y fecha de su última actualización con los días transcurridos
 - Rejilla de **Diario · Mensual (30 d) · Anual (365 d) · Hasta hoy** (este último resaltado en verde). Los montos son netos de ISR
 - Si la cuenta tiene ISR configurado, franja con el desglose del día: `Diario bruto − ISR = Neto` y la retención, etiquetada según `isrSobre` (*anual s/ capital* o *del interés*)
 - Lista de tramos con el tramo activo resaltado. En modo `unico` los tramos que no aplican se atenúan
 - Pie: GAT, tasa anual (*ponderada* o *tasa única*), rendimiento histórico (si hay historial) y las bases cuando no son 365
-- Acciones: **Actualizar monto** (🔄), **Editar** (✏️), **Eliminar** (🗑️)
+- Acciones: **Actualizar monto** (🔄), **Actualizar rendimiento** (📈), **Editar** (✏️), **Eliminar** (🗑️)
 
-**Modal de cuenta:** institución, nombre (opcional), monto invertido, fecha de actualización, selector de **modo de tramos**, editor de tramos y sección *Avanzado*.
+**Modal de cuenta:** institución, nombre (opcional), monto invertido, fecha de actualización, rendimiento obtenido (opcional), fecha de actualización del rendimiento, selector de **modo de tramos**, editor de tramos y sección *Avanzado*.
 - El editor de tramos muestra el **Desde** derivado en tiempo real y el último tramo siempre es *En adelante*
 - Validación: todo tramo salvo el último requiere límite superior, y los límites deben ir en aumento
-- Al cambiar la fecha de actualización, la captura anterior pasa automáticamente al `historial`
+- Al cambiar la fecha de actualización (monto o rendimiento), la captura anterior pasa automáticamente al `historial`/`historialRendimiento` correspondiente
 
 *Avanzado* agrupa en tres bloques todo lo que varía entre instituciones:
 
@@ -601,7 +607,11 @@ Las etiquetas y las ayudas se reescriben al vuelo según el modo elegido, y *Bas
 
 **Modal Actualizar monto:** muestra el saldo estimado a hoy con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado (aportación, retiro o ajuste de tasa). Guarda la captura anterior en el `historial`.
 
-> **Qué capturar:** el saldo que muestra la app del banco en ese momento, tal cual. Ese saldo **ya incluye** el interés abonado esa madrugada, así que al capturarlo con la fecha de hoy la tarjeta mostrará `Hasta hoy $0.00` y `Diario` será el interés que se abonará la próxima madrugada. Al día siguiente, `Hasta hoy` ya reflejará ese abono.
+**Modal Actualizar rendimiento:** funciona igual que el de monto, pero para `rendimientoObtenido` — muestra el rendimiento estimado a hoy (`"Hasta hoy"` actual) con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado. Guarda la captura anterior en el `historialRendimiento`.
+
+> **Qué capturar (monto):** el saldo que muestra la app del banco en ese momento, tal cual. Ese saldo **ya incluye** el interés abonado esa madrugada, así que al capturarlo con la fecha de hoy la tarjeta mostrará `Hasta hoy $0.00` — **siempre y cuando no haya un `rendimientoObtenido` capturado por separado** (ver abajo). Al día siguiente, `Hasta hoy` ya reflejará ese abono.
+
+> **Qué capturar (rendimiento):** el rendimiento acumulado real que muestra el estado de cuenta o resumen del banco (no el saldo total). Mientras no se capture, `Hasta hoy` se calcula únicamente proyectando el capital, igual que antes de tener este campo. En cuanto se captura una vez, `Hasta hoy` pasa a ser esa cifra real **más** lo generado desde su fecha — y deja de reiniciarse solo por actualizar el monto invertido; hay que actualizar el rendimiento por separado para mantenerlo sincronizado.
 
 ### Eventos de Ofertas (`#/eventos`)
 Lista de eventos registrados con acceso rápido a cada uno.
@@ -874,6 +884,8 @@ Configuración: tramos 15% / 7% / 4.5%, `baseAnual: 360`, `isrAnual: 0.90`, `bas
 saldoFinal = saldoInicial + rendimiento + aportaciones
 ```
 
+`rendimientoObtenido` + `fechaActualizacionRendimiento` siguen el mismo patrón pero para el rendimiento: es la última cifra real capturada, y `rendimientoHastaHoy` se calcula como `rendimientoObtenido + rendimientoEntre(timeline, fechaActualizacionRendimiento, hoy, cfg).rendimiento`. Sin captura, `fechaActualizacionRendimiento` cae de vuelta en `fechaActualizacion`, y el resultado es matemáticamente idéntico a `componer(montoInvertido, dias, cfg).rendimiento` — el comportamiento previo a este campo.
+
 ### API pública de `rendimiento.js`
 
 ```javascript
@@ -914,7 +926,8 @@ resumenCuenta(cuenta, hoy?) → {
   tramos, modo, base, isrAnual, isrSobre, baseIsr,   // = configCuenta(cuenta)
   timeline, fechaBase, dias,
   capital, saldoActual,
-  rendimientoHastaHoy,          // neto, desde la última actualización
+  rendimientoObtenido, fechaRendimiento, diasRendimiento,  // última captura real + proyección
+  rendimientoHastaHoy,          // = rendimientoObtenido + lo generado desde fechaRendimiento
   brutoHastaHoy, isrHastaHoy,
   rendimientoHistorico,         // desde el primer registro, sin aportaciones
   aportacionesHistoricas, diasHistoricos,

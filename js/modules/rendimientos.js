@@ -199,6 +199,12 @@ async function renderView(container) {
         showActualizarModal(container, c, resumenes.get(c.id), nombreCuenta(c, instNombre(c)));
       }));
 
+    container.querySelectorAll('.btn-inv-upd-rend').forEach(b =>
+      b.addEventListener('click', () => {
+        const c = cuentas.find(x => x.id === b.dataset.id);
+        showActualizarRendimientoModal(container, c, resumenes.get(c.id), nombreCuenta(c, instNombre(c)));
+      }));
+
     container.querySelectorAll('.btn-inv-del').forEach(b =>
       b.addEventListener('click', async () => {
         const c = cuentas.find(x => x.id === b.dataset.id);
@@ -248,9 +254,10 @@ function cuentaCard(c, r, inst) {
               : `<div class="inv-name">${esc(institucion)}</div>`}
           </div>
           <div class="inv-head-actions">
-            <button class="btn-inv-act btn-inv-upd"  data-id="${c.id}" title="Actualizar monto invertido"><i class="bi bi-arrow-repeat"></i></button>
-            <button class="btn-inv-act btn-inv-edit" data-id="${c.id}" title="Editar cuenta"><i class="bi bi-pencil"></i></button>
-            <button class="btn-inv-act btn-inv-del"  data-id="${c.id}" title="Eliminar cuenta"><i class="bi bi-trash3"></i></button>
+            <button class="btn-inv-act btn-inv-upd"      data-id="${c.id}" title="Actualizar monto invertido"><i class="bi bi-arrow-repeat"></i></button>
+            <button class="btn-inv-act btn-inv-upd-rend" data-id="${c.id}" title="Actualizar rendimiento obtenido"><i class="bi bi-graph-up-arrow"></i></button>
+            <button class="btn-inv-act btn-inv-edit"     data-id="${c.id}" title="Editar cuenta"><i class="bi bi-pencil"></i></button>
+            <button class="btn-inv-act btn-inv-del"      data-id="${c.id}" title="Eliminar cuenta"><i class="bi bi-trash3"></i></button>
           </div>
         </div>
 
@@ -265,6 +272,14 @@ function cuentaCard(c, r, inst) {
             <span title="Última actualización del monto invertido">
               <i class="bi bi-clock-history me-1"></i>${fmtDate(r.fechaBase)}
               <span class="text-muted">· ${r.dias} d</span>
+            </span>
+          </div>
+
+          <div class="inv-base">
+            <span><i class="bi bi-graph-up-arrow me-1"></i>Rendimiento obtenido <strong>${currency(r.rendimientoObtenido)}</strong></span>
+            <span title="Última actualización del rendimiento obtenido">
+              <i class="bi bi-clock-history me-1"></i>${fmtDate(r.fechaRendimiento)}
+              <span class="text-muted">· ${r.diasRendimiento} d</span>
             </span>
           </div>
 
@@ -455,6 +470,24 @@ function showCuentaModal(container, instituciones, cuenta) {
             <input type="date" class="form-control" name="fechaActualizacion" required max="${hoy}"
                    value="${isoDay(cuenta?.fechaActualizacion) || hoy}">
             <div class="form-text">Fecha en que ese monto era el saldo real de la cuenta.</div>
+          </div>
+        </div>
+
+        <div class="row g-2 mb-3">
+          <div class="col-12 col-sm-6">
+            <label class="form-label">Rendimiento obtenido</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="rendimientoObtenido" step="0.01"
+                     value="${cuenta?.rendimientoObtenido ?? ''}" placeholder="0.00">
+            </div>
+            <div class="form-text">Opcional — total real ganado que muestra tu estado de cuenta.</div>
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label">Fecha de actualización del rendimiento</label>
+            <input type="date" class="form-control" name="fechaActualizacionRendimiento" max="${hoy}"
+                   value="${isoDay(cuenta?.fechaActualizacionRendimiento) || ''}">
+            <div class="form-text">Fecha en que ese rendimiento era el real de la cuenta.</div>
           </div>
         </div>
 
@@ -658,6 +691,8 @@ function showCuentaModal(container, instituciones, cuenta) {
       nombre:             raw.nombre.trim(),
       montoInvertido:     Number(raw.montoInvertido),
       fechaActualizacion: raw.fechaActualizacion,
+      rendimientoObtenido:            Number(raw.rendimientoObtenido) || 0,
+      fechaActualizacionRendimiento:  raw.fechaActualizacionRendimiento || null,
       tramos:             nuevos,
       modoTramos:         raw.modoTramos === MODO_UNICO ? MODO_UNICO : MODO_PROGRESIVO,
       baseAnual:          Number(raw.baseAnual) || BASE_ANUAL_DEFAULT,
@@ -675,6 +710,12 @@ function showCuentaModal(container, instituciones, cuenta) {
       if (prevF && prevF !== data.fechaActualizacion) {
         data.historial = pushHistorial(cuenta.historial, {
           fecha: prevF, monto: Number(cuenta.montoInvertido) || 0,
+        });
+      }
+      const prevFR = isoDay(cuenta.fechaActualizacionRendimiento);
+      if (prevFR && prevFR !== data.fechaActualizacionRendimiento) {
+        data.historialRendimiento = pushHistorial(cuenta.historialRendimiento, {
+          fecha: prevFR, monto: Number(cuenta.rendimientoObtenido) || 0,
         });
       }
     }
@@ -777,6 +818,99 @@ function showActualizarModal(container, cuenta, r, etiqueta) {
       await update(COL, cuenta.id, data);
       closeModal();
       toast('Monto actualizado');
+      renderView(container);
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
+}
+
+// ── Modal: actualizar rendimiento obtenido ────────────────────────────────────
+
+function showActualizarRendimientoModal(container, cuenta, r, etiqueta) {
+  const hoy      = hoyISO();
+  const estimado = Math.round(r.rendimientoHastaHoy * 100) / 100;
+
+  openModal({
+    title: `Actualizar rendimiento — ${esc(etiqueta)}`,
+    body: `
+      <div class="inv-upd-est">
+        <div>
+          <div class="inv-upd-est-lbl">Rendimiento estimado a hoy</div>
+          <div class="inv-upd-est-val">${currency(estimado)}</div>
+        </div>
+        <button type="button" class="btn btn-outline-primary btn-sm" id="rend-usar-est">
+          <i class="bi bi-magic me-1"></i>Usar este valor
+        </button>
+      </div>
+      <p class="text-muted" style="font-size:0.78rem">
+        Captura el rendimiento <strong>real</strong> acumulado que muestra tu estado de cuenta.
+        El monto anterior (${currency(r.rendimientoObtenido)} al ${fmtDate(r.fechaRendimiento)}) se guarda en el historial.
+      </p>
+      <form id="rend-upd-form">
+        <div class="row g-2">
+          <div class="col-12 col-sm-6">
+            <label class="form-label">Rendimiento obtenido *</label>
+            <div class="input-group">
+              <span class="input-group-text">$</span>
+              <input type="number" class="form-control" name="rendimientoObtenido" required step="0.01"
+                     value="${estimado}">
+            </div>
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label">Fecha *</label>
+            <input type="date" class="form-control" name="fechaActualizacionRendimiento" required max="${hoy}" value="${hoy}">
+          </div>
+        </div>
+      </form>
+      <div id="rend-upd-delta" class="inv-upd-delta"></div>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-rend-upd">Actualizar</button>`
+  });
+
+  const form  = document.getElementById('rend-upd-form');
+  const input = form.rendimientoObtenido;
+  const delta = document.getElementById('rend-upd-delta');
+
+  const pintarDelta = () => {
+    const v = Number(input.value);
+    if (!isFinite(v) || input.value === '') { delta.innerHTML = ''; return; }
+    const d = Math.round((v - estimado) * 100) / 100;
+    if (Math.abs(d) < 0.01) {
+      delta.innerHTML = `<i class="bi bi-check-circle text-success me-1"></i>Coincide con el rendimiento estimado.`;
+    } else {
+      delta.innerHTML = `<i class="bi bi-arrow-left-right me-1"></i>Diferencia vs. estimado:
+        <strong class="${d > 0 ? 'text-success' : 'text-danger'}">${d > 0 ? '+' : ''}${currency(d)}</strong>
+        <span class="text-muted">— puede deberse a ajustes de tasa o retenciones no contempladas.</span>`;
+    }
+  };
+  input.addEventListener('input', pintarDelta);
+  pintarDelta();
+
+  document.getElementById('rend-usar-est').addEventListener('click', () => {
+    input.value = estimado;
+    pintarDelta();
+  });
+
+  document.getElementById('btn-save-rend-upd').addEventListener('click', async () => {
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const nuevaFecha = form.fechaActualizacionRendimiento.value;
+    const prevF      = r.fechaRendimiento;
+
+    const data = {
+      rendimientoObtenido:           Number(form.rendimientoObtenido.value),
+      fechaActualizacionRendimiento: nuevaFecha,
+    };
+    // Misma fecha ⇒ es una corrección, no una nueva captura
+    if (prevF && prevF !== nuevaFecha) {
+      data.historialRendimiento = pushHistorial(cuenta.historialRendimiento, {
+        fecha: prevF, monto: r.rendimientoObtenido,
+      });
+    }
+
+    try {
+      await update(COL, cuenta.id, data);
+      closeModal();
+      toast('Rendimiento actualizado');
       renderView(container);
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
