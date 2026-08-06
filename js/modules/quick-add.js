@@ -177,8 +177,8 @@ function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
 // ── Preview ───────────────────────────────────────────────────────────────────
 
 const PREVIEW_HTML = `
-  <div id="qa-preview" style="display:none;margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
-    <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:.06em;color:#aaa;margin-bottom:8px">
+  <div id="qa-preview" style="display:none;margin-top:12px;padding:12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border)">
+    <div style="font-size:var(--fs-small);text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:8px">
       <i class="bi bi-lightning-charge-fill me-1 text-warning"></i>Vista previa
     </div>
     <div class="d-flex flex-wrap gap-3 mb-2" style="font-size:0.8rem">
@@ -190,8 +190,8 @@ const PREVIEW_HTML = `
       <div><span class="text-muted">Disponible: </span><strong id="qa-prev-disp" class="text-success">—</strong></div>
       <div><span class="text-muted">Usado: </span><strong id="qa-prev-usado">—</strong></div>
     </div>
-    <div id="qa-prev-impacto-section" style="display:none;border-top:1px solid #dee2e6;padding-top:8px">
-      <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:.06em;color:#aaa;margin-bottom:6px">
+    <div id="qa-prev-impacto-section" style="display:none;border-top:1px solid var(--border);padding-top:8px">
+      <div style="font-size:var(--fs-small);text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px">
         Impacto <span id="qa-prev-mes">—</span>
       </div>
       <div class="d-flex flex-wrap gap-3" style="font-size:0.8rem">

@@ -79,7 +79,7 @@ function renderEventoCard(ev) {
               <button class="btn-icon danger btn-del-evento" data-id="${ev.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
             </div>
           </div>
-          <div class="d-flex gap-3 mt-3" style="font-size:0.8rem;color:#888">
+          <div class="d-flex gap-3 mt-3" style="font-size:0.8rem;color:var(--text-muted)">
             <span><i class="bi bi-list-check me-1"></i>${planCount} planeadas</span>
             <span><i class="bi bi-bag-check me-1"></i>${compCount} realizadas</span>
           </div>

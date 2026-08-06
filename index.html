@@ -14,6 +14,46 @@
   <meta name="apple-mobile-web-app-title" content="IMPACTOS">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
+  <!-- Tema — se resuelve antes de las hojas de estilo para evitar el parpadeo claro -->
+  <script>
+  window.TEMA = (function () {
+    var KEY = 'impactos-tema';
+    var mq  = window.matchMedia('(prefers-color-scheme: dark)');
+
+    // Preferencia guardada; cualquier valor no reconocido cae en 'sistema'
+    function leer() {
+      var p = null;
+      try { p = localStorage.getItem(KEY); } catch (e) {}
+      return (p === 'claro' || p === 'oscuro') ? p : 'sistema';
+    }
+
+    // Estampa el modo resuelto en <html>: data-theme para el CSS propio,
+    // data-bs-theme para los componentes nativos de Bootstrap 5.3.
+    // theme-color no se toca: la barra superior sigue siendo azul de marca en
+    // ambos temas, así que la barra de estado del sistema debe acompañarla.
+    function aplicar(pref) {
+      var modo = pref === 'sistema' ? (mq.matches ? 'dark' : 'light')
+                                    : (pref === 'oscuro' ? 'dark' : 'light');
+      var root = document.documentElement;
+      root.setAttribute('data-tema-pref', pref);
+      root.setAttribute('data-theme',     modo);
+      root.setAttribute('data-bs-theme',  modo);
+      return modo;
+    }
+
+    function guardar(pref) {
+      try {
+        if (pref === 'sistema') localStorage.removeItem(KEY);
+        else                    localStorage.setItem(KEY, pref);
+      } catch (e) {}
+      return aplicar(pref);
+    }
+
+    aplicar(leer());
+    return { KEY: KEY, mq: mq, leer: leer, aplicar: aplicar, guardar: guardar };
+  })();
+  </script>
+
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
   <link href="css/app.css" rel="stylesheet">
@@ -110,6 +150,9 @@
 
     <div class="sidebar-footer">
       <div class="sidebar-version" id="sidebar-version"></div>
+      <button id="btn-tema" class="btn btn-link nav-link" title="Tema">
+        <i class="bi bi-circle-half"></i><span>Tema: Sistema</span>
+      </button>
       <a href="#/exportar" class="nav-link" data-route="/exportar" title="Exportar Datos">
         <i class="bi bi-download"></i><span>Exportar Datos</span>
       </a>

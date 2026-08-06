@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.9.0';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -20,6 +20,7 @@ function onLogin() {
   const vEl = document.getElementById('sidebar-version');
   if (vEl) vEl.textContent = `v${APP_VERSION}`;
   setupNav();
+  setupTema();
   setupRouter();
   setupFab();
 }
@@ -85,6 +86,40 @@ function setupNav() {
       localStorage.setItem('sidebar-collapsed', s.classList.contains('collapsed'));
     });
   }
+}
+
+// ── Tema claro / oscuro ───────────────────────────────────────────────────────
+// El modo ya viene aplicado por el script inline de index.html (window.TEMA);
+// aquí solo se maneja el botón que cicla Sistema → Claro → Oscuro.
+const TEMAS = [
+  { pref: 'sistema', icono: 'bi-circle-half', texto: 'Sistema' },
+  { pref: 'claro',   icono: 'bi-sun',         texto: 'Claro'   },
+  { pref: 'oscuro',  icono: 'bi-moon-stars',  texto: 'Oscuro'  }
+];
+
+function setupTema() {
+  const btn = document.getElementById('btn-tema');
+  if (!btn || !window.TEMA) return;
+
+  const pintar = pref => {
+    const t = TEMAS.find(x => x.pref === pref) || TEMAS[0];
+    btn.innerHTML = `<i class="bi ${t.icono}"></i><span>Tema: ${t.texto}</span>`;
+    btn.title     = `Tema: ${t.texto}`;
+  };
+
+  pintar(window.TEMA.leer());
+
+  btn.addEventListener('click', () => {
+    const i    = TEMAS.findIndex(t => t.pref === window.TEMA.leer());
+    const next = TEMAS[(i + 1) % TEMAS.length].pref;
+    window.TEMA.guardar(next);
+    pintar(next);
+  });
+
+  // En modo Sistema, seguir en vivo el cambio de tema del sistema operativo
+  window.TEMA.mq.addEventListener('change', () => {
+    if (window.TEMA.leer() === 'sistema') window.TEMA.aplicar('sistema');
+  });
 }
 
 // ── Floating Action Button ────────────────────────────────────────────────────

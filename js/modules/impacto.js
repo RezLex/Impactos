@@ -309,7 +309,7 @@ function _renderPage(container, impacto, ctx) {
 
 function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAprox = 0, gastosDebitoLive = [], isCerrado = false) {
   const editBtn = (id) => isCerrado
-    ? `<button class="btn btn-link p-0 ms-1 btn-edit-totales" data-campo="${id}" style="font-size:0.65rem;line-height:1;vertical-align:middle"><i class="bi bi-pencil"></i></button>`
+    ? `<button class="btn btn-link p-0 ms-1 btn-edit-totales" data-campo="${id}" style="font-size:var(--fs-mini);line-height:1;vertical-align:middle"><i class="bi bi-pencil"></i></button>`
     : '';
   const pres = Number(impacto.presupuesto) || 0;
   const nom  = isActivo ? nominaAprox : (Number(impacto.nominaRef) || 0);
@@ -324,7 +324,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
     <div class="row g-2 mb-1">
       <div class="col-12 col-lg-3">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-wallet2" style="color:#2e7d32"></i></div>
+          <div class="metric-icon tint-success"><i class="bi bi-wallet2"></i></div>
           <div class="metric-info">
             <div class="metric-value d-flex align-items-center gap-1">
               ${isProyeccion ? currency(nom) : currency(pres)}
@@ -336,7 +336,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
       </div>
       <div class="col-12 col-lg-3">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#fce4ec"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
+          <div class="metric-icon tint-danger"><i class="bi bi-credit-card-fill"></i></div>
           ${isProyeccion ? `
           <div class="metric-info">
             <div class="metric-value">${currency(totalAPagar)}</div>
@@ -351,23 +351,23 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
               <div class="metric-value">${currency(totalAPagar)}</div>
               <div class="metric-label">${isCerrado ? 'Total pagado' : 'Total a pagar'}</div>
             </div>
-            <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+            <div class="metric-divider"></div>
             <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px">
-              <div style="font-size:0.72rem;color:#999">Pendiente <strong style="color:#c62828">${currency((totales.estimadoCredito - totales.pagoCredito) + debitoPendiente)}</strong></div>
-              <div style="font-size:0.72rem;color:#999">Pagado <strong style="color:#2e7d32">${currency(totales.pagoCredito + debitoRegistrado)}</strong></div>
+              <div style="font-size:0.72rem;color:var(--text-faint)">Pendiente <strong class="text-danger">${currency((totales.estimadoCredito - totales.pagoCredito) + debitoPendiente)}</strong></div>
+              <div style="font-size:0.72rem;color:var(--text-faint)">Pagado <strong class="text-success">${currency(totales.pagoCredito + debitoRegistrado)}</strong></div>
             </div>
           </div>`}
         </div>
       </div>
       <div class="col-12 col-lg-3">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#e3f2fd"><i class="bi bi-calculator" style="color:#1565c0"></i></div>
+          <div class="metric-icon tint-info"><i class="bi bi-calculator"></i></div>
           <div class="metric-info d-flex gap-0" style="min-width:0">
             <div style="flex:1;min-width:0">
               <div class="metric-value ${totales.restante < 0 ? 'text-danger' : 'text-success'}">${currency(totales.restante)}</div>
               <div class="metric-label">Restante</div>
             </div>
-            ${!isProyeccion && !isCerrado ? `<div style="width:1px;background:#e9ecef;margin:2px 8px"></div>
+            ${!isProyeccion && !isCerrado ? `<div class="metric-divider tight"></div>
             <div style="flex:1;min-width:0">
               <div class="metric-value text-muted">${currency(totales.restanteEsperado)}</div>
               <div class="metric-label">Esperado</div>
@@ -377,10 +377,10 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
       </div>
     </div>
     ${!isProyeccion ? `
-    <div class="d-flex flex-wrap gap-3 mb-1" style="font-size:0.75rem;color:#888">
+    <div class="d-flex flex-wrap gap-3 mb-1" style="font-size:0.75rem;color:var(--text-muted)">
       ${(() => {
         const ct = totales.creditoTotal || 0;
-        const pct = (v) => ct > 0 ? ` <span style="font-size:0.68rem;opacity:0.75">(${Math.round(v / ct * 100)}%)</span>` : '';
+        const pct = (v) => ct > 0 ? ` <span style="font-size:var(--fs-small);opacity:0.75">(${Math.round(v / ct * 100)}%)</span>` : '';
         return `
       <span><i class="bi bi-layers me-1"></i>Crédito total: <strong class="text-body">${currency(ct)}</strong>${editBtn('creditoTotal')}</span>
       <span><i class="bi bi-check-circle me-1 text-success"></i>Disponible: <strong class="text-success">${currency(totales.creditoDisponible)}</strong>${pct(totales.creditoDisponible)}${editBtn('creditoDisponible')}</span>
@@ -390,8 +390,8 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
 }
 
 function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [], isProyeccion = false, saldoVivoMap = null) {
-  const CONF_ICON  = `<i class="bi bi-check-circle-fill" style="color:var(--bs-success);font-size:0.65rem;flex-shrink:0"></i>`;
-  const CONF_EMPTY = `<i style="font-size:0.65rem;flex-shrink:0;visibility:hidden">·</i>`;
+  const CONF_ICON  = `<i class="bi bi-check-circle-fill" style="color:var(--bs-success);font-size:var(--fs-mini);flex-shrink:0"></i>`;
+  const CONF_EMPTY = `<i style="font-size:var(--fs-mini);flex-shrink:0;visibility:hidden">·</i>`;
 
   const eb = (idx, campo) => {
     const limitOrDisp = campo === 'limiteTotal' || campo === 'saldoDisp';
@@ -457,7 +457,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
             ${t.institucion ? `<span class="text-muted">${t.institucion}</span> ` : ''}<span class="fw-500">${t.nombre}</span>
           </span>
         </div>
-        ${t.pagado ? `<span class="badge bg-success" style="font-size:0.6rem;margin-left:18px">Pagada</span>` : ''}
+        ${t.pagado ? `<span class="badge bg-success" style="font-size:var(--fs-nano);margin-left:18px">Pagada</span>` : ''}
       </td>
       ${!isProyeccion ? `
       <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.limiteTotal, isActivo ? null : t.limiteTotalConf, idx, 'limiteTotal')}</td>
@@ -475,7 +475,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           return `<div class="d-flex align-items-center justify-content-end gap-1">
             ${confirmed ? CONF_ICON : CONF_EMPTY}
             <span class="${confirmed ? 'fw-semibold' : 'text-muted fst-italic'}">${fmtDate(fp)}</span>
-            <span class="badge ${qCls}" style="font-size:0.58rem;padding:2px 4px">${q}</span>
+            <span class="badge ${qCls}" style="font-size:var(--fs-micro);padding:2px 4px">${q}</span>
             ${eb(idx, 'fechaPago')}
           </div>`;
         })()}</td>
@@ -522,9 +522,9 @@ function _renderGastosDebito(gastosDebitoLive, cardMap, isCerrado = false) {
   if (!gastosDebitoLive.length) return '';
 
   const estadoCell = (estado) => {
-    if (estado === 'registrado') return `<span class="badge bg-success-subtle text-success" style="font-size:0.65rem">Registrado</span>`;
-    if (estado === 'pendiente')  return `<span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:0.65rem">Pendiente</span>`;
-    return `<span class="badge bg-secondary-subtle text-secondary" style="font-size:0.65rem">Sin registrar</span>`;
+    if (estado === 'registrado') return `<span class="badge bg-success-subtle text-success" style="font-size:var(--fs-mini)">Registrado</span>`;
+    if (estado === 'pendiente')  return `<span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:var(--fs-mini)">Pendiente</span>`;
+    return `<span class="badge bg-secondary-subtle text-secondary" style="font-size:var(--fs-mini)">Sin registrar</span>`;
   };
 
   const totalDebito = gastosDebitoLive.reduce((s, g) => s + (Number(g.importe) || 0), 0);
@@ -570,7 +570,7 @@ function _renderTotalesSection(totales) {
     <div class="row g-3 mb-4">
       <div class="col-4">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#e8eaf6"><i class="bi bi-layers" style="color:#3949ab"></i></div>
+          <div class="metric-icon tint-indigo"><i class="bi bi-layers"></i></div>
           <div class="metric-info">
             <div class="metric-value">${currency(totales.creditoTotal)}</div>
             <div class="metric-label">Crédito total</div>
@@ -579,7 +579,7 @@ function _renderTotalesSection(totales) {
       </div>
       <div class="col-4">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-check-circle" style="color:#2e7d32"></i></div>
+          <div class="metric-icon tint-success"><i class="bi bi-check-circle"></i></div>
           <div class="metric-info">
             <div class="metric-value">${currency(totales.creditoDisponible)}</div>
             <div class="metric-label">Disponible</div>
@@ -588,7 +588,7 @@ function _renderTotalesSection(totales) {
       </div>
       <div class="col-4">
         <div class="metric-card">
-          <div class="metric-icon" style="background:#ffebee"><i class="bi bi-exclamation-circle" style="color:#c62828"></i></div>
+          <div class="metric-icon tint-danger"><i class="bi bi-exclamation-circle"></i></div>
           <div class="metric-info">
             <div class="metric-value">${currency(totales.deudaTotal)}</div>
             <div class="metric-label">Deuda total</div>

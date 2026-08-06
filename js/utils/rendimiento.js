@@ -15,9 +15,19 @@
  * mismos $150,000 rinden $150,000 × 5% = $7,500. Produce escalones (con
  * $100,000 se ganaría más que con $100,001), pero hay productos que operan así.
  *
- * La tasa anual del tramo es NOMINAL y se capitaliza diario (estándar de las
- * cuentas mexicanas): tasaDiaria = tasaAnual / base. Al capitalizar diario el
- * rendimiento efectivo (GAT) queda por encima del nominal.
+ * Interpretación de la tasa — `modoTasa`, configurable por cuenta porque las
+ * instituciones no publican lo mismo bajo el mismo número:
+ *
+ *   `nominal` (default)  tasaDiaria = tasa / base
+ *                        Al capitalizar diario el GAT queda POR ENCIMA del
+ *                        número publicado. Revolut: 15% → GAT 16.18%.
+ *
+ *   `efectiva`           tasaDiaria = (1 + tasa)^(1/base) − 1
+ *                        La tasa publicada YA es el rendimiento anual; el GAT
+ *                        coincide con ella. Mercado Pago: 12% → GAT 12%.
+ *
+ * Confundirlas desvía el cálculo ~8% del rendimiento diario, así que el modo se
+ * verifica contra un abono real de la institución, no se supone.
  *
  * Como la tasa depende del saldo y el saldo crece cada día, la composición se
  * resuelve iterando día a día — no hay fórmula cerrada.
@@ -50,6 +60,10 @@ export const MODO_UNICO      = 'unico';
 /** Sobre qué se calcula la retención. */
 export const ISR_CAPITAL = 'capital';
 export const ISR_INTERES = 'interes';
+
+/** Cómo se interpreta la tasa anual publicada por la institución. */
+export const TASA_NOMINAL  = 'nominal';
+export const TASA_EFECTIVA = 'efectiva';
 
 /** Tramos precargados al crear una cuenta nueva. */
 export const TRAMOS_DEFAULT = [
@@ -146,6 +160,7 @@ export function configCuenta(cuenta = {}) {
   return {
     tramos:   normalizarTramos(cuenta.tramos),
     modo:     cuenta.modoTramos === MODO_UNICO ? MODO_UNICO : MODO_PROGRESIVO,
+    modoTasa: cuenta.modoTasa === TASA_EFECTIVA ? TASA_EFECTIVA : TASA_NOMINAL,
     base:     Number(cuenta.baseAnual) || BASE_ANUAL_DEFAULT,
     isrAnual: Number(cuenta.isrAnual)  || 0,
     isrSobre: cuenta.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
@@ -155,6 +170,15 @@ export function configCuenta(cuenta = {}) {
 
 // ── Composición ───────────────────────────────────────────────────────────────
 
+/** Tasa diaria que corresponde a una tasa anual publicada, según `modoTasa`. */
+export function tasaDiaria(tasaAnual, cfg) {
+  const r = (Number(tasaAnual) || 0) / 100;
+  if (r <= 0) return 0;
+  return cfg.modoTasa === TASA_EFECTIVA
+    ? Math.pow(1 + r, 1 / cfg.base) - 1
+    : r / cfg.base;
+}
+
 /** Interés bruto de un solo día, según el modo de aplicación de los tramos. */
 export function interesDiario(saldo, cfg) {
   const s = Number(saldo) || 0;
@@ -162,7 +186,7 @@ export function interesDiario(saldo, cfg) {
 
   if (cfg.modo === MODO_UNICO) {
     const i = tramoActivo(cfg.tramos, s);
-    return i < 0 ? 0 : s * (cfg.tramos[i].tasa / 100) / cfg.base;
+    return i < 0 ? 0 : s * tasaDiaria(cfg.tramos[i].tasa, cfg);
   }
 
   let interes = 0;
@@ -170,7 +194,7 @@ export function interesDiario(saldo, cfg) {
     if (s <= t.desde) break;
     const tope    = t.hasta == null ? s : Math.min(s, t.hasta);
     const porcion = tope - t.desde;
-    if (porcion > 0) interes += porcion * (t.tasa / 100) / cfg.base;
+    if (porcion > 0) interes += porcion * tasaDiaria(t.tasa, cfg);
   }
   return interes;
 }
@@ -200,22 +224,75 @@ export function isrDiario(saldo, cfg, interesBruto) {
 export function componer(saldoInicial, dias, cfg) {
   const inicial = Number(saldoInicial) || 0;
   const n = Math.max(0, Math.min(Math.floor(Number(dias) || 0), MAX_DIAS));
-  let saldo = inicial, bruto = 0, isr = 0;
+  let saldo = inicial, bruto = 0, isr = 0, ultimo = null;
   for (let i = 0; i < n; i++) {
     const b = interesDiario(saldo, cfg);
     const r = isrDiario(saldo, cfg, b);
     bruto += b;
     isr   += r;
+    ultimo = { bruto: b, isr: r, neto: b - r };
     saldo = Math.max(0, saldo + b - r);
   }
-  return { saldoFinal: saldo, rendimiento: saldo - inicial, bruto, isr, dias: n };
+  // `ultimo` es el último día compuesto — sirve para reportar "ayer" sin recorrer de nuevo
+  return { saldoFinal: saldo, rendimiento: saldo - inicial, bruto, isr, dias: n, ultimo };
 }
 
-/** Tasa anual bruta ponderada que corresponde a un saldo dado (%). */
+/**
+ * Tasa anual ponderada de los tramos para un saldo (%), en el mismo espacio en
+ * que la publica la institución. Se calcula sobre las tasas configuradas, no a
+ * partir del interés diario: así no depende de `base` ni de `modoTasa` y sigue
+ * siendo comparable con lo que muestra la app del banco.
+ */
 export function tasaNominal(saldo, cfg) {
   const s = Number(saldo) || 0;
   if (s <= 0) return 0;
-  return (interesDiario(s, cfg) * cfg.base / s) * 100;
+
+  if (cfg.modo === MODO_UNICO) {
+    const i = tramoActivo(cfg.tramos, s);
+    return i < 0 ? 0 : cfg.tramos[i].tasa;
+  }
+
+  let acc = 0;
+  for (const t of cfg.tramos) {
+    if (s <= t.desde) break;
+    const tope    = t.hasta == null ? s : Math.min(s, t.hasta);
+    const porcion = tope - t.desde;
+    if (porcion > 0) acc += porcion * t.tasa;
+  }
+  return acc / s;
+}
+
+/**
+ * Cuánto del saldo vive en cada tramo y cuánto aporta al interés del día.
+ *
+ * Resuelve la ambigüedad de resaltar "el tramo activo": en modo progresivo
+ * varios tramos aportan a la vez, así que lo informativo es el reparto, no un
+ * resaltado. `marginal` marca el tramo donde caería el siguiente peso.
+ *
+ * La suma de los `aporte` es exactamente `interesDiario(saldo, cfg)`.
+ *
+ * @returns {Array<{desde, hasta, tasa, monto, aporte, pct, marginal}>}
+ */
+export function desgloseTramos(saldo, cfg) {
+  const s   = Number(saldo) || 0;
+  const idx = tramoActivo(cfg.tramos, s);
+
+  return cfg.tramos.map((t, i) => {
+    let monto;
+    if (cfg.modo === MODO_UNICO) {
+      monto = i === idx ? s : 0;
+    } else {
+      const tope = t.hasta == null ? s : Math.min(s, t.hasta);
+      monto = Math.max(0, tope - t.desde);
+    }
+    return {
+      ...t,
+      monto,
+      aporte:   monto > 0 ? monto * tasaDiaria(t.tasa, cfg) : 0,
+      pct:      s > 0 ? (monto / s) * 100 : 0,
+      marginal: i === idx,
+    };
+  });
 }
 
 // ── Línea de tiempo de la cuenta ──────────────────────────────────────────────
@@ -298,6 +375,42 @@ export function rendimientoEntre(timeline, fInicio, fFin, cfg) {
   };
 }
 
+/**
+ * Rendimiento día por día desde la última actualización del monto invertido.
+ *
+ * Cada entrada es el día que **generó** el interés; las instituciones lo abonan
+ * a la madrugada siguiente. Por eso el último renglón es "ayer": lo que se
+ * depositó hoy en la mañana.
+ *
+ * @param {object} cuenta
+ * @param {string} [hoy]
+ * @param {number} [maxDias] - tope de renglones devueltos
+ * @returns {Array<{fecha, saldoInicial, bruto, isr, neto, saldoFinal}>} ascendente
+ */
+export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
+  const cfg     = configCuenta(cuenta);
+  const desde   = isoDay(cuenta.fechaActualizacion);
+  const capital = Number(cuenta.montoInvertido) || 0;
+  if (!desde || capital <= 0) return [];
+
+  const total = Math.max(0, diasEntre(desde, hoy));
+  const n     = Math.min(total, Math.max(0, maxDias));
+  const saltados = total - n;   // si se recorta, se arranca ya compuesto
+
+  let saldo = saltados > 0 ? componer(capital, saltados, cfg).saldoFinal : capital;
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const bruto = interesDiario(saldo, cfg);
+    const isr   = isrDiario(saldo, cfg, bruto);
+    const neto  = bruto - isr;
+    const saldoFinal = Math.max(0, saldo + neto);
+    out.push({ fecha: sumarDias(desde, saltados + i), saldoInicial: saldo, bruto, isr, neto, saldoFinal });
+    saldo = saldoFinal;
+  }
+  return out;
+}
+
 // ── Resumen de una cuenta ─────────────────────────────────────────────────────
 
 /**
@@ -360,6 +473,9 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     mensual: proyMensual.rendimiento,
     anual:   proyAnual.rendimiento,
     diarioBruto, isrDiario: isrDia,
+    // Lo generado el último día completo — es lo que la institución abonó hoy
+    ayer: hastaHoy.ultimo ? hastaHoy.ultimo.neto : 0,
+    desglose: desgloseTramos(saldoActual, cfg),
     // La tasa ponderada y el GAT son brutos — es como los publica la institución
     tasaNominal: tasaNominal(saldoActual, cfg),
     gat: saldoActual > 0 ? (proyBruta.rendimiento / saldoActual) * 100 : 0,

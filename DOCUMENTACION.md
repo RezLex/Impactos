@@ -19,9 +19,10 @@
 11. [Cálculo de Impacto Mensual](#cálculo-de-impacto-mensual)
 12. [Cálculo de Rendimientos](#cálculo-de-rendimientos)
 13. [Cálculo de Nómina](#cálculo-de-nómina)
-14. [Ejecución Local](#ejecución-local)
-15. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-16. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+14. [Tema Claro / Oscuro](#tema-claro--oscuro)
+15. [Ejecución Local](#ejecución-local)
+16. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+17. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -42,7 +43,8 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.8.0`)
+- Versión de la app visible en el footer del sidebar (`v1.9.0`)
+- Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
 
@@ -406,6 +408,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `fechaActualizacionRendimiento` | string? | Fecha (`YYYY-MM-DD`) en que ese rendimiento era el real. Ausente = se usa `fechaActualizacion` |
 | `tramos` | array | Límites de rendimiento (ver estructura abajo) |
 | `modoTramos` | string? | Cómo se aplican los tramos: `progresivo` (default) o `unico` |
+| `modoTasa` | string? | Cómo se interpreta la tasa publicada: `nominal` (default) o `efectiva` |
 | `baseAnual` | number? | Días del año para el **interés**: `365` (default) o `360` |
 | `isrAnual` | number? | Retención en %. `0` o ausente = cálculo bruto. Su significado depende de `isrSobre` |
 | `isrSobre` | string? | Base de la retención: `capital` (default, tasa anual) o `interes` (% directo de lo ganado) |
@@ -413,15 +416,15 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
 | `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `historialRendimiento` | array? | Capturas anteriores de `rendimientoObtenido`: `{ fecha, monto }`, máximo 60, ascendente |
-| `referencia` | string? | CLABE o referencia de la cuenta |
-| `notas` | string? | Notas libres |
+| ~~`referencia`~~ | string? | **Obsoleto** — ya no se captura ni se muestra. Puede seguir presente en documentos antiguos |
+| ~~`notas`~~ | string? | **Obsoleto** — ídem |
 
 **Estructura de cada elemento en `tramos`:**
 
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `hasta` | number\|null | Límite superior del tramo; `null` en el último tramo (*en adelante*) |
-| `tasa` | number | Tasa **anual nominal** del tramo en porcentaje (ej. `15`) |
+| `tasa` | number | Tasa anual del tramo en porcentaje (ej. `15`). Si es nominal o efectiva lo decide `modoTasa` |
 
 > El `desde` de cada tramo **no se almacena**: se deriva del `hasta` del tramo anterior. Esto elimina huecos y solapes por captura. El array se normaliza al leerlo (`normalizarTramos`), que además ordena los tramos y garantiza que siempre exista un tramo abierto final.
 
@@ -454,7 +457,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 ### Dashboard (`#/`)
 Vista principal rediseñada con datos en tiempo real del mes actual:
 - **2 metric cards:** Total a pagar (`estimadoCredito + gastoDebito`, con desglose Contado/Plazos/Gastos) · Restante y Esperado (divisor vertical)
-- **3ª metric card — Rendimientos** (solo si hay cuentas de inversión): **Diario** y **Hasta hoy** con el mismo patrón dividido de las otras dos, y el saldo total como subtexto. Toda la tarjeta enlaza a `#/rendimientos`
+- **3ª metric card — Rendimientos** (solo si hay cuentas de inversión): **Diario** y **Hasta hoy** con el mismo patrón dividido de las otras dos, y el saldo total como subtexto. Toda la tarjeta enlaza a `#/rendimientos`. Los montos son netos de la retención configurada en cada cuenta
 - **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual, a todo lo ancho
 
 > **Por qué las metric cards usan `col-xxl-4` y no `col-lg-4`:** con tres tarjetas en una fila, cada una necesita ~313px para que el importe no se corte con elipsis. Descontando el sidebar eso solo se cumple desde ~1400px de viewport. Por debajo de `xxl` la tercera baja a su propio renglón (`col-lg-6`) en vez de estrujar a las tres. Sin cuentas de inversión la fila vuelve a ser de dos tarjetas a `col-lg-6` y el layout es idéntico al original.
@@ -580,30 +583,58 @@ Alta y administración de cuentas de inversión, con el cálculo de rendimientos
 - Si el inicio es anterior al primer saldo registrado de una cuenta, su cálculo arranca en ese primer registro y se marca el recorte
 - Si la fecha final es futura, se indica que el resultado incluye proyección
 
-**Tarjeta por cuenta** (encabezado con el color de la institución):
-- Encabezado: institución arriba y alias abajo; si la cuenta no tiene alias, la institución ocupa la línea principal
-- Saldo actual estimado · Capital y fecha de última actualización con los días transcurridos
-- Rendimiento obtenido y fecha de su última actualización con los días transcurridos
-- Rejilla de **Diario · Mensual (30 d) · Anual (365 d) · Hasta hoy** (este último resaltado en verde). Los montos son netos de ISR
-- Si la cuenta tiene ISR configurado, franja con el desglose del día: `Diario bruto − ISR = Neto` y la retención, etiquetada según `isrSobre` (*anual s/ capital* o *del interés*)
-- Lista de tramos con el tramo activo resaltado. En modo `unico` los tramos que no aplican se atenúan
-- Pie: GAT, tasa anual (*ponderada* o *tasa única*), rendimiento histórico (si hay historial) y las bases cuando no son 365
-- Acciones: **Actualizar monto** (🔄), **Actualizar rendimiento** (📈), **Editar** (✏️), **Eliminar** (🗑️)
+Las tarjetas se centran cuando la última fila no se llena (`justify-content-center`), y el grid va de 1 columna en móvil a 4 en `xxl`.
 
-**Modal de cuenta:** institución, nombre (opcional), monto invertido, fecha de actualización, rendimiento obtenido (opcional), fecha de actualización del rendimiento, selector de **modo de tramos**, editor de tramos y sección *Avanzado*.
+**Tarjeta por cuenta** — solo el estado, sin configuración. De arriba abajo:
+
+| Bloque | Contenido |
+|---|---|
+| Encabezado | Color de la institución, institución arriba y alias abajo (si no hay alias, la institución ocupa la línea principal) y las 4 acciones |
+| Saldo | **Saldo actual estimado**, el importe protagonista |
+| Tasa | **Rendimiento anual** con la tasa del saldo actual, y una **ⓘ** que abre el desglose por tramos |
+| Ganado | Línea descriptiva `Hasta hoy $X · Último $Y` con un botón 🕐 que abre el historial diario |
+| Rendimientos | **Diario · Mensual (30 d) · Anual (365 d)**, netos de ISR, en una fila con divisores |
+| Pie | Botón **Ver detalle** |
+
+- Acciones del encabezado: **Actualizar monto** (🔄), **Actualizar rendimiento** (📈), **Editar** (✏️), **Eliminar** (🗑️)
+- La **ⓘ** de la tasa aparece **solo si más de un tramo tiene dinero**. Con un único tramo aportando, la tasa no es un promedio y no hay nada que desglosar, así que el botón se omite
+
+**Modal Detalle** — se abre desde la tarjeta, en tres secciones:
+1. **Cómo sale el rendimiento de hoy** — la aritmética renglón por renglón: la porción de cada tramo con su fórmula, el bruto, la retención y el neto
+2. **Tramos** — barra de reparto y desglose (ver abajo)
+3. **Configuración** — resumen de solo lectura de todos los campos, cada uno con su **ⓘ**
+
+Al pie, botones para saltar al **Historial diario** o a **Editar**. Como los tres comparten `#modal-container`, el salto espera al evento `hidden.bs.modal` antes de abrir el siguiente.
+
+**Modal Historial diario** — un renglón por día desde la última captura del monto, del más reciente al más antiguo, con el más reciente marcado como *último*. Columnas: día, saldo inicial, bruto e ISR (solo si hay retención) y rendimiento. Encabezado y totales fijos al hacer scroll.
+
+**Bloque de tramos** — sustituye al resaltado del "tramo activo", que sugería que solo esa tasa aplicaba cuando en modo progresivo todos los tramos con dinero aportan a la vez:
+- Barra apilada con el reparto del saldo, coloreada por tramo, con leyenda de porcentajes
+- Tabla `Tramo · Tasa · En el tramo · Aporte/día` con totales; los tramos sin dinero se atenúan y el que recibiría el siguiente peso lleva la etiqueta *marginal*
+
+**Modal de cuenta:** institución, nombre (opcional), monto invertido y su fecha, rendimiento obtenido y su fecha, **Aplicación** e **Interpretación de la tasa**, editor de tramos y sección *Avanzado*.
 - El editor de tramos muestra el **Desde** derivado en tiempo real y el último tramo siempre es *En adelante*
 - Validación: todo tramo salvo el último requiere límite superior, y los límites deben ir en aumento
 - Al cambiar la fecha de actualización (monto o rendimiento), la captura anterior pasa automáticamente al `historial`/`historialRendimiento` correspondiente
 
-*Avanzado* agrupa en tres bloques todo lo que varía entre instituciones:
+*Avanzado* agrupa lo que varía entre instituciones:
 
 | Bloque | Campos |
 |---|---|
 | Retención de ISR | Tasa · Se calcula sobre (capital / interés) |
 | Convenciones de cálculo | Base anual del interés · Base anual del ISR · Tasa ponderada (truncar / redondear) |
-| Otros | CLABE/Referencia · Notas |
 
-Las etiquetas y las ayudas se reescriben al vuelo según el modo elegido, y *Base anual — ISR* se oculta cuando la retención es sobre el interés (ahí no se anualiza).
+La etiqueta de la tasa de retención cambia según `isrSobre`, y *Base anual — ISR* se oculta cuando la retención es sobre el interés (ahí no se anualiza).
+
+### Ayuda contextual
+
+Ningún campo lleva texto de ayuda inline: cada uno tiene un botón **ⓘ** que abre un modal breve con el concepto y un apartado *Cómo afecta al cálculo*, casi siempre con un ejemplo numérico. Hay diez, uno por campo, y viven en el diccionario `AYUDA` de `rendimientos.js`.
+
+> Los ejemplos usan cifras inventadas a propósito. La ayuda explica el concepto, no la configuración de ninguna institución en particular.
+
+Detalles de implementación que conviene conocer antes de tocarlos:
+- La ayuda **no usa `openModal`**: monta su propio modal en `<body>` para poder apilarse sobre el formulario de la cuenta sin destruirlo. Al cerrarse restaura la clase `modal-open` del body si todavía hay un modal abierto detrás
+- Un solo listener delegado atiende todos los botones, presentes y futuros. Ignora los que no traen `data-ayuda`, porque el botón del desglose de tramos reusa el estilo sin ser ayuda de un campo
 
 **Modal Actualizar monto:** muestra el saldo estimado a hoy con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado (aportación, retiro o ajuste de tasa). Guarda la captura anterior en el `historial`.
 
@@ -825,18 +856,30 @@ El módulo `js/utils/rendimiento.js` concentra el cálculo de rendimientos de la
 
 `progresivo` es el modelo de las cuentas de rendimiento mexicanas; Revolut lo llama *"tasa promedio ponderada, según el monto de dinero que tengas en cada nivel"*.
 
-`unico` existe para productos que operan por escalón. Produce discontinuidades — con $100,000 se ganan $7,000 anuales y con $100,001 solo $5,000 — que en `progresivo` no ocurren. En la tarjeta, los tramos que no aplican se muestran atenuados y el pie dice *"tasa única"* en lugar de *"ponderada"*.
+`unico` existe para productos que operan por escalón. Produce discontinuidades — con $100,000 se ganan $7,000 anuales y con $100,001 solo $5,000 — que en `progresivo` no ocurren.
 
-**Capitalización diaria nominal.** La tasa anual del tramo es **nominal** (estándar de las cuentas mexicanas: Nu, Klar, Mercado Pago, Stori, Revolut):
+**Interpretación de la tasa** — configurable por cuenta en `modoTasa`. Es la decisión que más desvía el resultado si se elige mal: con la misma tasa publicada, `nominal` genera del orden de 5% a 8% más interés diario que `efectiva`.
+
+| Modo | Tasa diaria | Un año de capitalización | GAT |
+|---|---|---|---|
+| `nominal` (default) | `tasa / base` | rinde **por encima** de la tasa publicada | mayor que la tasa |
+| `efectiva` | `(1 + tasa)^(1/base) − 1` | rinde **exactamente** la tasa publicada | igual a la tasa |
+
+Con 12% sobre $10,000 durante un año: `nominal` deja $1,274 (GAT 12.75%) y `efectiva` deja $1,200 (GAT 12%).
+
+> Ambas interpretaciones existen en el mercado mexicano y las instituciones no siempre lo dicen. **El modo se verifica contra un abono real, no se supone** — ver la sección de verificación abajo.
+
+**Composición.**
 
 ```
-tasaDiaria = tasaAnual / baseAnual        (baseAnual = 365 por default, o 360)
 saldo_{d+1} = saldo_d + interesDiario(saldo_d) − isrDiario(saldo_d)
 ```
 
 Como la tasa depende del saldo y el saldo crece cada día, la composición se resuelve **iterando día a día**; no hay fórmula cerrada. El bucle está acotado a 100 años para blindar el cálculo contra fechas mal capturadas.
 
-**GAT Nominal.** Se reporta como lo publican las instituciones: **antes de impuestos** y con tantas capitalizaciones como días tenga la base del producto — no 365 días reales. Con `baseAnual: 360`, una tasa de 15% da `(1 + 0.15/360)^360 − 1 = 16.18%`, exactamente el GAT que publica Revolut. Usar 365 iteraciones sobre una base de 360 daría 16.42% y no cuadraría con el folleto.
+**GAT Nominal.** Se reporta como lo publican las instituciones: **antes de impuestos** y con tantas capitalizaciones como días tenga la base del producto — no 365 días reales. Con `baseAnual: 360`, una tasa nominal de 15% da `(1 + 0.15/360)^360 − 1 = 16.18%`. Usar 365 iteraciones sobre una base de 360 daría 16.42% y no cuadraría con lo publicado.
+
+**Tasa ponderada.** Es el promedio de las tasas de los tramos pesado por el dinero que hay en cada uno. Se calcula **sobre las tasas configuradas**, no a partir del interés diario, así que no depende de `base` ni de `modoTasa` y sigue siendo comparable con lo que muestra la app del banco.
 
 **Retención de ISR** — configurable por cuenta en `isrSobre`:
 
@@ -851,9 +894,25 @@ En ambos casos se descuenta cada día **antes** de capitalizar, porque lo que se
 
 > **Por qué `baseIsr` es un campo aparte:** las dos bases no siempre coinciden. Revolut MX lo documenta explícitamente — *"las retenciones fiscales […] se calculan sobre la base de un año de 365 días, mientras que los pagos de intereses diarios se calculan sobre la base de un año de 360 días"*.
 
-### Verificación contra Revolut MX (2026-08-05)
+### Verificación contra instituciones reales
 
-Configuración: tramos 15% / 7% / 4.5%, `baseAnual: 360`, `isrAnual: 0.90`, `baseIsr: 365`.
+El motor no se da por bueno con un cálculo plausible: cada configuración se contrasta contra un abono real y contra las cifras que publica la institución. Dos casos verificados, deliberadamente opuestos entre sí:
+
+| | Caso A | Caso B |
+|---|---|---|
+| Aplicación | progresiva | progresiva |
+| Interpretación | **nominal** | **efectiva** |
+| Base del interés | 360 | 365 |
+| Base del ISR | 365 | — |
+| ISR en el abono diario | descontado | **no descontado** |
+
+Que dos instituciones del mismo mercado operen de forma tan distinta es la razón de que `modoTasa`, las bases y el ISR sean configurables por cuenta y no constantes del motor.
+
+> **Cuidado con ajustar a un solo dato.** Durante el desarrollo, dos parámetros equivocados a la vez (ISR 0.70% con ambas bases en 365) reprodujeron el abono real al centavo por pura compensación. Un abono aislado no distingue entre combinaciones: hace falta la documentación de la institución, o varios datos independientes, para fijar cada parámetro.
+
+#### Caso A — Revolut MX (2026-08-05)
+
+Configuración: tramos 15% / 7% / 4.5%, `modoTasa: 'nominal'`, `baseAnual: 360`, `isrAnual: 0.90`, `baseIsr: 365`.
 
 | Concepto | Módulo | Revolut |
 |---|---|---|
@@ -875,6 +934,19 @@ Configuración: tramos 15% / 7% / 4.5%, `baseAnual: 360`, `isrAnual: 0.90`, `bas
 > Los GAT del folleto que incluyen el costo anual del Plan (Metal −0.57%, Premium 9.03%) quedan fuera de alcance: el módulo no modela comisiones de plan.
 
 > **Tasas de retención de Revolut MX:** 0.90% clientes nacionales · 4.90% extranjeros. Para otras instituciones hay que consultar la tasa vigente de la LIF.
+
+#### Caso B — Mercado Pago MX (2026-08-06)
+
+Configuración: tramos `$25,000 @ 12%` y el resto `@ 5.3%` (así lo publica la app), `modoTasa: 'efectiva'`, `baseAnual: 365`, `isrAnual: 0`.
+
+| Concepto | Módulo | Mercado Pago |
+|---|---|---|
+| Interés del día (saldo $25,249.70) | **$7.798782 → $7.79** | **$7.79** |
+| Saldo resultante | **$25,257.4988** | **$25,257.49** |
+
+Se enumeraron las 32 combinaciones de *interpretación × base × modo de ISR × redondeo*, y **una sola** reproduce el abono: tasa **efectiva**, base 365, **sin ISR descontado del abono diario** y truncando a centavos. Con la interpretación nominal el cálculo se iba ~8% arriba.
+
+> **Pendiente:** el abono diario llega bruto, pero la institución sí retiene ISR. Lo más probable es que lo cobre por separado (mensual) en lugar de por abono. Mientras eso no se confirme contra un estado de cuenta, la cuenta va con `isrAnual: 0` — el diario coincide con lo que se ve, a costa de que la proyección anual quede optimista por el monto de la retención.
 
 ### Línea de tiempo y aportaciones
 
@@ -903,17 +975,29 @@ tramoActivo(tramosNorm, saldo)    → index | -1
 // Constantes de modo
 MODO_PROGRESIVO 'progresivo' · MODO_UNICO 'unico'
 ISR_CAPITAL     'capital'    · ISR_INTERES 'interes'
+TASA_NOMINAL    'nominal'    · TASA_EFECTIVA 'efectiva'
+
+// Valores por omisión
+BASE_ANUAL_DEFAULT  365          // base del interés y del ISR
+TRAMOS_DEFAULT      [{ hasta: 25000, tasa: 15 }, { hasta: 100000, tasa: 7 }, { hasta: null, tasa: 5 }]
+                                 // precargados al crear una cuenta nueva
 
 // Configuración de cálculo — todas las funciones la reciben en lugar de una
 // lista larga de parámetros posicionales. Normaliza y aplica defaults.
-configCuenta(cuenta) → { tramos, modo, base, isrAnual, isrSobre, baseIsr }
+configCuenta(cuenta) → { tramos, modo, modoTasa, base, isrAnual, isrSobre, baseIsr }
 
 // Composición
+tasaDiaria(tasaAnual, cfg)                → number   // según cfg.modoTasa
 interesDiario(saldo, cfg)                 → number   // bruto, según cfg.modo
 isrDiario(saldo, cfg, interesBruto?)      → number   // según cfg.isrSobre; el 3er arg
                                                      // solo se usa en modo 'interes'
-componer(saldoInicial, dias, cfg)  → { saldoFinal, rendimiento, bruto, isr, dias }  // rendimiento = bruto − isr
-tasaNominal(saldo, cfg)            → number   // % anual bruto: ponderado o del tramo activo
+componer(saldoInicial, dias, cfg)
+  → { saldoFinal, rendimiento, bruto, isr, dias, ultimo }   // rendimiento = bruto − isr
+                                                            // ultimo = { bruto, isr, neto } del último día
+tasaNominal(saldo, cfg)            → number   // % anual ponderado, sobre las tasas configuradas
+
+// Reparto del saldo entre los tramos — la suma de `aporte` es interesDiario()
+desgloseTramos(saldo, cfg) → [{ desde, hasta, tasa, monto, aporte, pct, marginal }]
 
 // Línea de tiempo de una cuenta
 timelineCuenta(cuenta)                        → [{ fecha, monto }]  // ascendente, sin fechas repetidas
@@ -921,9 +1005,14 @@ saldoEnFecha(timeline, fecha, cfg)            → number | null
 rendimientoEntre(timeline, fIni, fFin, cfg)
   → { rendimiento, bruto, isr, saldoInicial, saldoFinal, aportaciones, desde, hasta, dias, recortado } | null
 
+// Rendimiento día por día desde la última captura del monto. Cada entrada es el
+// día que GENERÓ el interés; se abona a la madrugada siguiente.
+historialDiario(cuenta, hoy?, maxDias = 400)
+  → [{ fecha, saldoInicial, bruto, isr, neto, saldoFinal }]   // ascendente
+
 // Resumen completo de una cuenta a una fecha de corte
 resumenCuenta(cuenta, hoy?) → {
-  tramos, modo, base, isrAnual, isrSobre, baseIsr,   // = configCuenta(cuenta)
+  ...configCuenta(cuenta),      // tramos, modo, modoTasa, base, isrAnual, isrSobre, baseIsr
   timeline, fechaBase, dias,
   capital, saldoActual,
   rendimientoObtenido, fechaRendimiento, diasRendimiento,  // última captura real + proyección
@@ -933,6 +1022,8 @@ resumenCuenta(cuenta, hoy?) → {
   aportacionesHistoricas, diasHistoricos,
   diario, mensual, anual,       // NETOS, sobre el saldo YA actualizado a hoy
   diarioBruto, isrDiario,
+  ayer,                         // neto del último día completo — lo abonado hoy
+  desglose,                     // = desgloseTramos(saldoActual, cfg)
   tasaNominal,                  // % anual ponderado bruto
   gat,                          // GAT Nominal: antes de impuestos, `base` capitalizaciones
   idxTramo
@@ -957,6 +1048,43 @@ Los depósitos de nómina ocurren los días **15 y 30** de cada mes (en febrero 
 La función `anteriorNomina(date, festivosMX)` devuelve el depósito de nómina más reciente anterior o igual a `date`. Se usa en el módulo MSI para mostrar con qué nómina se cubriría cada pago:
 
 **Ejemplo:** Si el primer pago calculado es el 09/07/2026, se muestra **30/06/2026** (el depósito de nómina de fin de junio es el que precede a ese pago).
+
+---
+
+## Tema Claro / Oscuro
+
+Tres estados, conmutables con el botón del footer del sidebar: **Sistema** (por defecto) · **Claro** · **Oscuro**.
+
+### Cómo se aplica
+
+Un script en línea en `index.html`, **antes de las hojas de estilo**, resuelve el modo y lo estampa en `<html>`. Va en línea a propósito: si se resolviera desde un módulo, habría un parpadeo claro en cada carga.
+
+| Atributo | Para qué |
+|---|---|
+| `data-theme` | El CSS propio (`css/app.css`) |
+| `data-bs-theme` | El modo oscuro nativo de Bootstrap 5.3 — modales, formularios, dropdowns |
+| `data-tema-pref` | La preferencia cruda, por si se quiere estilar el conmutador |
+
+El script expone `window.TEMA` con `leer()` / `aplicar(pref)` / `guardar(pref)`. La lógica del botón vive en `setupTema()` (`js/app.js`), que además escucha `matchMedia` para que el estado *Sistema* siga al sistema operativo en vivo.
+
+### Persistencia
+
+`localStorage['impactos-tema']`. El estado *Sistema* **borra** la llave en vez de guardar un valor, así que un usuario que nunca toque el botón se comporta igual que antes de existir la función. No se guarda en Firestore a propósito: es preferencia por dispositivo y esperar a Firebase reintroduciría el parpadeo.
+
+### Tokens
+
+Todo el color vive en `:root` como tokens semánticos (superficies, texto, bordes, tintes, chips de institución); el bloque `:root[data-theme="dark"]` solo los redefine. Fuera del bloque de variables no debe haber literales de color.
+
+**Lo que NO cambia con el tema:**
+
+- **El azul de marca** — login, sidebar, barra superior en móvil, header de las data cards, chip de filtro activo y FAB. `--primary`, `--primary-light` y `--sidebar-bg` no se redefinen en oscuro. Para el azul usado como *texto* existen `--accent` y `--accent-strong`, que sí se aclaran porque `#1a237e` sobre fondo oscuro es ilegible.
+- **Los colores de institución** (`inst.color`, `BANK_COLORS`) y el plástico de las tarjetas: son dato, no tema.
+
+> Las variantes contextuales de fila de Bootstrap (`.table-success`, `.table-warning`, `.table-secondary`) **no** responden a `data-bs-theme` — se generan con hexes claros fijos. `app.css` las remapea a los tintes propios bajo `[data-theme="dark"]`.
+
+### Densidad en móvil
+
+Bajo 576 px hay una pasada de densidad que reduce la altura de las vistas ~10 % (Rendimientos −36 %): sube el suelo tipográfico a ~11 px, tempera los tamaños grandes con `clamp()` y recorta padding. Los tamaños diminutos que viajan en atributos `style` usan los tokens `--fs-micro` · `--fs-nano` · `--fs-tiny` · `--fs-mini` · `--fs-small`, cuyo valor de escritorio es el original y que solo suben en móvil.
 
 ---
 
@@ -1060,6 +1188,8 @@ Los siguientes campos existieron en versiones anteriores y pueden estar presente
 | `msi` | `ultimoPago` | Calculado dinámicamente desde `fechaCompra` + ciclo |
 | `gastosFijos` | `tarjetaNombre` | `tarjetaId` + `numeroTarjeta` |
 | `impactoMensual` | colección completa | Reemplazada por colección `impacto` |
+| `inversiones` | `referencia` | — (se retiró de la UI, no tiene reemplazo) |
+| `inversiones` | `notas` | — (ídem) |
 
 > Las colecciones `contado` y `gastos` son nuevas — no tienen campos obsoletos.
 
@@ -1084,11 +1214,4 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-08-05 (v1.8.0) — nuevo módulo Rendimientos: cuentas de inversión con tramos configurables (progresivo o tasa única), capitalización diaria, retención de ISR configurable (sobre capital o sobre interés) con base independiente, convención de despliegue de la tasa por cuenta, cálculo entre 2 fechas y sección de rendimientos en el dashboard. Motor verificado contra los datos publicados y reales de Revolut MX*
-
-**Cambios recientes:**
-- **Bonificación:** al desmarcar "esperar bonificación" en edición de compra ahora se escribe `bonificacion: null` en Firestore (antes `delete` solo borraba la clave local, dejando el campo intacto en la BD)
-- **Tarjetas ocultas:** nuevo campo `oculta` en `tarjetas/{id}`; botón 👁 en admin para ocultar/mostrar; tarjetas ocultas excluidas de `/tarjetas` y todos los selectores; constraint mutuamente exclusivo con `favorita`
-- **Selectores De Contado y A Plazos:** ahora filtran solo tarjetas de crédito (`soloCredito = true`)
-- **Proyección gastos fijos:** `proyectarMes` ya no duplica un gasto fijo en `estimadoGastosFijos` cuando existe un registro confirmado cuyo `mes` corresponde al mes del corte del ciclo proyectado — evita que un gasto confirmado con otra tarjeta siga apareciendo en la proyección de la tarjeta original
-- **PWA / Service Worker:** cache bumpeado a `impactos-v8`; `controllerchange` → `location.reload()` para forzar actualización en Android sin intervención manual*
+*Última actualización: 2026-08-06 (v1.9.0) — Tema claro/oscuro con tres estados y color de marca preservado; pasada de densidad en móvil (−10 % de altura, Rendimientos −36 %) con tokens tipográficos; calculadora entre 2 fechas movida a modal; fila de subpago de A Plazos ahora muestra su fecha; sección de gastos pendientes normalizada para móvil. Incluye lo pendiente de v1.8.2 — Rendimientos: interpretación de la tasa configurable por cuenta (nominal o efectiva), desglose del saldo por tramos con barra de reparto, historial día por día, Detalle en modal, ayuda contextual por campo y tarjetas reestructuradas; motor verificado contra abonos reales de dos instituciones con convenciones opuestas*

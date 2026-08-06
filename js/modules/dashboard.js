@@ -176,30 +176,30 @@ export async function render(container) {
       <div class="row g-3 mb-3">
         <div class="${colMetric}">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#ffebee"><i class="bi bi-credit-card-fill" style="color:#c62828"></i></div>
+            <div class="metric-icon tint-danger"><i class="bi bi-credit-card-fill"></i></div>
             <div class="metric-info d-flex gap-0" style="min-width:0">
               <div style="flex:1;min-width:0">
                 <div class="metric-value">${currency(totalAPagar)}</div>
                 <div class="metric-label">Total a pagar</div>
               </div>
-              <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+              <div class="metric-divider"></div>
               <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px">
-                ${estimadoContado > 0 ? `<div style="font-size:0.72rem;color:#999">Contado <strong style="color:#555">${currency(estimadoContado)}</strong></div>` : ''}
-                ${estimadoPlazos  > 0 ? `<div style="font-size:0.72rem;color:#999">Plazos <strong style="color:#555">${currency(estimadoPlazos)}</strong></div>` : ''}
-                ${estimadoGastos  > 0 ? `<div style="font-size:0.72rem;color:#999">Gastos <strong style="color:#555">${currency(estimadoGastos)}</strong></div>` : ''}
+                ${estimadoContado > 0 ? `<div style="font-size:0.72rem;color:var(--text-faint)">Contado <strong style="color:var(--text-soft)">${currency(estimadoContado)}</strong></div>` : ''}
+                ${estimadoPlazos  > 0 ? `<div style="font-size:0.72rem;color:var(--text-faint)">Plazos <strong style="color:var(--text-soft)">${currency(estimadoPlazos)}</strong></div>` : ''}
+                ${estimadoGastos  > 0 ? `<div style="font-size:0.72rem;color:var(--text-faint)">Gastos <strong style="color:var(--text-soft)">${currency(estimadoGastos)}</strong></div>` : ''}
               </div>
             </div>
           </div>
         </div>
         <div class="${colMetric}">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#e3f2fd"><i class="bi bi-calculator" style="color:#1565c0"></i></div>
+            <div class="metric-icon tint-info"><i class="bi bi-calculator"></i></div>
             <div class="metric-info d-flex gap-0" style="min-width:0">
               <div style="flex:1;min-width:0">
                 <div class="metric-value ${restante < 0 ? 'text-danger' : 'text-success'}">${currency(restante)}</div>
                 <div class="metric-label">Restante${tieneImpacto ? '' : ' est.'}</div>
               </div>
-              <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+              <div class="metric-divider"></div>
               <div style="flex:1;min-width:0">
                 <div class="metric-value text-muted">${currency(restanteEsperado)}</div>
                 <div class="metric-label">Esperado</div>
@@ -210,14 +210,14 @@ export async function render(container) {
         ${rend.cuentas ? `
         <div class="${colMetric}">
           <a href="#/rendimientos" class="metric-card h-100 text-reset">
-            <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-piggy-bank-fill" style="color:#2e7d32"></i></div>
+            <div class="metric-icon tint-success"><i class="bi bi-piggy-bank-fill"></i></div>
             <div class="metric-info d-flex gap-0" style="min-width:0">
               <div style="flex:1;min-width:0">
                 <div class="metric-value text-success">${currency(rend.diario)}</div>
                 <div class="metric-label">Diario</div>
                 <div class="metric-sub">Saldo ${currency(rend.saldoActual)}</div>
               </div>
-              <div style="width:1px;background:#e9ecef;margin:2px 10px"></div>
+              <div class="metric-divider"></div>
               <div style="flex:1;min-width:0">
                 <div class="metric-value text-success">${currency(rend.rendimientoHastaHoy)}</div>
                 <div class="metric-label">Hasta hoy</div>
@@ -258,7 +258,7 @@ export async function render(container) {
                     const tc     = cardMap[item.tarjetaId];
                     const enlace = item.enlaceCompra;
                     const titulo = enlace
-                      ? `<a href="${enlace}" target="_blank" rel="noopener" class="text-reset text-decoration-none">${item.compra}<i class="bi bi-box-arrow-up-right ms-1" style="font-size:0.6rem;opacity:.5"></i></a>`
+                      ? `<a href="${enlace}" target="_blank" rel="noopener" class="text-reset text-decoration-none">${item.compra}<i class="bi bi-box-arrow-up-right ms-1" style="font-size:var(--fs-nano);opacity:.5"></i></a>`
                       : item.compra;
                     const fecha  = item.fechaCompra ? ' · ' + fmtShortDate(item.fechaCompra) : '';
                     const tarjeta = tc?.nombre || '—';
@@ -268,7 +268,7 @@ export async function render(container) {
                         <div class="flex-grow-1 min-width-0">
                           <div class="fw-500 text-truncate">${titulo}</div>
                           <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:0.6rem;vertical-align:middle">Contado</span>${tarjeta}${fecha}
+                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:var(--fs-nano);vertical-align:middle">Contado</span>${tarjeta}${fecha}
                           </div>
                         </div>
                         <div class="fw-semibold text-end flex-shrink-0">${currency(item.total)}</div>
@@ -278,12 +278,12 @@ export async function render(container) {
                         <div class="flex-grow-1 min-width-0">
                           <div class="fw-500 text-truncate">${titulo}</div>
                           <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:0.6rem;vertical-align:middle">${item.mesesPagados}/${item.mesesTotal} msi</span>${tarjeta}${fecha}
+                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:var(--fs-nano);vertical-align:middle">${item.mesesPagados}/${item.mesesTotal} msi</span>${tarjeta}${fecha}
                           </div>
                         </div>
                         <div class="text-end flex-shrink-0">
-                          <div class="fw-semibold">${currency(item.mensualidad)}<span class="text-muted fw-normal" style="font-size:0.68rem">/mes</span></div>
-                          <div style="font-size:0.65rem;color:#aaa">${currency(item.total)} total</div>
+                          <div class="fw-semibold">${currency(item.mensualidad)}<span class="text-muted fw-normal" style="font-size:var(--fs-small)">/mes</span></div>
+                          <div style="font-size:var(--fs-mini);color:var(--text-faint)">${currency(item.total)} total</div>
                         </div>
                       </div>`;
                     }
@@ -316,7 +316,7 @@ export async function render(container) {
                         <div class="fw-500">${g.nombre}</div>
                         <div class="text-muted" style="font-size:0.72rem">${tc?.nombre || '—'}${g.fechaPago ? ' · ' + fmtShortDate(g.fechaPago) : ''}</div>
                       </div>
-                      <span class="badge ${estadoCls}" style="font-size:0.62rem">${estadoLabel}</span>
+                      <span class="badge ${estadoCls}" style="font-size:var(--fs-tiny)">${estadoLabel}</span>
                       <div class="fw-semibold text-end flex-shrink-0" style="min-width:60px">${currency(g.importe)}</div>
                     </div>`;
                   }).join('')
@@ -355,7 +355,7 @@ export async function render(container) {
                       <td style="padding:4px 8px;white-space:nowrap;font-size:0.78rem">
                         <div class="d-flex flex-column gap-0" style="line-height:1.4">
                           ${t.fechaCorte ? `<span class="text-muted"><i class="bi bi-scissors me-1" style="font-size:0.7rem"></i>${fmtShortDate(t.fechaCorteConf ?? t.fechaCorte)}</span>` : ''}
-                          <span style="color:#666"><i class="bi bi-wallet2 me-1" style="font-size:0.7rem"></i>${fp ? fmtShortDate(fp) : '—'}${q ? `<span class="badge ${qCls} ms-1" style="font-size:0.58rem;padding:1px 3px">${q}</span>` : ''}</span>
+                          <span style="color:var(--text-muted)"><i class="bi bi-wallet2 me-1" style="font-size:0.7rem"></i>${fp ? fmtShortDate(fp) : '—'}${q ? `<span class="badge ${qCls} ms-1" style="font-size:var(--fs-micro);padding:1px 3px">${q}</span>` : ''}</span>
                         </div>
                       </td>
                       <td class="text-end fw-semibold" style="padding:4px 8px;white-space:nowrap">${currency(monto)}</td>

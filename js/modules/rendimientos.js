@@ -1,11 +1,12 @@
-import { getAll, create, update, remove } from '../utils/db.js';
+import { getAll, getById, create, update, remove } from '../utils/db.js';
 import { currency, fmtDate } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import {
   resumenCuenta, totalizarResumenes, rendimientoEntre, timelineCuenta,
-  configCuenta, hoyISO, isoDay, diasEntre,
+  historialDiario, configCuenta, hoyISO, isoDay, diasEntre,
   TRAMOS_DEFAULT, BASE_ANUAL_DEFAULT,
   MODO_PROGRESIVO, MODO_UNICO, ISR_CAPITAL, ISR_INTERES,
+  TASA_NOMINAL, TASA_EFECTIVA,
 } from '../utils/rendimiento.js';
 
 const COL      = 'inversiones';
@@ -49,11 +50,204 @@ function pushHistorial(historial, entry) {
     .slice(-MAX_HIST);
 }
 
+// ── Ayuda contextual de los campos de configuración ───────────────────────────
+
+/**
+ * Qué significa cada campo y cómo entra en el cálculo. Los ejemplos usan cifras
+ * inventadas a propósito: la ayuda explica el concepto, no la configuración de
+ * ninguna institución en particular.
+ */
+const AYUDA = {
+  monto: {
+    titulo: 'Monto invertido y fecha',
+    cuerpo: `
+      <p>El saldo <strong>real</strong> que tenía la cuenta el día que lo capturaste, tal como lo
+         mostraba la app de tu institución.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Es el punto de partida de todo. El saldo actual se obtiene componiendo día a día desde
+         ese monto y esa fecha hasta hoy, y los rendimientos diario, mensual y anual se calculan
+         sobre el saldo ya actualizado — no sobre el capital original.</p>
+      <p class="inv-ayuda-ej">Capturas $10,000 con fecha de hace 5 días → se componen 5 días de
+         interés antes de mostrar cualquier cifra.</p>`,
+  },
+  tramos: {
+    titulo: 'Límites de rendimiento',
+    cuerpo: `
+      <p>Los escalones de saldo, cada uno con su tasa anual. Solo capturas el límite superior y la
+         tasa: el <em>desde</em> se deriva del <em>hasta</em> del tramo anterior, de modo que no
+         puede haber huecos ni traslapes. El último tramo siempre es abierto.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Definen qué tasa gana cada peso de tu saldo. Cómo se combinan depende del campo
+         <strong>Aplicación</strong>.</p>`,
+  },
+  modoTramos: {
+    titulo: 'Aplicación de los tramos',
+    cuerpo: `
+      <p><strong>Progresivo</strong> — cada porción del saldo gana la tasa de su propio tramo,
+         igual que funciona el ISR. Varios tramos aportan al mismo tiempo.</p>
+      <p><strong>Tasa única</strong> — todo el saldo gana la tasa del único tramo en el que cae.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Cambia el interés de cada día. La tasa única produce escalones: al cruzar un límite el
+         rendimiento puede <em>bajar</em>, porque el saldo entero pasa a la tasa menor.</p>
+      <p class="inv-ayuda-ej">Con tramos $25,000 al 10% y el resto al 5%, un saldo de $30,000 gana
+         al año:<br>
+         · progresivo → $25,000×10% + $5,000×5% = <strong>$2,750</strong><br>
+         · tasa única → $30,000×5% = <strong>$1,500</strong></p>`,
+  },
+  modoTasa: {
+    titulo: 'Interpretación de la tasa',
+    cuerpo: `
+      <p><strong>Nominal</strong> — la tasa se reparte entre los días del año y se capitaliza a
+         diario, así que al cabo de 12 meses rinde algo más que el número publicado.</p>
+      <p><strong>Efectiva (GAT)</strong> — la tasa publicada ya incluye esa capitalización: en un
+         año rinde exactamente ese número.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Es el ajuste que más desvía el resultado si se elige mal — con la misma tasa, interpretarla
+         como nominal genera del orden de 5% a 8% más interés diario que como efectiva. Conviene
+         confirmarlo contra un abono real antes de darlo por bueno.</p>
+      <p class="inv-ayuda-ej">Una tasa de 12% sobre $10,000 durante un año:<br>
+         · nominal → tasa diaria 12%÷365, y al final <strong>$1,274</strong> (GAT 12.75%)<br>
+         · efectiva → tasa diaria (1.12)^(1/365)−1, y al final <strong>$1,200</strong> (GAT 12%)</p>`,
+  },
+  isr: {
+    titulo: 'Retención de ISR',
+    cuerpo: `
+      <p>El impuesto que la institución retiene de tus rendimientos y entera al SAT.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Se descuenta <strong>cada día antes de reinvertir</strong>, así que reduce tanto el abono
+         diario como el saldo que sigue componiendo. Los montos que muestra la app —diario,
+         mensual, anual, hasta hoy— ya vienen netos.</p>
+      <p>Déjalo en <strong>0</strong> si no aplica o si tu institución la retiene por separado; en
+         ese caso las cifras quedan brutas.</p>`,
+  },
+  isrSobre: {
+    titulo: 'Base de la retención',
+    cuerpo: `
+      <p><strong>Sobre el capital</strong> — la tasa es anual y se aplica al saldo, no a lo ganado.
+         Así opera la retención en México.</p>
+      <p><strong>Sobre el interés</strong> — se retiene un porcentaje de lo que generaste ese día;
+         el número no se anualiza ni usa una base.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Sobre el capital la retención es prácticamente fija: se cobra aunque el rendimiento sea
+         bajo, y puede llegar a superarlo. Sobre el interés siempre es proporcional, así que el
+         rendimiento neto nunca queda en negativo.</p>
+      <p class="inv-ayuda-ej">Saldo $100,000 con 0.9%:<br>
+         · sobre el capital → $900 al año, gane lo que gane<br>
+         · sobre el interés → 0.9% de lo ganado, nada si no generó</p>`,
+  },
+  baseAnual: {
+    titulo: 'Base anual del interés',
+    cuerpo: `
+      <p>Cuántos días considera tu institución que tiene un año al repartir la tasa entre los días.
+         Lo habitual es 365, pero algunas usan 360 por convención comercial.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Con base 360 el interés diario resulta <strong>1.4% mayor</strong> que con 365, porque la
+         tasa se divide entre menos días. También define cuántas capitalizaciones se usan para
+         reportar el GAT.</p>`,
+  },
+  baseIsr: {
+    titulo: 'Base anual del ISR',
+    cuerpo: `
+      <p>La misma idea que la base del interés, pero para la retención. <strong>No siempre
+         coinciden</strong>: hay instituciones que pagan intereses sobre una base y retienen sobre
+         la otra, y lo indican en sus términos.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Cambia cuánto se retiene cada día. El efecto es pequeño comparado con la base del interés,
+         pero basta para desajustar el centavo al comparar contra un abono real.</p>
+      <p>Solo aplica cuando la retención se calcula sobre el capital.</p>`,
+  },
+  redondeoTasa: {
+    titulo: 'Cómo se muestra la tasa ponderada',
+    cuerpo: `
+      <p>Las instituciones no despliegan la tasa igual: unas truncan los decimales y otras
+         redondean.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p><strong>No afecta ningún monto.</strong> Es solo presentación: cambia el porcentaje que se
+         muestra en la tarjeta para que coincida con lo que ves en tu app y no te haga dudar de si
+         el cálculo está bien.</p>
+      <p class="inv-ayuda-ej">Una tasa real de 14.849%:<br>
+         · truncar → se muestra <strong>14.84%</strong><br>
+         · redondear → se muestra <strong>14.85%</strong></p>`,
+  },
+  rendimientoObtenido: {
+    titulo: 'Rendimiento obtenido',
+    cuerpo: `
+      <p>Lo que la cuenta te ha pagado <strong>de verdad</strong> hasta la fecha que registres,
+         tomado de tu estado de cuenta.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>El indicador <strong>Hasta hoy</strong> parte de ese número real y le suma únicamente la
+         proyección desde esa fecha, en vez de proyectar todo el periodo. Mientras más seguido lo
+         actualices, menos margen de error acumula la estimación.</p>`,
+  },
+};
+
+/** Botón "i" que abre la ayuda de un campo. */
+const btnAyuda = clave =>
+  `<button type="button" class="btn-ayuda" data-ayuda="${clave}"
+           aria-label="Qué significa este campo" title="Qué significa este campo">
+     <i class="bi bi-info-circle"></i>
+   </button>`;
+
+/**
+ * Abre la ayuda en su propio modal, independiente de `openModal`, para poder
+ * apilarse sobre el formulario de la cuenta sin destruirlo.
+ */
+function showAyuda(clave) {
+  const a = AYUDA[clave];
+  if (!a) return;
+
+  document.getElementById('inv-ayuda')?.remove();
+  document.body.insertAdjacentHTML('beforeend', `
+    <div class="modal fade" id="inv-ayuda" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-info-circle me-2"></i>${a.titulo}</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body inv-ayuda-body">${a.cuerpo}</div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Entendido</button>
+          </div>
+        </div>
+      </div>
+    </div>`);
+
+  const el = document.getElementById('inv-ayuda');
+  el.addEventListener('hidden.bs.modal', () => {
+    el.remove();
+    // Al cerrarse encima de otro modal, Bootstrap le quita el bloqueo de scroll al body
+    if (document.querySelector('.modal.show')) document.body.classList.add('modal-open');
+  }, { once: true });
+  new bootstrap.Modal(el).show();
+}
+
+// Un solo listener delegado para todos los botones "i", presentes y futuros
+let _ayudaLista = false;
+function activarAyuda() {
+  if (_ayudaLista) return;
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.btn-ayuda');
+    // Hay botones que reusan el estilo sin ser ayuda de un campo (p. ej. el de tramos)
+    if (!b || !b.dataset.ayuda) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showAyuda(b.dataset.ayuda);
+  });
+  _ayudaLista = true;
+}
+
 // Estado de la calculadora — sobrevive a los re-render del módulo
 const _calc = { cuentaId: '', desde: '', hasta: '' };
 
 export async function render(container) {
-  await renderView(container);
+  activarAyuda();
+  try {
+    await renderView(container);
+  } catch (e) {
+    container.innerHTML = `<div class="alert alert-danger">Error al cargar Rendimientos: ${esc(e.message)}</div>`;
+    console.error(e);
+  }
 }
 
 async function renderView(container) {
@@ -85,17 +279,23 @@ async function renderView(container) {
              Capital ${currency(tot.capital)} ·
              Ganado hasta hoy <strong class="text-success">${currency(tot.rendimientoHastaHoy)}</strong></p>
         </div>
-        <button class="btn btn-primary btn-sm" id="btn-nueva-cuenta"
-                ${instituciones.length ? '' : 'disabled title="Registra una institución en Administración primero"'}>
-          <i class="bi bi-plus-lg me-1"></i>Nueva Cuenta
-        </button>
+        <div class="d-flex flex-wrap gap-2">
+          <button class="btn btn-outline-primary btn-sm" id="btn-calc-periodo"
+                  ${cuentas.length ? '' : 'disabled title="Registra una cuenta de inversión primero"'}>
+            <i class="bi bi-calendar-range me-1"></i>Calcular periodo
+          </button>
+          <button class="btn btn-primary btn-sm" id="btn-nueva-cuenta"
+                  ${instituciones.length ? '' : 'disabled title="Registra una institución en Administración primero"'}>
+            <i class="bi bi-plus-lg me-1"></i>Nueva Cuenta
+          </button>
+        </div>
       </div>
 
       <!-- ── Acumulado de todas las cuentas ── -->
       <div class="row g-3 mb-3">
-        <div class="col-12 col-sm-6 col-xl-3">
+        <div class="col-6 col-sm-6 col-xl-3">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#e8f5e9"><i class="bi bi-piggy-bank-fill" style="color:#2e7d32"></i></div>
+            <div class="metric-icon tint-success"><i class="bi bi-piggy-bank-fill"></i></div>
             <div class="metric-info">
               <div class="metric-value">${currency(tot.saldoActual)}</div>
               <div class="metric-label">Saldo actual</div>
@@ -103,9 +303,9 @@ async function renderView(container) {
             </div>
           </div>
         </div>
-        <div class="col-12 col-sm-6 col-xl-3">
+        <div class="col-6 col-sm-6 col-xl-3">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#e3f2fd"><i class="bi bi-graph-up-arrow" style="color:#1565c0"></i></div>
+            <div class="metric-icon tint-info"><i class="bi bi-graph-up-arrow"></i></div>
             <div class="metric-info">
               <div class="metric-value text-success">${currency(tot.rendimientoHastaHoy)}</div>
               <div class="metric-label">Hasta hoy</div>
@@ -113,9 +313,9 @@ async function renderView(container) {
             </div>
           </div>
         </div>
-        <div class="col-12 col-sm-6 col-xl-3">
+        <div class="col-6 col-sm-6 col-xl-3">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#fff8e1"><i class="bi bi-sun-fill" style="color:#e65100"></i></div>
+            <div class="metric-icon tint-warn-alt"><i class="bi bi-sun-fill"></i></div>
             <div class="metric-info">
               <div class="metric-value">${currency(tot.diario)}</div>
               <div class="metric-label">Rendimiento diario</div>
@@ -123,50 +323,15 @@ async function renderView(container) {
             </div>
           </div>
         </div>
-        <div class="col-12 col-sm-6 col-xl-3">
+        <div class="col-6 col-sm-6 col-xl-3">
           <div class="metric-card h-100">
-            <div class="metric-icon" style="background:#f3e5f5"><i class="bi bi-calendar3" style="color:#6a0dad"></i></div>
+            <div class="metric-icon tint-purple"><i class="bi bi-calendar3"></i></div>
             <div class="metric-info">
               <div class="metric-value">${currency(tot.anual)}</div>
               <div class="metric-label">Proyección anual</div>
               <div class="metric-sub">GAT ${pct(tot.gat)}</div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <!-- ── Calculadora entre 2 fechas ── -->
-      <div class="data-card mb-3">
-        <div class="data-card-header">
-          <span><i class="bi bi-calendar-range me-2"></i>Calcular entre 2 fechas</span>
-        </div>
-        <div class="data-card-body">
-          <div class="row g-2 align-items-end">
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-muted mb-1">Cuenta</label>
-              <select class="form-select form-select-sm" id="calc-cuenta">
-                <option value="">Todas las cuentas</option>
-                ${cuentas.map(c => `
-                  <option value="${c.id}" ${_calc.cuentaId === c.id ? 'selected' : ''}>
-                    ${esc(instNombre(c))}${alias(c) ? ' — ' + esc(alias(c)) : ''}
-                  </option>`).join('')}
-              </select>
-            </div>
-            <div class="col-6 col-md-3">
-              <label class="form-label small text-muted mb-1">Desde</label>
-              <input type="date" class="form-control form-control-sm" id="calc-desde" value="${_calc.desde}">
-            </div>
-            <div class="col-6 col-md-3">
-              <label class="form-label small text-muted mb-1">Hasta</label>
-              <input type="date" class="form-control form-control-sm" id="calc-hasta" value="${_calc.hasta}">
-            </div>
-            <div class="col-12 col-md-2">
-              <button class="btn btn-primary btn-sm w-100" id="calc-run" ${cuentas.length ? '' : 'disabled'}>
-                <i class="bi bi-calculator me-1"></i>Calcular
-              </button>
-            </div>
-          </div>
-          <div id="calc-result"></div>
         </div>
       </div>
 
@@ -180,7 +345,7 @@ async function renderView(container) {
               : 'Primero registra una institución en <a href="#/admin">Instituciones y Tarjetas</a>.'}</p>
           </div>
         </div>`
-      : `<div class="row g-3">
+      : `<div class="row g-3 justify-content-center">
           ${cuentas.map(c => cuentaCard(c, resumenes.get(c.id), instMap[c.institucionId])).join('')}
         </div>`}
     `;
@@ -205,6 +370,26 @@ async function renderView(container) {
         showActualizarRendimientoModal(container, c, resumenes.get(c.id), nombreCuenta(c, instNombre(c)));
       }));
 
+    container.querySelectorAll('.btn-inv-hist').forEach(b =>
+      b.addEventListener('click', () => {
+        const c = cuentas.find(x => x.id === b.dataset.id);
+        showHistorialModal(c, nombreCuenta(c, instNombre(c)));
+      }));
+
+    container.querySelectorAll('.btn-inv-tramos').forEach(b =>
+      b.addEventListener('click', () => {
+        const c = cuentas.find(x => x.id === b.dataset.id);
+        showTramosModal(c, instMap[c.institucionId]);
+      }));
+
+    container.querySelectorAll('.btn-inv-detalle').forEach(b =>
+      b.addEventListener('click', () => {
+        const c = cuentas.find(x => x.id === b.dataset.id);
+        showDetalleModal(c, instMap[c.institucionId], accion => {
+          if (accion === 'editar') showCuentaModal(container, instituciones, c);
+        });
+      }));
+
     container.querySelectorAll('.btn-inv-del').forEach(b =>
       b.addEventListener('click', async () => {
         const c = cuentas.find(x => x.id === b.dataset.id);
@@ -214,18 +399,9 @@ async function renderView(container) {
         renderView(container);
       }));
 
-    const runCalc = () => {
-      _calc.cuentaId = document.getElementById('calc-cuenta').value;
-      _calc.desde    = document.getElementById('calc-desde').value;
-      _calc.hasta    = document.getElementById('calc-hasta').value;
-      document.getElementById('calc-result').innerHTML =
-        calcularPeriodo(cuentas, instMap, _calc, hoy);
-    };
-    document.getElementById('calc-run').addEventListener('click', runCalc);
-    ['calc-cuenta', 'calc-desde', 'calc-hasta'].forEach(id =>
-      document.getElementById(id).addEventListener('change', () => {
-        if (document.getElementById('calc-result').innerHTML) runCalc();
-      }));
+    const btnCalc = document.getElementById('btn-calc-periodo');
+    if (btnCalc && !btnCalc.disabled)
+      btnCalc.addEventListener('click', () => showCalculadoraModal(cuentas, instMap, hoy));
 
   } catch (e) {
     container.innerHTML = `<div class="alert alert-danger">Error al cargar Rendimientos: ${esc(e.message)}</div>`;
@@ -236,15 +412,16 @@ async function renderView(container) {
 // ── Tarjeta de cuenta ─────────────────────────────────────────────────────────
 
 function cuentaCard(c, r, inst) {
-  const color = inst?.color || '#607d8b';
-  const conHistorial = r.timeline.length > 1;
-  const institucion  = inst?.nombre || 'Sin institución';
-  const esUnico      = r.modo === MODO_UNICO;
-  // Cada institución muestra su tasa a su manera; se respeta lo configurado
-  const fmtTasa      = c.redondeoTasa === 'redondear' ? pct : pctTrunc;
+  const color       = inst?.color || '#607d8b';
+  const institucion = inst?.nombre || 'Sin institución';
+  // Cada institución despliega su tasa a su manera; se respeta lo configurado
+  const fmtTasa     = c.redondeoTasa === 'redondear' ? pct : pctTrunc;
+  // La tasa solo es un promedio ponderado cuando más de un tramo aporta; con uno
+  // solo no hay nada que desglosar y el botón de ayuda sobra
+  const ponderado   = r.desglose.filter(t => t.monto > 0).length > 1;
 
   return `
-    <div class="col-12 col-lg-6 col-xxl-4">
+    <div class="col-12 col-md-6 col-xl-4 col-xxl-3">
       <div class="inv-card">
         <div class="inv-head" style="background:${color}">
           <div class="inv-head-txt">
@@ -261,77 +438,117 @@ function cuentaCard(c, r, inst) {
           </div>
         </div>
 
-        <div class="inv-body">
-          <div class="inv-saldo">
-            <div class="inv-saldo-val">${currency(r.saldoActual)}</div>
-            <div class="inv-saldo-lbl">Saldo actual estimado</div>
+        <div class="inv-saldo">
+          <div class="inv-saldo-lbl">Saldo actual estimado</div>
+          <div class="inv-saldo-val">${currency(r.saldoActual)}</div>
+
+          <div class="inv-tasa">
+            <span class="inv-tasa-lbl">Rendimiento anual</span>
+            <span class="inv-tasa-val">${fmtTasa(r.tasaNominal)}</span>
+            ${ponderado ? `
+              <button type="button" class="btn-ayuda btn-inv-tramos" data-id="${c.id}"
+                      aria-label="Cómo se compone esta tasa" title="Cómo se compone esta tasa">
+                <i class="bi bi-info-circle"></i>
+              </button>` : ''}
           </div>
 
-          <div class="inv-base">
-            <span><i class="bi bi-cash-stack me-1"></i>Capital <strong>${currency(r.capital)}</strong></span>
-            <span title="Última actualización del monto invertido">
-              <i class="bi bi-clock-history me-1"></i>${fmtDate(r.fechaBase)}
-              <span class="text-muted">· ${r.dias} d</span>
-            </span>
-          </div>
-
-          <div class="inv-base">
-            <span><i class="bi bi-graph-up-arrow me-1"></i>Rendimiento obtenido <strong>${currency(r.rendimientoObtenido)}</strong></span>
-            <span title="Última actualización del rendimiento obtenido">
-              <i class="bi bi-clock-history me-1"></i>${fmtDate(r.fechaRendimiento)}
-              <span class="text-muted">· ${r.diasRendimiento} d</span>
-            </span>
-          </div>
-
-          <div class="inv-grid">
-            <div class="inv-cell">
-              <div class="inv-cell-lbl">Diario</div>
-              <div class="inv-cell-val">${currency(r.diario)}</div>
-            </div>
-            <div class="inv-cell">
-              <div class="inv-cell-lbl">Mensual · 30 d</div>
-              <div class="inv-cell-val">${currency(r.mensual)}</div>
-            </div>
-            <div class="inv-cell">
-              <div class="inv-cell-lbl">Anual · 365 d</div>
-              <div class="inv-cell-val">${currency(r.anual)}</div>
-            </div>
-            <div class="inv-cell hoy">
-              <div class="inv-cell-lbl">Hasta hoy</div>
-              <div class="inv-cell-val">${currency(r.rendimientoHastaHoy)}</div>
-            </div>
-          </div>
-
-          ${r.isrAnual > 0 ? `
-            <div class="inv-isr" title="La retención se calcula sobre el capital, no sobre el interés">
-              <span>Diario bruto ${currency(r.diarioBruto)}</span>
-              <span class="inv-isr-neg">− ISR ${currency(r.isrDiario)}</span>
-              <span class="inv-isr-neto">= ${currency(r.diario)}</span>
-              <span class="inv-isr-tasa">${pct(r.isrAnual)}${r.isrSobre === ISR_INTERES ? ' del interés' : ' anual s/ capital'}</span>
-            </div>` : ''}
-
-          <div class="inv-tramos ${esUnico ? 'unico' : ''}"
-               title="${esUnico ? 'Tasa única: solo aplica el tramo resaltado' : 'Progresivo: cada porción del saldo gana la tasa de su tramo'}">
-            ${r.tramos.map((t, i) => `
-              <div class="inv-tramo ${i === r.idxTramo ? 'activo' : ''}">
-                <span class="inv-tramo-rango">${rangoTramo(t, i === 0)}</span>
-                <span class="inv-tramo-tasa">${pct(t.tasa)}</span>
-              </div>`).join('')}
-          </div>
-
-          <div class="inv-foot">
-            <span title="Ganancia Anual Total — tasa efectiva con capitalización diaria">GAT ${pct(r.gat)}</span>
-            <span>·</span>
-            <span title="${esUnico
-              ? 'Tasa del tramo en el que cae el saldo actual'
-              : 'Tasa anual ponderada de los tramos para el saldo actual — es la que muestra la institución'}">${fmtTasa(r.tasaNominal)} ${esUnico ? 'tasa única' : 'ponderada'}</span>
-            ${conHistorial ? `<span>·</span><span title="Rendimiento acumulado desde el primer saldo registrado, sin contar aportaciones">histórico ${currency(r.rendimientoHistorico)} / ${r.diasHistoricos} d</span>` : ''}
-            ${r.base !== BASE_ANUAL_DEFAULT || (r.isrAnual > 0 && r.baseIsr !== r.base)
-              ? `<span>·</span><span title="Días del año usados para el interés y para la retención">base ${r.base}${r.isrAnual > 0 && r.baseIsr !== r.base ? ` · ISR ${r.baseIsr}` : ''}</span>`
-              : ''}
+          <div class="inv-saldo-rend">
+            <span>Hasta hoy <strong>${currency(r.rendimientoHastaHoy)}</strong></span>
+            <span class="inv-saldo-pto">·</span>
+            <span>Último <strong>${currency(r.ayer)}</strong></span>
+            <button type="button" class="btn-inv-hist inv-hist-btn" data-id="${c.id}"
+                    title="Ver el rendimiento día por día">
+              <i class="bi bi-clock-history"></i>
+            </button>
           </div>
         </div>
+
+        <div class="inv-yields">
+          <div class="inv-y">
+            <span class="inv-y-lbl">Diario</span>
+            <span class="inv-y-val">${currency(r.diario)}</span>
+          </div>
+          <div class="inv-y">
+            <span class="inv-y-lbl">Mensual<small>30 d</small></span>
+            <span class="inv-y-val">${currency(r.mensual)}</span>
+          </div>
+          <div class="inv-y">
+            <span class="inv-y-lbl">Anual<small>365 d</small></span>
+            <span class="inv-y-val">${currency(r.anual)}</span>
+          </div>
+        </div>
+
+        <button type="button" class="inv-detalle-btn btn-inv-detalle" data-id="${c.id}">
+          <i class="bi bi-list-columns-reverse me-2"></i>Ver detalle
+        </button>
       </div>
+    </div>`;
+}
+
+// ── Tramos: barra de proporción + desglose ────────────────────────────────────
+
+/** Colores del reparto por tramo — mismo orden que los tramos. */
+const COLORES_TRAMO = ['#2e7d32', '#1565c0', '#e65100', '#6a0dad', '#00838f'];
+
+/**
+ * Barra apilada + tabla con cuánto del saldo vive en cada tramo y cuánto aporta.
+ * Sustituye al resaltado del "tramo activo", que sugería que solo esa tasa
+ * aplicaba cuando en modo progresivo todos los tramos con dinero aportan.
+ */
+function bloqueTramos(r) {
+  const esUnico = r.modo === MODO_UNICO;
+  const conAporte = r.desglose.filter(t => t.monto > 0);
+
+  return `
+    <div class="inv-tr-wrap">
+      <div class="inv-tr-bar" role="img"
+           aria-label="Reparto del saldo entre los tramos de tasa">
+        ${conAporte.map((t, i) => `
+          <span class="inv-tr-seg" style="width:${t.pct}%;background:${COLORES_TRAMO[r.desglose.indexOf(t) % COLORES_TRAMO.length]}"
+                title="${currency(t.monto)} al ${pct(t.tasa)} — ${t.pct.toFixed(1)}% del saldo"></span>`).join('')}
+      </div>
+      <div class="inv-tr-leg">
+        ${conAporte.map(t => `
+          <span class="inv-tr-leg-item">
+            <span class="inv-tr-dot" style="background:${COLORES_TRAMO[r.desglose.indexOf(t) % COLORES_TRAMO.length]}"></span>
+            ${t.pct.toFixed(1)}% al ${pct(t.tasa)}
+          </span>`).join('')}
+      </div>
+
+      <div class="table-wrapper">
+        <table class="table table-sm inv-tr-tabla mb-0">
+          <thead><tr>
+            <th>Tramo</th>
+            <th class="text-end">Tasa</th>
+            <th class="text-end">En el tramo</th>
+            <th class="text-end">Aporte/día</th>
+          </tr></thead>
+          <tbody>
+            ${r.desglose.map((t, i) => `
+              <tr class="${t.monto > 0 ? '' : 'inv-tr-vacio'}">
+                <td>
+                  ${t.monto > 0 ? `<span class="inv-tr-dot" style="background:${COLORES_TRAMO[i % COLORES_TRAMO.length]}"></span>` : ''}
+                  ${rangoTramo(t, i === 0)}
+                  ${t.marginal && !esUnico ? `<span class="inv-tr-marg" title="Aquí entraría tu próximo peso">marginal</span>` : ''}
+                </td>
+                <td class="text-end fw-500">${pct(t.tasa)}</td>
+                <td class="text-end">${t.monto > 0 ? currency(t.monto) : '—'}</td>
+                <td class="text-end">${t.monto > 0 ? currency(t.aporte) : '—'}</td>
+              </tr>`).join('')}
+          </tbody>
+          <tfoot><tr>
+            <td>TOTAL</td>
+            <td class="text-end">${pct(r.tasaNominal)}</td>
+            <td class="text-end">${currency(r.saldoActual)}</td>
+            <td class="text-end">${currency(r.diarioBruto)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <p class="inv-tr-nota">
+        ${esUnico
+          ? 'Tasa única: todo el saldo gana la tasa del tramo en el que cae.'
+          : 'Progresivo: cada porción del saldo gana la tasa de su propio tramo, y todas suman al rendimiento del día.'}
+      </p>
     </div>`;
 }
 
@@ -421,9 +638,241 @@ function calcularPeriodo(cuentas, instMap, sel, hoy) {
     </div>`;
 }
 
+// ── Vista Detalle ─────────────────────────────────────────────────────────────
+
+/** Cómo se obtiene la tasa diaria a partir de la anual, en texto. */
+function formulaTasa(tasa, r) {
+  return r.modoTasa === TASA_EFECTIVA
+    ? `(1 + ${pct(tasa)})<sup>1/${r.base}</sup> − 1`
+    : `${pct(tasa)} ÷ ${r.base}`;
+}
+
+function showDetalleModal(cuenta, inst, refrescar) {
+  const r         = resumenCuenta(cuenta, hoyISO());
+  const esUnico   = r.modo === MODO_UNICO;
+  const fmtTasa   = cuenta.redondeoTasa === 'redondear' ? pct : pctTrunc;
+  const conAporte = r.desglose.filter(t => t.monto > 0);
+  const etiqueta  = nombreCuenta(cuenta, inst?.nombre);
+
+  const fila = (etq, val, nota = '', ayuda = '') => `
+    <div class="inv-cfg-row">
+      <span class="inv-cfg-lbl">${etq}${ayuda ? btnAyuda(ayuda) : ''}</span>
+      <span class="inv-cfg-val">${val}${nota ? ` <span class="inv-cfg-nota">${nota}</span>` : ''}</span>
+    </div>`;
+
+  openModal({
+    size: 'lg',
+    title: `Detalle — ${esc(etiqueta)}`,
+    body: `
+      <div class="inv-det-sec">
+        <div class="inv-det-tit"><i class="bi bi-calculator me-2"></i>Cómo sale el rendimiento de hoy</div>
+        <div class="inv-op">
+          <div class="inv-op-row inv-op-base">
+            <span>Saldo actual estimado</span>
+            <span>${currency(r.saldoActual)}</span>
+          </div>
+          ${conAporte.map(t => `
+            <div class="inv-op-row">
+              <span class="inv-op-formula">${currency(t.monto)} × ${formulaTasa(t.tasa, r)}</span>
+              <span>${currency(t.aporte)}</span>
+            </div>`).join('')}
+          <div class="inv-op-row inv-op-sub">
+            <span>Interés bruto del día</span>
+            <span>${currency(r.diarioBruto)}</span>
+          </div>
+          ${r.isrAnual > 0 ? `
+            <div class="inv-op-row inv-op-neg">
+              <span class="inv-op-formula">${r.isrSobre === ISR_INTERES
+                ? `Retención · ${currency(r.diarioBruto)} × ${pct(r.isrAnual)} del interés`
+                : `Retención · ${currency(r.saldoActual)} × ${pct(r.isrAnual)} ÷ ${r.baseIsr}`}</span>
+              <span>− ${currency(r.isrDiario)}</span>
+            </div>` : ''}
+          <div class="inv-op-row inv-op-total">
+            <span>Rendimiento neto del día</span>
+            <span>${currency(r.diario)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="inv-det-sec">
+        <div class="inv-det-tit"><i class="bi bi-bar-chart-steps me-2"></i>Tramos${btnAyuda('modoTramos')}</div>
+        ${bloqueTramos(r)}
+      </div>
+
+      <div class="inv-det-sec">
+        <div class="inv-det-tit"><i class="bi bi-sliders me-2"></i>Configuración</div>
+        <div class="inv-cfg">
+          ${fila('Monto invertido', currency(r.capital), `al ${fmtDate(r.fechaBase)} · ${r.dias} d`, 'monto')}
+          ${fila('Rendimiento obtenido', currency(r.rendimientoObtenido), `al ${fmtDate(r.fechaRendimiento)}`, 'rendimientoObtenido')}
+          ${fila('Aplicación de tramos', esUnico ? 'Tasa única' : 'Progresivo', '', 'modoTramos')}
+          ${fila('Interpretación de la tasa', r.modoTasa === TASA_EFECTIVA ? 'Efectiva (GAT)' : 'Nominal', '', 'modoTasa')}
+          ${fila('Base anual — interés', `${r.base} días`, '', 'baseAnual')}
+          ${fila('Retención ISR', r.isrAnual > 0 ? pct(r.isrAnual) : 'sin retención',
+                 r.isrAnual > 0
+                   ? (r.isrSobre === ISR_INTERES ? 'del interés' : `s/ capital · base ${r.baseIsr}`)
+                   : '', 'isr')}
+          ${fila('Tasa ponderada', fmtTasa(r.tasaNominal), '', 'redondeoTasa')}
+          ${fila('GAT', pct(r.gat), r.modoTasa === TASA_EFECTIVA ? 'igual a la publicada' : 'antes de impuestos')}
+        </div>
+      </div>`,
+    footer: `
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="det-hist">
+        <i class="bi bi-clock-history me-1"></i>Historial diario
+      </button>
+      <button type="button" class="btn btn-outline-primary btn-sm" id="det-edit">
+        <i class="bi bi-pencil me-1"></i>Editar
+      </button>
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>`
+  });
+
+  // Detalle, historial y edición comparten `#modal-container`, así que hay que
+  // encadenarlos: se espera al cierre real en vez de adivinar con un timeout
+  const trasCerrar = fn => {
+    const el = document.getElementById('app-modal');
+    if (!el) { fn(); return; }
+    el.addEventListener('hidden.bs.modal', () => setTimeout(fn, 0), { once: true });
+    closeModal();
+  };
+
+  document.getElementById('det-hist').addEventListener('click', () =>
+    trasCerrar(() => showHistorialModal(cuenta, etiqueta)));
+  document.getElementById('det-edit').addEventListener('click', () =>
+    trasCerrar(() => refrescar('editar')));
+}
+
+// ── Modal: cómo se compone la tasa ponderada ──────────────────────────────────
+
+function showTramosModal(cuenta, inst) {
+  const r       = resumenCuenta(cuenta, hoyISO());
+  const fmtTasa = cuenta.redondeoTasa === 'redondear' ? pct : pctTrunc;
+
+  openModal({
+    size: 'lg',
+    title: `Rendimiento anual — ${esc(nombreCuenta(cuenta, inst?.nombre))}`,
+    body: `
+      <p class="text-muted mb-3" style="font-size:0.82rem">
+        La tasa que ves, <strong>${fmtTasa(r.tasaNominal)}</strong>, es un
+        <strong>promedio ponderado</strong>: tu saldo está repartido en más de un tramo y cada
+        porción gana su propia tasa. No es que todo tu dinero rinda a una sola.
+      </p>
+      ${bloqueTramos(r)}`,
+    footer: `<button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Entendido</button>`
+  });
+}
+
+// ── Modal: historial de rendimientos diarios ──────────────────────────────────
+
+// ── Calculadora entre 2 fechas ───────────────────────────────────────────────
+// Vive en un modal, no en la vista: es una consulta puntual y ocupaba una card
+// permanente. El estado (_calc) es de módulo, así que la selección de cuenta y
+// el rango sobreviven al cierre del modal y a los re-render de la vista.
+function showCalculadoraModal(cuentas, instMap, hoy) {
+  const instNombre = c => instMap[c.institucionId]?.nombre || 'Sin institución';
+
+  openModal({
+    size: 'lg',
+    title: '<i class="bi bi-calendar-range me-2"></i>Calcular entre 2 fechas',
+    body: `
+      <div class="row g-2 align-items-end">
+        <div class="col-12 col-sm-6">
+          <label class="form-label small text-muted mb-1">Cuenta</label>
+          <select class="form-select form-select-sm" id="calc-cuenta">
+            <option value="">Todas las cuentas</option>
+            ${cuentas.map(c => `
+              <option value="${c.id}" ${_calc.cuentaId === c.id ? 'selected' : ''}>
+                ${esc(instNombre(c))}${alias(c) ? ' — ' + esc(alias(c)) : ''}
+              </option>`).join('')}
+          </select>
+        </div>
+        <div class="col-6 col-sm-3">
+          <label class="form-label small text-muted mb-1">Desde</label>
+          <input type="date" class="form-control form-control-sm" id="calc-desde" value="${_calc.desde}">
+        </div>
+        <div class="col-6 col-sm-3">
+          <label class="form-label small text-muted mb-1">Hasta</label>
+          <input type="date" class="form-control form-control-sm" id="calc-hasta" value="${_calc.hasta}">
+        </div>
+      </div>
+      <div id="calc-result"></div>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="calc-run">
+        <i class="bi bi-calculator me-1"></i>Calcular
+      </button>`,
+  });
+
+  const runCalc = () => {
+    _calc.cuentaId = document.getElementById('calc-cuenta').value;
+    _calc.desde    = document.getElementById('calc-desde').value;
+    _calc.hasta    = document.getElementById('calc-hasta').value;
+    document.getElementById('calc-result').innerHTML =
+      calcularPeriodo(cuentas, instMap, _calc, hoy);
+  };
+
+  document.getElementById('calc-run').addEventListener('click', runCalc);
+  ['calc-cuenta', 'calc-desde', 'calc-hasta'].forEach(id =>
+    document.getElementById(id).addEventListener('change', runCalc));
+
+  // El modal se abre justamente para calcular: mostramos el resultado de entrada
+  runCalc();
+}
+
+function showHistorialModal(cuenta, etiqueta) {
+  const filas   = historialDiario(cuenta, hoyISO()).reverse(); // más reciente primero
+  const conIsr  = filas.some(f => f.isr > 0.0000001);
+  const totNeto = filas.reduce((s, f) => s + f.neto, 0);
+  const totIsr  = filas.reduce((s, f) => s + f.isr, 0);
+  const cols    = conIsr ? 5 : 3;
+
+  openModal({
+    size: 'lg',
+    title: `Rendimiento diario — ${esc(etiqueta)}`,
+    body: filas.length === 0
+      ? `<div class="empty-state" style="padding:28px 0">
+           <i class="bi bi-clock-history"></i>
+           <p>Aún no hay días transcurridos desde la última captura
+              (${fmtDate(isoDay(cuenta.fechaActualizacion))}).<br>
+              El primer rendimiento aparecerá mañana.</p>
+         </div>`
+      : `<p class="text-muted mb-2" style="font-size:0.78rem">
+           Cada renglón es el día que <strong>generó</strong> el interés; las instituciones lo abonan
+           a la madrugada siguiente. Calculado desde ${currency(cuenta.montoInvertido)}
+           capturados el ${fmtDate(isoDay(cuenta.fechaActualizacion))}.
+         </p>
+         <div class="table-wrapper inv-hist-tabla">
+           <table class="table table-sm mb-0">
+             <thead><tr>
+               <th>Día</th>
+               <th class="text-end">Saldo inicial</th>
+               ${conIsr ? '<th class="text-end">Bruto</th><th class="text-end">ISR</th>' : ''}
+               <th class="text-end">Rendimiento</th>
+             </tr></thead>
+             <tbody>
+               ${filas.map((f, i) => `
+                 <tr class="${i === 0 ? 'inv-hist-ayer' : ''}">
+                   <td>${fmtDate(f.fecha)}${i === 0 ? '<span class="inv-tr-marg">último</span>' : ''}</td>
+                   <td class="text-end text-muted">${currency(f.saldoInicial)}</td>
+                   ${conIsr ? `<td class="text-end text-muted">${currency(f.bruto)}</td>
+                               <td class="text-end text-danger">−${currency(f.isr)}</td>` : ''}
+                   <td class="text-end fw-semibold text-success">${currency(f.neto)}</td>
+                 </tr>`).join('')}
+             </tbody>
+             <tfoot><tr>
+               <td colspan="${cols - (conIsr ? 3 : 1)}">TOTAL · ${filas.length} ${filas.length === 1 ? 'día' : 'días'}</td>
+               ${conIsr ? `<td></td><td class="text-end text-danger">−${currency(totIsr)}</td>` : ''}
+               <td class="text-end text-success">${currency(totNeto)}</td>
+             </tr></tfoot>
+           </table>
+         </div>`,
+    footer: `<button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>`
+  });
+}
+
 // ── Modal: alta / edición de cuenta ───────────────────────────────────────────
 
-function showCuentaModal(container, instituciones, cuenta) {
+function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
+  // Desde la vista Detalle hay que repintar el detalle, no la lista
+  const refrescar = () => onSaved ? onSaved() : renderView(container);
   const isEdit = !!cuenta;
   const hoy    = hoyISO();
   const tramos = isEdit && Array.isArray(cuenta.tramos) && cuenta.tramos.length
@@ -458,7 +907,7 @@ function showCuentaModal(container, instituciones, cuenta) {
 
         <div class="row g-2 mb-3">
           <div class="col-12 col-sm-6">
-            <label class="form-label">Monto invertido *</label>
+            <label class="form-label">Monto invertido *${btnAyuda('monto')}</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
               <input type="number" class="form-control" name="montoInvertido" required min="0" step="0.01"
@@ -469,55 +918,63 @@ function showCuentaModal(container, instituciones, cuenta) {
             <label class="form-label">Fecha de actualización *</label>
             <input type="date" class="form-control" name="fechaActualizacion" required max="${hoy}"
                    value="${isoDay(cuenta?.fechaActualizacion) || hoy}">
-            <div class="form-text">Fecha en que ese monto era el saldo real de la cuenta.</div>
           </div>
         </div>
 
         <div class="row g-2 mb-3">
           <div class="col-12 col-sm-6">
-            <label class="form-label">Rendimiento obtenido</label>
+            <label class="form-label">Rendimiento obtenido${btnAyuda('rendimientoObtenido')}</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
               <input type="number" class="form-control" name="rendimientoObtenido" step="0.01"
                      value="${cuenta?.rendimientoObtenido ?? ''}" placeholder="0.00">
             </div>
-            <div class="form-text">Opcional — total real ganado que muestra tu estado de cuenta.</div>
           </div>
           <div class="col-12 col-sm-6">
             <label class="form-label">Fecha de actualización del rendimiento</label>
             <input type="date" class="form-control" name="fechaActualizacionRendimiento" max="${hoy}"
                    value="${isoDay(cuenta?.fechaActualizacionRendimiento) || ''}">
-            <div class="form-text">Fecha en que ese rendimiento era el real de la cuenta.</div>
           </div>
         </div>
 
         <hr class="my-3">
 
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <label class="form-label mb-0">Límites de rendimiento</label>
+          <label class="form-label mb-0">Límites de rendimiento${btnAyuda('tramos')}</label>
           <button type="button" class="btn btn-outline-primary btn-sm" id="inv-add-tramo">
             <i class="bi bi-plus-lg me-1"></i>Tramo
           </button>
         </div>
-        <select class="form-select form-select-sm mb-2" name="modoTramos" id="inv-modo">
-          <option value="${MODO_PROGRESIVO}" ${cuenta?.modoTramos !== MODO_UNICO ? 'selected' : ''}>Progresivo por tramos</option>
-          <option value="${MODO_UNICO}"      ${cuenta?.modoTramos === MODO_UNICO ? 'selected' : ''}>Tasa única según el saldo</option>
-        </select>
-        <p class="text-muted mb-2" style="font-size:0.78rem" id="inv-modo-hint"></p>
+        <div class="row g-2 mb-2">
+          <div class="col-12 col-sm-6">
+            <label class="form-label form-label-sm">Aplicación${btnAyuda('modoTramos')}</label>
+            <select class="form-select form-select-sm" name="modoTramos" id="inv-modo">
+              <option value="${MODO_PROGRESIVO}" ${cuenta?.modoTramos !== MODO_UNICO ? 'selected' : ''}>Progresivo por tramos</option>
+              <option value="${MODO_UNICO}"      ${cuenta?.modoTramos === MODO_UNICO ? 'selected' : ''}>Tasa única según el saldo</option>
+            </select>
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label form-label-sm">Interpretación de la tasa${btnAyuda('modoTasa')}</label>
+            <select class="form-select form-select-sm" name="modoTasa" id="inv-modo-tasa">
+              <option value="${TASA_NOMINAL}"  ${cuenta?.modoTasa !== TASA_EFECTIVA ? 'selected' : ''}>La tasa es nominal</option>
+              <option value="${TASA_EFECTIVA}" ${cuenta?.modoTasa === TASA_EFECTIVA ? 'selected' : ''}>La tasa es efectiva (GAT)</option>
+            </select>
+          </div>
+        </div>
         <div id="inv-tramos"></div>
 
         <div class="mt-3">
           <a class="small text-decoration-none" data-bs-toggle="collapse" href="#inv-adv" role="button">
             <i class="bi bi-sliders me-1"></i>Avanzado
           </a>
-          <div class="collapse ${cuenta?.notas || cuenta?.referencia || cuenta?.isrAnual
+          <div class="collapse ${cuenta?.isrAnual
             || cuenta?.isrSobre === ISR_INTERES || cuenta?.redondeoTasa === 'redondear'
             || (cuenta?.baseAnual && cuenta.baseAnual !== BASE_ANUAL_DEFAULT)
             || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT) ? 'show' : ''}" id="inv-adv">
             <div class="row g-2 mt-1">
               <div class="col-12"><div class="inv-adv-sep">Retención de ISR</div></div>
               <div class="col-12 col-sm-5">
-                <label class="form-label" id="inv-isr-label">Tasa de retención</label>
+                <label class="form-label"><span id="inv-isr-label">Tasa de retención</span>${btnAyuda('isr')}</label>
                 <div class="input-group">
                   <input type="number" class="form-control" name="isrAnual" min="0" step="0.01"
                          value="${cuenta?.isrAnual ?? ''}" placeholder="0.00">
@@ -525,50 +982,36 @@ function showCuentaModal(container, instituciones, cuenta) {
                 </div>
               </div>
               <div class="col-12 col-sm-7">
-                <label class="form-label">Se calcula sobre</label>
+                <label class="form-label">Se calcula sobre${btnAyuda('isrSobre')}</label>
                 <select class="form-select" name="isrSobre" id="inv-isr-sobre">
-                  <option value="${ISR_CAPITAL}" ${cuenta?.isrSobre !== ISR_INTERES ? 'selected' : ''}>El capital — tasa anual (México)</option>
+                  <option value="${ISR_CAPITAL}" ${cuenta?.isrSobre !== ISR_INTERES ? 'selected' : ''}>El capital — tasa anual</option>
                   <option value="${ISR_INTERES}" ${cuenta?.isrSobre === ISR_INTERES ? 'selected' : ''}>El interés ganado — % directo</option>
                 </select>
-              </div>
-              <div class="col-12">
-                <div class="form-text mt-0" id="inv-isr-hint"></div>
               </div>
 
               <div class="col-12"><div class="inv-adv-sep">Convenciones de cálculo</div></div>
               <div class="col-12 col-sm-4">
-                <label class="form-label">Base anual — interés</label>
+                <label class="form-label">Base anual — interés${btnAyuda('baseAnual')}</label>
                 <select class="form-select" name="baseAnual">
                   <option value="365" ${Number(cuenta?.baseAnual) !== 360 ? 'selected' : ''}>365 días</option>
                   <option value="360" ${Number(cuenta?.baseAnual) === 360 ? 'selected' : ''}>360 días</option>
                 </select>
               </div>
               <div class="col-12 col-sm-4" id="inv-baseisr-wrap">
-                <label class="form-label">Base anual — ISR</label>
+                <label class="form-label">Base anual — ISR${btnAyuda('baseIsr')}</label>
                 <select class="form-select" name="baseIsr">
                   <option value="365" ${Number(cuenta?.baseIsr) !== 360 ? 'selected' : ''}>365 días</option>
                   <option value="360" ${Number(cuenta?.baseIsr) === 360 ? 'selected' : ''}>360 días</option>
                 </select>
-                <div class="form-text">No siempre coincide con la del interés.</div>
               </div>
               <div class="col-12 col-sm-4">
-                <label class="form-label">Tasa ponderada</label>
+                <label class="form-label">Tasa ponderada${btnAyuda('redondeoTasa')}</label>
                 <select class="form-select" name="redondeoTasa">
                   <option value="truncar"    ${cuenta?.redondeoTasa !== 'redondear' ? 'selected' : ''}>Truncar</option>
                   <option value="redondear"  ${cuenta?.redondeoTasa === 'redondear' ? 'selected' : ''}>Redondear</option>
                 </select>
-                <div class="form-text">Cómo la muestra tu institución.</div>
               </div>
 
-              <div class="col-12"><div class="inv-adv-sep">Otros</div></div>
-              <div class="col-12 col-sm-6">
-                <label class="form-label">CLABE / Referencia</label>
-                <input type="text" class="form-control" name="referencia" value="${esc(cuenta?.referencia || '')}">
-              </div>
-              <div class="col-12 col-sm-6">
-                <label class="form-label">Notas</label>
-                <input type="text" class="form-control" name="notas" value="${esc(cuenta?.notas || '')}">
-              </div>
             </div>
           </div>
         </div>
@@ -635,31 +1078,20 @@ function showCuentaModal(container, instituciones, cuenta) {
 
   pintarTramos(tramos);
 
-  // ── Textos que dependen de las opciones elegidas ──────────────────────────
-  const selModo  = document.getElementById('inv-modo');
+  // ── Campos que cambian según la base de la retención ──────────────────────
   const selSobre = document.getElementById('inv-isr-sobre');
 
-  const pintarHints = () => {
-    document.getElementById('inv-modo-hint').innerHTML = selModo.value === MODO_UNICO
-      ? `Todo el saldo gana la tasa del <strong>único</strong> tramo en el que cae.
-         Produce escalones: al cruzar un límite el rendimiento puede <em>bajar</em>.`
-      : `Cada porción del saldo gana la tasa de <strong>su propio</strong> tramo, como el ISR.
-         La tasa anual es nominal y se capitaliza diario.`;
-
+  const sincronizarIsr = () => {
     const sobreInteres = selSobre.value === ISR_INTERES;
+    // Sobre el interés el número es un porcentaje directo, no una tasa anual
     document.getElementById('inv-isr-label').textContent =
       sobreInteres ? 'Porcentaje retenido' : 'Tasa de retención anual';
-    document.getElementById('inv-isr-hint').innerHTML = sobreInteres
-      ? `Se retiene ese porcentaje del interés ganado cada día. No se anualiza.`
-      : `Tasa anual aplicada al capital, no a lo ganado — así opera México.
-         <em>Revolut MX: 0.90% nacionales · 4.90% extranjeros.</em>`;
-    // La base del ISR solo aplica cuando se anualiza sobre el capital
+    // La base del ISR solo tiene sentido cuando la tasa se anualiza sobre el capital
     document.getElementById('inv-baseisr-wrap').style.display = sobreInteres ? 'none' : '';
   };
 
-  selModo.addEventListener('change', pintarHints);
-  selSobre.addEventListener('change', pintarHints);
-  pintarHints();
+  selSobre.addEventListener('change', sincronizarIsr);
+  sincronizarIsr();
 
   document.getElementById('inv-add-tramo').addEventListener('click', () => {
     const actual = leerTramos();
@@ -695,13 +1127,12 @@ function showCuentaModal(container, instituciones, cuenta) {
       fechaActualizacionRendimiento:  raw.fechaActualizacionRendimiento || null,
       tramos:             nuevos,
       modoTramos:         raw.modoTramos === MODO_UNICO ? MODO_UNICO : MODO_PROGRESIVO,
+      modoTasa:           raw.modoTasa === TASA_EFECTIVA ? TASA_EFECTIVA : TASA_NOMINAL,
       baseAnual:          Number(raw.baseAnual) || BASE_ANUAL_DEFAULT,
       isrAnual:           Number(raw.isrAnual)  || 0,
       isrSobre:           raw.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
       baseIsr:            Number(raw.baseIsr)   || BASE_ANUAL_DEFAULT,
       redondeoTasa:       raw.redondeoTasa === 'redondear' ? 'redondear' : 'truncar',
-      referencia:         raw.referencia.trim(),
-      notas:              raw.notas.trim(),
     };
 
     // Si la fecha de actualización cambió, la captura anterior pasa al historial
@@ -725,7 +1156,7 @@ function showCuentaModal(container, instituciones, cuenta) {
       else        await create(COL, data);
       closeModal();
       toast(isEdit ? 'Cuenta actualizada' : 'Cuenta creada');
-      renderView(container);
+      refrescar();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }

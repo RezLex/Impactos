@@ -1,23 +1,153 @@
 /* ==================== VARIABLES ==================== */
+/* Los colores viven aquí como tokens semánticos; el tema oscuro solo los
+   redefine en el bloque [data-theme="dark"] de abajo. Ninguna regla del resto
+   del archivo debe traer un color literal salvo los de marca (instituciones). */
 :root {
-  --primary:        #1a237e;
-  --primary-light:  #1565c0;
-  --primary-dark:   #0d1a6e;
-  --success:        #2e7d32;
-  --warning:        #e65100;
-  --danger:         #c62828;
-  --bg:             #f0f2f5;
-  --card-bg:        #ffffff;
+  color-scheme: light;
+
+  /* ── Medidas (no cambian con el tema) ── */
   --sidebar-w:      240px;
   --sidebar-coll:   64px;
   --bottom-nav-h:   60px;
   --header-h:       52px;
-  --text:           #212121;
-  --text-muted:     #757575;
-  --border:         #e0e0e0;
-  --shadow:         0 2px 8px rgba(0,0,0,0.08);
   --radius:         12px;
   --radius-sm:      8px;
+
+  /* ── Escala tipográfica de etiquetas diminutas ──
+     Existen como token porque viajan en atributos `style` dentro del HTML de
+     los módulos, donde una media query no las alcanza. Aquí el valor de
+     escritorio es el original; el bloque de densidad móvil les pone suelo. */
+  --fs-micro: 0.58rem;
+  --fs-nano:  0.60rem;
+  --fs-tiny:  0.62rem;
+  --fs-mini:  0.65rem;
+  --fs-small: 0.68rem;
+
+  /* ── Marca ── */
+  --primary:        #1a237e;   /* superficie de marca: header de card, FAB, chip activo */
+  --primary-light:  #1565c0;   /* relleno de botón primario */
+  --primary-dark:   #0d1a6e;
+  --accent:         #1565c0;   /* azul de texto/borde interactivo */
+  --accent-strong:  #1a237e;   /* su variante más oscura (tabs, links activos) */
+  --success:        #2e7d32;
+  --success-light:  #66bb6a;
+  --warning:        #e65100;
+  --danger:         #c62828;
+
+  /* ── Superficies ── */
+  --bg:             #f0f2f5;
+  --card-bg:        #ffffff;
+  --surface-2:      #f8f9fa;   /* thead, tfoot, franjas dentro de una card */
+  --surface-3:      #f7f8fa;   /* bloques sutiles: chips neutros, ejemplos */
+  --surface-accent: #e8edf5;   /* realce azulado: acordeón abierto, fila elegida */
+  --track:          #e9ecef;   /* fondo de barras de progreso */
+
+  /* ── Texto ── */
+  --text:           #212121;
+  --text-soft:      #555555;
+  --text-muted:     #757575;
+  --text-faint:     #9e9e9e;
+
+  /* ── Bordes y estados ── */
+  --border:         #e0e0e0;
+  --border-strong:  #b0b9c6;
+  --border-soft:    #f3f3f3;
+  --input-border:   #dde1e7;   /* el fondo de los inputs lo pone data-bs-theme */
+  --focus-ring:     rgba(21,101,192,0.12);
+  --row-alt:        rgba(0,0,0,.018);
+  --row-hover:      #eef2ff;
+  --row-best:       #f0fdf4;
+  --row-highlight:  #fffde7;   /* fila señalada, ej. la mensualidad recién pagada */
+  --hover-soft:     #f5f5f5;
+  --shadow:         0 2px 8px rgba(0,0,0,0.08);
+
+  /* ── Navegación ── */
+  --sidebar-bg:        var(--primary);
+  --sidebar-active-bd: #64b5f6;
+
+  /* ── Plástico de las tarjetas (wallet) ── */
+  --wcard-back-bg:  #1e1e2e;
+  --stripe:         #111111;
+
+  /* ── Tintes: fondo suave + su color de texto ── */
+  --tint-info:      #e3f2fd;  --on-tint-info:    #1565c0;
+  --tint-success:   #e8f5e9;  --on-tint-success: #2e7d32;
+  --tint-warn:      #fff3e0;  --on-tint-warn:    #e65100;
+  --tint-warn-alt:  #fff8e1;
+  --tint-danger:    #ffebee;  --on-tint-danger:  #c62828;
+  --tint-purple:    #f3e5f5;  --on-tint-purple:  #6a1b9a;
+  --tint-indigo:    #e8eaf6;  --on-tint-indigo:  #283593;
+  --tint-neutral:   #e0e0e0;  --on-tint-neutral: #424242;
+
+  /* ── Chips de institución (color de marca sobre fondo tintado) ── */
+  --bank-rojo-bg:   #ffeaec;  --bank-rojo-fg:   #b71c1c;
+  --bank-bbva-bg:   #e3f2fd;  --bank-bbva-fg:   #004481;
+  --bank-mp-bg:     #e3f5fc;  --bank-mp-fg:     #006fa6;
+  --bank-nu-bg:     #f3e5f5;  --bank-nu-fg:     #6a0dad;
+  --bank-rappi-bg:  #fbe9e7;  --bank-rappi-fg:  #bf360c;
+  --bank-revo-bg:   #e8eaf6;  --bank-revo-fg:   #1a237e;
+}
+
+/* ==================== TEMA OSCURO ==================== */
+/* data-theme lo estampa el script inline de index.html antes del primer
+   pintado; data-bs-theme (mismo script) se encarga de los componentes nativos
+   de Bootstrap. Los colores de institución no se tocan: son dato, no tema. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* El azul de marca NO se redefine aquí: login, sidebar, header móvil, header
+     de las data cards, chip de filtro activo y FAB conservan el mismo azul en
+     ambos temas. Solo se aclaran --accent/--accent-strong, que son el azul
+     usado como TEXTO o borde y que sobre fondo oscuro sería ilegible. */
+  --accent:         #7aa2f7;
+  --accent-strong:  #93b4ff;
+  --success:        #66bb6a;
+  --success-light:  #81c995;
+  --warning:        #ffa726;
+  --danger:         #ef5350;
+
+  --bg:             #12151c;
+  --card-bg:        #1a1f29;
+  --surface-2:      #212734;
+  --surface-3:      #232a36;
+  --surface-accent: #232a3a;
+  --track:          #2b313c;
+
+  --text:           #e4e6eb;
+  --text-soft:      #b8c0cc;
+  --text-muted:     #9aa4b2;
+  --text-faint:     #6b7684;
+
+  --border:         #2e3541;
+  --border-strong:  #4a5364;
+  --border-soft:    #262c37;
+  --input-border:   #39414f;
+  --focus-ring:     rgba(122,162,247,0.25);
+  --row-alt:        rgba(255,255,255,.025);
+  --row-hover:      #232a3a;
+  --row-best:       #16301f;
+  --row-highlight:  #2e2a12;
+  --hover-soft:     #262c39;
+  --shadow:         0 2px 8px rgba(0,0,0,0.45);
+
+  /* --sidebar-bg, --wcard-back-bg y --stripe tampoco cambian: el sidebar es
+     azul de marca y el plástico de las tarjetas es una superficie propia. */
+
+  --tint-info:      #16233a;  --on-tint-info:    #8ab4f8;
+  --tint-success:   #16301f;  --on-tint-success: #81c995;
+  --tint-warn:      #33240f;  --on-tint-warn:    #fdba4d;
+  --tint-warn-alt:  #33290f;
+  --tint-danger:    #3a1a1c;  --on-tint-danger:  #f28b82;
+  --tint-purple:    #2a1b38;  --on-tint-purple:  #d0a9f5;
+  --tint-indigo:    #1c2038;  --on-tint-indigo:  #9fa8f0;
+  --tint-neutral:   #2b313c;  --on-tint-neutral: #c4cad3;
+
+  --bank-rojo-bg:   #3a1a1e;  --bank-rojo-fg:   #ff8a80;
+  --bank-bbva-bg:   #12263d;  --bank-bbva-fg:   #79b8ff;
+  --bank-mp-bg:     #0f2733;  --bank-mp-fg:     #6fc9ec;
+  --bank-nu-bg:     #2a1738;  --bank-nu-fg:     #cf9bee;
+  --bank-rappi-bg:  #3a1e17;  --bank-rappi-fg:  #ff9d7a;
+  --bank-revo-bg:   #1b1f3a;  --bank-revo-fg:   #a3adf5;
 }
 
 /* ==================== BASE ==================== */
@@ -114,7 +244,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 /* ==================== SIDEBAR ==================== */
 .sidebar {
   width: var(--sidebar-w);
-  background: var(--primary);
+  background: var(--sidebar-bg);
   color: white;
   display: flex;
   flex-direction: column;
@@ -206,7 +336,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .sidebar-nav .nav-link.active {
   background: rgba(255,255,255,0.15);
   color: white;
-  border-right: 3px solid #64b5f6;
+  border-right: 3px solid var(--sidebar-active-bd);
 }
 
 /* Collapsed state */
@@ -287,7 +417,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 /* ==================== MOBILE HEADER ==================== */
 .mobile-header {
-  background: var(--primary);
+  background: var(--sidebar-bg);
   height: var(--header-h);
   position: sticky;
   top: 0;
@@ -300,7 +430,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   position: fixed;
   bottom: 0; left: 0; right: 0;
   height: var(--bottom-nav-h);
-  background: white;
+  background: var(--card-bg);
   border-top: 1px solid var(--border);
   display: flex;
   z-index: 1000;
@@ -324,8 +454,8 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 .bottom-nav-item span { display: none; }
 .bottom-nav-item i { font-size: 1.4rem; }
-.bottom-nav-item.active { color: var(--primary); }
-.bottom-nav-item:hover { color: var(--primary-light); }
+.bottom-nav-item.active { color: var(--accent-strong); }
+.bottom-nav-item:hover { color: var(--accent); }
 
 /* ==================== SIDEBAR OVERLAY ==================== */
 .sidebar-overlay {
@@ -468,7 +598,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 /* ==================== METRIC CARDS ==================== */
 .metric-card {
-  background: white;
+  background: var(--card-bg);
   border-radius: var(--radius);
   padding: 12px 14px;
   box-shadow: var(--shadow);
@@ -491,13 +621,32 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-size: 1.1rem;
   flex-shrink: 0;
 }
+/* Tintes reutilizables: el fondo va en el contenedor y el icono hereda el color.
+   Sustituyen a los `style="background:#..."` que antes viajaban en el HTML de
+   cada módulo, que no podían responder al tema. */
+.tint-info    { background: var(--tint-info);     color: var(--on-tint-info); }
+.tint-success { background: var(--tint-success);  color: var(--on-tint-success); }
+.tint-warn    { background: var(--tint-warn);     color: var(--on-tint-warn); }
+.tint-warn-alt{ background: var(--tint-warn-alt); color: var(--on-tint-warn); }
+.tint-danger  { background: var(--tint-danger);   color: var(--on-tint-danger); }
+.tint-purple  { background: var(--tint-purple);   color: var(--on-tint-purple); }
+.tint-indigo  { background: var(--tint-indigo);   color: var(--on-tint-indigo); }
+.tint-neutral { background: var(--tint-neutral);  color: var(--on-tint-neutral); }
+
+/* Divisor vertical entre las dos mitades de una metric card partida */
+.metric-divider       { width: 1px; background: var(--border); margin: 2px 10px; }
+.metric-divider.tight { margin: 2px 8px; }
+
+/* Fila señalada dentro de una tabla */
+.row-highlight { background: var(--row-highlight); }
+
 .metric-info { flex: 1; min-width: 0; }
 .metric-value { font-size: 1.25rem; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 2px; }
 
 /* ==================== DATA CARDS ==================== */
 .data-card {
-  background: white;
+  background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -522,9 +671,15 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .table {
   margin-bottom: 0;
   font-size: 0.85rem;
+  /* Por defecto Bootstrap pinta cada celda con --bs-body-bg. Al dejarlo
+     transparente el fondo lo aporta la card que contiene la tabla, que ya
+     responde al tema; así ninguna fila puede quedarse en blanco. */
+  --bs-table-bg:           transparent;
+  --bs-table-color:        var(--text);
+  --bs-table-border-color: var(--border-soft);
 }
 .table thead th {
-  background: #f8f9fa;
+  background: var(--surface-2);
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -537,20 +692,52 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .table tbody td {
   padding: 6px 10px;
   vertical-align: middle;
-  border-color: #f3f3f3;
+  border-color: var(--border-soft);
 }
 .table tbody tr:nth-child(even) > td,
 .table tbody tr:nth-child(even) > th {
-  --bs-table-accent-bg: rgba(0,0,0,.018);
+  --bs-table-accent-bg: var(--row-alt);
   box-shadow: inset 0 0 0 9999px var(--bs-table-accent-bg);
 }
 .table tbody tr:hover > td,
-.table tbody tr:hover > th { background-color: #eef2ff !important; }
+.table tbody tr:hover > th { background-color: var(--row-hover) !important; }
 .table tfoot td {
   font-weight: 700;
-  background: #f8f9fa;
+  background: var(--surface-2);
   border-top: 2px solid var(--border);
   padding: 10px 14px;
+}
+
+/* Variantes contextuales de fila (.table-success en pagados/liquidados,
+   .table-warning en compras diferidas, .table-secondary en el pie del
+   Impacto). Bootstrap las genera con hexes claros fijos que NO responden a
+   data-bs-theme, así que en oscuro hay que redefinirlas a mano. */
+:root[data-theme="dark"] .table-success {
+  --bs-table-bg: var(--tint-success);  --bs-table-color: var(--on-tint-success);
+}
+:root[data-theme="dark"] .table-warning {
+  --bs-table-bg: var(--tint-warn-alt); --bs-table-color: var(--on-tint-warn);
+}
+:root[data-theme="dark"] .table-danger {
+  --bs-table-bg: var(--tint-danger);   --bs-table-color: var(--on-tint-danger);
+}
+:root[data-theme="dark"] .table-info {
+  --bs-table-bg: var(--tint-info);     --bs-table-color: var(--on-tint-info);
+}
+:root[data-theme="dark"] .table-secondary,
+:root[data-theme="dark"] .table-light,
+:root[data-theme="dark"] .table-active {
+  --bs-table-bg: var(--surface-2);     --bs-table-color: var(--text);
+}
+:root[data-theme="dark"] .table-success,
+:root[data-theme="dark"] .table-warning,
+:root[data-theme="dark"] .table-danger,
+:root[data-theme="dark"] .table-info,
+:root[data-theme="dark"] .table-secondary,
+:root[data-theme="dark"] .table-light,
+:root[data-theme="dark"] .table-active {
+  --bs-table-border-color: var(--border);
+  color: var(--bs-table-color);
 }
 
 /* ==================== BADGES ==================== */
@@ -562,14 +749,14 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-size: 0.72rem;
   font-weight: 600;
 }
-.badge-credito  { background: #e3f2fd; color: #1565c0; }
-.badge-debito   { background: #e8f5e9; color: #2e7d32; }
-.badge-fisica    { background: #f3e5f5; color: #6a1b9a; }
-.badge-digital   { background: #e8eaf6; color: #283593; }
-.badge-prestamo  { background: #fff3e0; color: #e65100; }
-.badge-pagado   { background: #e8f5e9; color: #2e7d32; }
-.badge-pendiente{ background: #fff8e1; color: #e65100; }
-.badge-vencido  { background: #ffebee; color: #c62828; }
+.badge-credito  { background: var(--tint-info);     color: var(--on-tint-info); }
+.badge-debito   { background: var(--tint-success);  color: var(--on-tint-success); }
+.badge-fisica    { background: var(--tint-purple);  color: var(--on-tint-purple); }
+.badge-digital   { background: var(--tint-indigo);  color: var(--on-tint-indigo); }
+.badge-prestamo  { background: var(--tint-warn);    color: var(--on-tint-warn); }
+.badge-pagado   { background: var(--tint-success);  color: var(--on-tint-success); }
+.badge-pendiente{ background: var(--tint-warn-alt); color: var(--on-tint-warn); }
+.badge-vencido  { background: var(--tint-danger);   color: var(--on-tint-danger); }
 
 /* ==================== BANK CHIPS ==================== */
 .bank-chip {
@@ -581,30 +768,30 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-size: 0.75rem;
   font-weight: 500;
 }
-.bank-banamex    { background:#ffeaec; color:#b71c1c; }
-.bank-banorte    { background:#ffeaec; color:#b71c1c; }
-.bank-bbva       { background:#e3f2fd; color:#004481; }
-.bank-mercadopago{ background:#e3f5fc; color:#006fa6; }
-.bank-nu         { background:#f3e5f5; color:#6a0dad; }
-.bank-rappi      { background:#fbe9e7; color:#bf360c; }
-.bank-revolut    { background:#e8eaf6; color:#1a237e; }
-.bank-santander  { background:#ffeaec; color:#b71c1c; }
+.bank-banamex    { background:var(--bank-rojo-bg);  color:var(--bank-rojo-fg); }
+.bank-banorte    { background:var(--bank-rojo-bg);  color:var(--bank-rojo-fg); }
+.bank-bbva       { background:var(--bank-bbva-bg);  color:var(--bank-bbva-fg); }
+.bank-mercadopago{ background:var(--bank-mp-bg);    color:var(--bank-mp-fg); }
+.bank-nu         { background:var(--bank-nu-bg);    color:var(--bank-nu-fg); }
+.bank-rappi      { background:var(--bank-rappi-bg); color:var(--bank-rappi-fg); }
+.bank-revolut    { background:var(--bank-revo-bg);  color:var(--bank-revo-fg); }
+.bank-santander  { background:var(--bank-rojo-bg);  color:var(--bank-rojo-fg); }
 
 /* ==================== PROGRESS BAR ==================== */
-.progress { height: 6px; border-radius: 3px; background: #e9ecef; }
+.progress { height: 6px; border-radius: 3px; background: var(--track); }
 .progress-bar { border-radius: 3px; }
 
 /* ==================== FORMS ==================== */
 .form-label { font-size: 0.82rem; font-weight: 600; color: var(--text); margin-bottom: 5px; }
 .form-control, .form-select {
   border-radius: var(--radius-sm);
-  border-color: #dde1e7;
+  border-color: var(--input-border);
   font-size: 0.875rem;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .form-control:focus, .form-select:focus {
   border-color: var(--primary-light);
-  box-shadow: 0 0 0 3px rgba(21,101,192,0.12);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .form-text { font-size: 0.75rem; color: var(--text-muted); }
 
@@ -619,14 +806,14 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   justify-content: center;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: white;
+  background: var(--card-bg);
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s;
   flex-shrink: 0;
 }
-.btn-icon:hover { border-color: #b0b9c6; color: var(--text); background: #f5f5f5; }
-.btn-icon.danger:hover { border-color: var(--danger); color: var(--danger); background: #ffebee; }
+.btn-icon:hover { border-color: var(--border-strong); color: var(--text); background: var(--hover-soft); }
+.btn-icon.danger:hover { border-color: var(--danger); color: var(--danger); background: var(--tint-danger); }
 
 /* ==================== MODALS ==================== */
 .modal-header { border-bottom: 1px solid var(--border); padding: 16px 20px; }
@@ -636,7 +823,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 /* ==================== ACCORDION ==================== */
 .accordion-button { font-weight: 600; font-size: 0.9rem; }
-.accordion-button:not(.collapsed) { background: #e8edf5; color: var(--primary); box-shadow: none; }
+.accordion-button:not(.collapsed) { background: var(--surface-accent); color: var(--accent-strong); box-shadow: none; }
 .accordion-button:focus { box-shadow: none; }
 .accordion-item { border-color: var(--border); margin-bottom: 8px; border-radius: var(--radius-sm) !important; overflow: hidden; }
 
@@ -670,14 +857,14 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   transition: color 0.15s;
 }
 .nav-tabs .nav-link:hover { color: var(--text); border-color: transparent; }
-.nav-tabs .nav-link.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 700; }
+.nav-tabs .nav-link.active { color: var(--accent-strong); border-bottom-color: var(--accent-strong); font-weight: 700; }
 
 /* ==================== MONTH SELECTOR ==================== */
 .month-selector {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: white;
+  background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 6px 12px;
@@ -694,7 +881,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   align-items: center;
   transition: color 0.15s;
 }
-.month-selector button:hover { color: var(--primary); }
+.month-selector button:hover { color: var(--accent-strong); }
 
 /* ==================== ALERT BOXES ==================== */
 .alert-restante {
@@ -706,12 +893,12 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-weight: 600;
   font-size: 0.9rem;
 }
-.alert-restante.positivo { background: #e8f5e9; color: var(--success); }
-.alert-restante.negativo { background: #ffebee; color: var(--danger); }
+.alert-restante.positivo { background: var(--tint-success); color: var(--on-tint-success); }
+.alert-restante.negativo { background: var(--tint-danger);  color: var(--on-tint-danger); }
 
 /* ==================== EVENTO CARDS ==================== */
 .evento-card {
-  background: white;
+  background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -728,7 +915,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 /* ==================== COMPARISON TABLE ==================== */
 .comparison-row.best-option {
-  background: #f0fdf4 !important;
+  background: var(--row-best) !important;
 }
 .comparison-row.best-option td:first-child {
   border-left: 3px solid var(--success);
@@ -737,8 +924,8 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: #e8f5e9;
-  color: var(--success);
+  background: var(--tint-success);
+  color: var(--on-tint-success);
   padding: 2px 8px;
   border-radius: 20px;
   font-size: 0.68rem;
@@ -746,10 +933,10 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   text-transform: uppercase;
 }
 .selected-option {
-  background: #e8edf5 !important;
+  background: var(--surface-accent) !important;
 }
 .selected-option td:first-child {
-  border-left: 3px solid var(--primary);
+  border-left: 3px solid var(--accent-strong);
 }
 
 /* ==================== CARD NUMBER ==================== */
@@ -766,7 +953,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: #f8f9fa;
+  background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   font-size: 0.8rem;
 }
@@ -778,7 +965,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 /* Card section (per tarjeta within institution) */
 .card-section {
   padding: 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-soft);
 }
 .card-section:last-of-type { border-bottom: none; }
 
@@ -914,7 +1101,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: #f4f6f8;
+  background: var(--surface-3);
   border-radius: 6px;
   padding: 3px 8px 3px 6px;
   font-size: 0.8rem;
@@ -936,13 +1123,13 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   display: inline-flex;
   align-items: center;
   font-size: 0.72rem;
-  color: #1565c0;
-  background: #e3f2fd;
+  color: var(--on-tint-info);
+  background: var(--tint-info);
   border-radius: 20px;
   padding: 2px 9px;
   font-weight: 500;
 }
-.credit-chip.prestamo-chip { color: #e65100; background: #fff3e0; }
+.credit-chip.prestamo-chip { color: var(--on-tint-warn); background: var(--tint-warn); }
 
 .btn-copy-data {
   display: inline-flex;
@@ -959,8 +1146,8 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-size: 0.78rem;
   transition: color .15s, background .15s;
 }
-.btn-copy-data:hover { color: var(--primary); background: #e8f0fe; }
-.btn-copy-data.copied { color: #2e7d32; background: #e8f5e9; }
+.btn-copy-data:hover { color: var(--accent-strong); background: var(--tint-info); }
+.btn-copy-data.copied { color: var(--on-tint-success); background: var(--tint-success); }
 
 /* ==================== MSI PROGRESS ==================== */
 .msi-item {
@@ -968,7 +1155,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   align-items: center;
   gap: 12px;
   padding: 10px 0;
-  border-bottom: 1px solid #f3f3f3;
+  border-bottom: 1px solid var(--border-soft);
 }
 .msi-item:last-child { border-bottom: none; }
 .msi-item-info { flex: 1; min-width: 0; }
@@ -978,6 +1165,39 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .msi-item-monthly { font-weight: 700; font-size: 0.9rem; }
 .msi-item-remaining { font-size: 0.72rem; color: var(--text-muted); }
 
+/* ==================== GASTOS PENDIENTES DE CONFIRMAR ==================== */
+/* En escritorio la fila es una sola línea (las utilidades de Bootstrap del
+   markup bastan). En móvil esa línea pedía ~420px sobre ~356 disponibles: el
+   nombre se estrujaba a una palabra por renglón y los botones se salían de la
+   card. Aquí se reparte en tres renglones. */
+@media (max-width: 575.98px) {
+  .gasto-pend {
+    flex-wrap: wrap;
+    gap: 8px 10px !important;   /* gana a la utilidad .gap-3 */
+  }
+  /* Nombre y subtítulo ocupan el renglón completo */
+  .gasto-pend-info { flex: 1 0 100%; }
+
+  /* "Cobro" y la fecha pasan a una sola línea, alineados a la izquierda */
+  .gasto-pend-cobro {
+    min-width: 0 !important;
+    text-align: left !important;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+  }
+
+  /* El importe cierra ese mismo renglón por la derecha */
+  .gasto-pend-importe {
+    min-width: 0 !important;
+    margin-left: auto;
+  }
+
+  /* Los botones abajo, con Confirmar ocupando el ancho sobrante */
+  .gasto-pend-acciones { flex: 1 0 100%; }
+  .gasto-pend-acciones .btn-confirmar-gasto { flex: 1; }
+}
+
 /* ==================== MIGRATION ==================== */
 .upload-zone {
   border: 2px dashed var(--border);
@@ -986,11 +1206,11 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   text-align: center;
   cursor: pointer;
   transition: all 0.2s;
-  background: white;
+  background: var(--card-bg);
 }
 .upload-zone:hover, .upload-zone.dragover {
   border-color: var(--primary-light);
-  background: #f0f4ff;
+  background: var(--surface-accent);
 }
 .upload-zone i { font-size: 2.5rem; color: var(--text-muted); margin-bottom: 12px; display: block; }
 
@@ -1013,7 +1233,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   padding: 6px 16px;
   border-radius: 20px;
   border: 1.5px solid var(--border);
-  background: white;
+  background: var(--card-bg);
   color: var(--text-muted);
   font-size: 0.82rem;
   font-weight: 500;
@@ -1035,7 +1255,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   padding: 6px 32px 6px 12px;
   border-radius: 20px;
   border: 1.5px solid var(--border);
-  background: white;
+  background: var(--card-bg);
   color: var(--text);
   font-size: 0.82rem;
   font-family: inherit;
@@ -1052,6 +1272,10 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .filter-select:focus {
   outline: none;
   border-color: var(--primary-light);
+}
+/* La flecha va embebida como SVG: hay que reemplazarla para aclararla en oscuro */
+:root[data-theme="dark"] .filter-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239aa4b2' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
 }
 
 /* ==================== WALLET CARDS ==================== */
@@ -1097,7 +1321,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 .wcard-back {
   transform: rotateY(180deg);
-  background: #1e1e2e;
+  background: var(--wcard-back-bg);
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -1143,7 +1367,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .bct-net { margin-left: 6px; flex-shrink: 0; }
 .wcard-stripe {
   height: 38px;
-  background: #111;
+  background: var(--stripe);
   margin-top: 18px;
   flex-shrink: 0;
 }
@@ -1209,15 +1433,15 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   font-weight: 700;
   flex-shrink: 0;
 }
-.admin-num-badge.fisica  { background: #e0e0e0; color: #424242; }
-.admin-num-badge.digital { background: #e3f2fd; color: #1565c0; }
+.admin-num-badge.fisica  { background: var(--tint-neutral); color: var(--on-tint-neutral); }
+.admin-num-badge.digital { background: var(--tint-info);    color: var(--on-tint-info); }
 
 /* ==================== RENDIMIENTOS ==================== */
 
 /* Línea auxiliar bajo el label de una metric card */
 .metric-sub {
   font-size: 0.68rem;
-  color: #9e9e9e;
+  color: var(--text-faint);
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -1226,7 +1450,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 /* ── Tarjeta de cuenta de inversión ── */
 .inv-card {
-  background: white;
+  background: var(--card-bg);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -1279,67 +1503,290 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 .btn-inv-act:hover { background: rgba(255,255,255,0.3); color: #fff; }
 
-.inv-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
-
-.inv-saldo { text-align: center; }
-.inv-saldo-val { font-size: 1.6rem; font-weight: 700; line-height: 1.1; color: var(--text); }
+/* ── Saldo protagonista ── */
+.inv-saldo { text-align: center; padding: 16px 14px 14px; }
 .inv-saldo-lbl {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  margin-top: 2px;
-}
-
-.inv-base {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 0.75rem;
-  color: #616161;
-  padding: 6px 10px;
-  background: #f7f8fa;
-  border-radius: var(--radius-sm);
-}
-
-.inv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-.inv-cell {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 7px 10px;
-}
-.inv-cell-lbl {
   font-size: 0.64rem;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
 }
-.inv-cell-val { font-size: 0.95rem; font-weight: 600; margin-top: 1px; }
-.inv-cell.hoy { background: #e8f5e9; border-color: #c8e6c9; }
-.inv-cell.hoy .inv-cell-lbl { color: #2e7d32; }
-.inv-cell.hoy .inv-cell-val { color: var(--success); font-weight: 700; }
+.inv-saldo-val {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text);
+  margin-top: 3px;
+  letter-spacing: -0.5px;
+}
+/* Tasa anual del saldo actual, con acceso al desglose cuando es ponderada */
+.inv-tasa {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+.inv-tasa-lbl {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.inv-tasa-val { font-size: 1rem; font-weight: 700; color: var(--primary-light); }
 
-/* Desglose bruto → ISR → neto del interés diario */
-.inv-isr {
+/* Lo ganado, descriptivo y en una sola línea bajo el saldo */
+.inv-saldo-rend {
   display: flex;
   align-items: center;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 0.72rem;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 0.74rem;
   color: var(--text-muted);
-  padding: 5px 10px;
-  background: #fff8e1;
-  border-radius: var(--radius-sm);
 }
-.inv-isr-neg  { color: var(--danger); }
-.inv-isr-neto { font-weight: 700; color: var(--text); }
-.inv-isr-tasa { margin-left: auto; font-size: 0.66rem; opacity: 0.8; white-space: nowrap; }
+.inv-saldo-rend strong { color: var(--success); font-weight: 600; }
+.inv-saldo-pto { color: var(--border); }
+.inv-hist-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--success-light);
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.inv-hist-btn:hover { background: var(--tint-success); color: var(--on-tint-success); }
+.inv-hist-btn:focus-visible { outline: 2px solid var(--success); outline-offset: 1px; }
 
-.inv-tramos { display: flex; flex-direction: column; gap: 2px; }
-/* Tasa única: los tramos que no aplican se atenúan */
-.inv-tramos.unico .inv-tramo:not(.activo) { opacity: 0.4; }
+/* ── Fila de rendimientos: un bloque con divisores, sin cajas sueltas ── */
+.inv-yields {
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.inv-y {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 6px;
+  text-align: center;
+}
+.inv-y + .inv-y { border-left: 1px solid var(--border); }
+.inv-y-lbl {
+  display: block;
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  line-height: 1.25;
+  /* Dos renglones reservados: sin esto los importes de las celdas con
+     subtítulo (30 d / 365 d) quedan más abajo que los de las otras */
+  min-height: 2.4em;
+}
+.inv-y-lbl small { display: block; font-size: 0.9em; opacity: 0.65; letter-spacing: 0; }
+.inv-y-val {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Etiqueta compacta para selects secundarios */
+.form-label-sm {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+/* Desglose bruto → ISR → neto del interés diario */
+
+.inv-detalle-btn {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--primary-light);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  /* Anclado abajo: mantiene alineados los botones de tarjetas de distinto alto */
+  margin-top: auto;
+  transition: background 0.15s;
+}
+.inv-detalle-btn:hover { background: var(--surface-accent); }
+
+/* ── Reparto por tramos: barra + desglose ── */
+.inv-tr-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--track);
+}
+.inv-tr-seg { display: block; height: 100%; }
+.inv-tr-leg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0 10px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.inv-tr-leg-item { display: inline-flex; align-items: center; gap: 5px; }
+.inv-tr-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 2px;
+  vertical-align: baseline;
+}
+.inv-tr-tabla { font-size: 0.8rem; }
+.inv-tr-tabla tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  background: var(--surface-2);
+}
+.inv-tr-vacio { color: var(--text-muted); opacity: 0.5; }
+.inv-tr-marg {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 20px;
+  background: var(--tint-info);
+  color: var(--on-tint-info);
+  font-size: 0.62rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.inv-tr-nota { font-size: 0.74rem; color: var(--text-muted); margin: 10px 0 0; }
+
+/* ── Aritmética del día ── */
+.inv-op { font-size: 0.82rem; }
+.inv-op-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.inv-op-row:last-child { border-bottom: none; }
+.inv-op-row > span:last-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inv-op-formula { color: var(--text-muted); }
+.inv-op-formula sup { font-size: 0.7em; }
+.inv-op-base { font-weight: 600; }
+.inv-op-sub { font-weight: 600; border-top: 1px solid var(--border); }
+.inv-op-neg > span:last-child { color: var(--danger); }
+.inv-op-total {
+  font-weight: 700;
+  font-size: 0.95rem;
+  border-top: 2px solid var(--border);
+  padding-top: 8px;
+}
+.inv-op-total > span:last-child { color: var(--success); }
+
+/* ── Secciones del modal Detalle ── */
+.inv-det-sec + .inv-det-sec { margin-top: 20px; }
+.inv-det-tit {
+  display: flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+}
+
+/* ── Configuración ── */
+.inv-cfg { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 24px; }
+.inv-cfg-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.inv-cfg-lbl { color: var(--text-muted); }
+.inv-cfg-val { font-weight: 600; text-align: right; }
+.inv-cfg-nota { display: block; font-weight: 400; font-size: 0.72rem; color: var(--text-muted); }
+
+/* ── Botón "i" de ayuda contextual ── */
+.btn-ayuda {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--primary-light);
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-ayuda:hover { background: var(--tint-info); color: var(--accent-strong); }
+.btn-ayuda:focus-visible { outline: 2px solid var(--primary-light); outline-offset: 1px; }
+
+.inv-ayuda-body { font-size: 0.86rem; line-height: 1.55; }
+.inv-ayuda-body p { margin-bottom: 10px; }
+.inv-ayuda-body p:last-child { margin-bottom: 0; }
+.inv-ayuda-body h6 {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin: 16px 0 8px;
+}
+.inv-ayuda-ej {
+  background: var(--surface-3);
+  border-left: 3px solid var(--primary-light);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
+/* ── Historial diario ── */
+.inv-hist-tabla { max-height: 55vh; overflow-y: auto; }
+.inv-hist-tabla thead th { position: sticky; top: 0; z-index: 1; }
+.inv-hist-tabla tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  bottom: 0;
+}
+.inv-hist-ayer { background: var(--tint-success); }
 
 /* Separadores de la sección Avanzado del modal */
 .inv-adv-sep {
@@ -1351,35 +1798,6 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   border-bottom: 1px solid var(--border);
   padding-bottom: 3px;
   margin-top: 6px;
-}
-.inv-tramo {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.74rem;
-  color: var(--text-muted);
-  padding: 3px 8px;
-  border-radius: 5px;
-  border-left: 3px solid transparent;
-}
-.inv-tramo-tasa { font-weight: 600; white-space: nowrap; }
-.inv-tramo.activo {
-  background: #eef2fb;
-  border-left-color: var(--primary-light);
-  color: var(--text);
-}
-.inv-tramo.activo .inv-tramo-tasa { color: var(--primary-light); }
-
-.inv-foot {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  font-size: 0.68rem;
-  color: #9e9e9e;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
-  margin-top: auto;
 }
 
 /* ── Calculadora entre 2 fechas ── */
@@ -1401,7 +1819,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   text-transform: uppercase;
   letter-spacing: 0.6px;
 }
-.inv-calc-meta { font-size: 0.8rem; color: #616161; line-height: 1.7; }
+.inv-calc-meta { font-size: 0.8rem; color: var(--text-soft); line-height: 1.7; }
 .inv-calc-msg { font-size: 0.78rem; margin-top: 8px; }
 
 /* ── Editor de tramos (modal) ── */
@@ -1435,7 +1853,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
     flex-wrap: wrap;
     row-gap: 6px;
     padding: 8px;
-    background: #f7f8fa;
+    background: var(--surface-3);
     border-radius: var(--radius-sm);
     margin-bottom: 8px;
   }
@@ -1453,7 +1871,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   gap: 12px;
   flex-wrap: wrap;
   padding: 10px 14px;
-  background: #f7f8fa;
+  background: var(--surface-3);
   border-radius: var(--radius-sm);
   margin-bottom: 10px;
 }
@@ -1473,7 +1891,78 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 .fw-mono { font-family: 'Courier New', monospace; }
 .gap-2 { gap: 8px; }
 .cursor-pointer { cursor: pointer; }
-.border-start-primary { border-left: 3px solid var(--primary) !important; }
+.border-start-primary { border-left: 3px solid var(--accent-strong) !important; }
+
+/* ==================== DENSIDAD MÓVIL ==================== */
+/* Objetivo: menos scroll sin perder legibilidad.
+   Medido a 390px antes de este bloque: de 1483px de alto en Rendimientos, 752px
+   eran padding + margen. El aire, no el texto, era lo que alargaba las vistas.
+   Por eso aquí se hacen tres cosas distintas:
+     1. SUBIR el suelo tipográfico — había texto a 8.6-10.4px, ilegible en mano.
+     2. BAJAR el techo con clamp(), que era desproporcionado en pantalla chica.
+     3. RECORTAR el aire, que es de donde sale la reducción de verdad.
+   Las tarjetas del wallet (.wcard-*, .bct-*) quedan fuera: viven en un lienzo de
+   280x176 fijo y subirles la fuente rompe su composición. */
+@media (max-width: 575.98px) {
+
+  /* ── 1. Suelo de legibilidad: nada por debajo de ~11px ── */
+  :root {
+    --fs-micro: 0.70rem;   /* 9.3px -> 11.2px */
+    --fs-nano:  0.70rem;   /* 9.6px -> 11.2px */
+    --fs-tiny:  0.70rem;   /* 9.9px -> 11.2px */
+    --fs-mini:  0.70rem;   /* 10.4px -> 11.2px */
+    --fs-small: 0.72rem;   /* 10.9px -> 11.5px */
+  }
+  .metric-sub,
+  .inv-saldo-lbl,
+  .inv-tasa-lbl,
+  .inv-y-lbl,
+  .inv-calc-lbl,
+  .inv-upd-est-lbl,
+  .card-number-label,
+  .inv-inst,
+  .best-badge      { font-size: 0.7rem; }
+  /* En absoluto, no en em: encadenado al padre volvía a caer bajo 11px.
+     La jerarquía la sigue dando la opacidad, no el tamaño. */
+  .inv-y-lbl small { font-size: 0.7rem; }
+
+  /* ── 2. Techo fluido entre 320 y 576px ── */
+  .page-header-text h2 { font-size: clamp(1.05rem, 0.87rem + 0.90vw, 1.20rem); }
+  .metric-value        { font-size: clamp(1.00rem, 0.85rem + 0.75vw, 1.15rem); }
+  .inv-saldo-val       { font-size: clamp(1.35rem, 1.10rem + 1.25vw, 1.60rem); }
+  .inv-calc-val        { font-size: clamp(1.15rem, 0.95rem + 1.00vw, 1.35rem); }
+  .inv-upd-est-val     { font-size: clamp(1.10rem, 0.95rem + 0.75vw, 1.25rem); }
+
+  /* ── 3. Recorte de aire: de aquí sale la reducción ── */
+  .content-area          { padding: 12px 12px 16px; }
+  .page-header           { margin-bottom: 14px; }
+  .filter-bar            { margin-bottom: 12px; }
+
+  .metric-card           { padding: 10px 12px; gap: 10px; }
+  .metric-icon           { width: 34px; height: 34px; font-size: 1rem; }
+  /* A media anchura el subtexto no cabe en una línea. Preferimos que ocupe dos
+     a recortarlo con elipsis: es la explicación del importe, no un adorno.
+     El importe sí sigue en una línea — un número partido no se lee. */
+  .metric-sub            { white-space: normal; overflow: visible; text-overflow: clip; }
+
+  .data-card             { margin-bottom: 14px; }
+  .data-card-header      { padding: 10px 14px; }
+  .data-card-body        { padding: 14px; }
+
+  .table tbody td        { padding: 5px 8px; }
+  .table thead th        { padding: 5px 8px; }
+  .table tfoot td        { padding: 8px 10px; }
+
+  .inv-saldo             { padding: 10px 12px; }
+  .inv-saldo-rend        { margin-top: 4px; }
+  .inv-tasa              { margin-top: 6px; padding-top: 6px; }
+  .inv-y                 { padding: 7px 5px; }
+  .inv-y-lbl             { min-height: 2.2em; }
+  .inv-detalle-btn       { padding: 7px 12px; }
+
+  .empty-state           { padding: 28px 16px; }
+  .empty-state i         { font-size: 2rem; margin-bottom: 8px; }
+}
 
 /* ==================== FLOATING ACTION BUTTON ==================== */
 #quick-add-fab {
@@ -1510,7 +1999,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 #fab-menu { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 #fab-menu[hidden] { display: none !important; }
 .fab-item {
-  background: white;
+  background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 24px;
   padding: 7px 16px 7px 12px;

@@ -40,7 +40,7 @@ export async function render(container) {
           <div class="data-card">
             <div class="data-card-body">
               <h6 class="mb-3">Importando datos...</h6>
-              <div id="progress-log" style="font-size:0.85rem;color:#555;max-height:300px;overflow-y:auto"></div>
+              <div id="progress-log" style="font-size:0.85rem;color:var(--text-soft);max-height:300px;overflow-y:auto"></div>
               <div class="progress mt-3" style="height:10px">
                 <div class="progress-bar progress-bar-striped progress-bar-animated" id="import-bar" style="width:0%"></div>
               </div>

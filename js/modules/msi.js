@@ -271,8 +271,8 @@ async function renderView(container, initialTab = 'contado') {
         <div class="row g-3 mb-4">
           <div class="col-6">
             <div class="metric-card">
-              <div class="metric-icon" style="background:#e8f5e9">
-                <i class="bi bi-cash-stack" style="color:#2e7d32"></i>
+              <div class="metric-icon tint-success">
+                <i class="bi bi-cash-stack"></i>
               </div>
               <div class="metric-info">
                 <div class="metric-value">${currency(totalCompras)}</div>
@@ -282,8 +282,8 @@ async function renderView(container, initialTab = 'contado') {
           </div>
           <div class="col-6">
             <div class="metric-card">
-              <div class="metric-icon" style="background:#f3e5f5">
-                <i class="bi bi-receipt" style="color:#6a1b9a"></i>
+              <div class="metric-icon tint-purple">
+                <i class="bi bi-receipt"></i>
               </div>
               <div class="metric-info">
                 <div class="metric-value">${filtered.length}</div>
@@ -370,8 +370,8 @@ async function renderView(container, initialTab = 'contado') {
               : _allPagos;
             pagos.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
             const childHtml = pagos.map(p => `
-              <tr data-pago-de="${id}" style="background:#fffde7">
-                <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+              <tr data-pago-de="${id}" class="row-highlight">
+                <td style="padding-left:28px;color:var(--text-muted);font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
                 <td></td>
                 <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
                 <td>—</td>
@@ -552,8 +552,8 @@ async function renderView(container, initialTab = 'contado') {
       const metricsHtml = mostrarTotal ? `
         <div class="col-6">
           <div class="metric-card">
-            <div class="metric-icon" style="background:#e8f5e9">
-              <i class="bi bi-cash-stack" style="color:#2e7d32"></i>
+            <div class="metric-icon tint-success">
+              <i class="bi bi-cash-stack"></i>
             </div>
             <div class="metric-info">
               <div class="metric-value">${currency(totalCompras)}</div>
@@ -563,8 +563,8 @@ async function renderView(container, initialTab = 'contado') {
         </div>
         <div class="col-6">
           <div class="metric-card">
-            <div class="metric-icon" style="background:#f3e5f5">
-              <i class="bi bi-receipt" style="color:#6a1b9a"></i>
+            <div class="metric-icon tint-purple">
+              <i class="bi bi-receipt"></i>
             </div>
             <div class="metric-info">
               <div class="metric-value">${filtered.length}</div>
@@ -574,8 +574,8 @@ async function renderView(container, initialTab = 'contado') {
         </div>` : `
         <div class="col-6">
           <div class="metric-card">
-            <div class="metric-icon" style="background:#ffebee">
-              <i class="bi bi-credit-card-fill" style="color:#c62828"></i>
+            <div class="metric-icon tint-danger">
+              <i class="bi bi-credit-card-fill"></i>
             </div>
             <div class="metric-info">
               <div class="metric-value">${currency(deudaTotal)}</div>
@@ -585,8 +585,8 @@ async function renderView(container, initialTab = 'contado') {
         </div>
         <div class="col-6">
           <div class="metric-card">
-            <div class="metric-icon" style="background:#e3f2fd">
-              <i class="bi bi-calendar-check" style="color:#1565c0"></i>
+            <div class="metric-icon tint-info">
+              <i class="bi bi-calendar-check"></i>
             </div>
             <div class="metric-info">
               <div class="metric-value">${currency(mensualidadTotal)}</div>
@@ -938,8 +938,8 @@ async function renderView(container, initialTab = 'contado') {
         <div class="row g-3 mb-4">
           <div class="col-6">
             <div class="metric-card">
-              <div class="metric-icon" style="background:#fff3e0">
-                <i class="bi bi-cash" style="color:#e65100"></i>
+              <div class="metric-icon tint-warn">
+                <i class="bi bi-cash"></i>
               </div>
               <div class="metric-info">
                 <div class="metric-value">${currency(totalRegistrado)}</div>
@@ -949,8 +949,8 @@ async function renderView(container, initialTab = 'contado') {
           </div>
           <div class="col-6">
             <div class="metric-card">
-              <div class="metric-icon" style="background:#e8eaf6">
-                <i class="bi bi-list-check" style="color:#3949ab"></i>
+              <div class="metric-icon tint-indigo">
+                <i class="bi bi-list-check"></i>
               </div>
               <div class="metric-info">
                 <div class="metric-value">${registrados.length}</div>
@@ -970,17 +970,17 @@ async function renderView(container, initialTab = 'contado') {
             const lf = lastFourOf(g, tc);
             const vencido = g.fechaPago <= hoy;
             return `
-              <div class="list-group-item d-flex align-items-center gap-3 py-2">
-                <div class="flex-grow-1">
+              <div class="list-group-item gasto-pend d-flex align-items-center gap-3 py-2">
+                <div class="gasto-pend-info flex-grow-1">
                   <div class="fw-500">${g.nombre}</div>
                   <small class="text-muted">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''} · ${FORMA_PAGO[g.formaPago] || '—'}</small>
                 </div>
-                <div class="text-center" style="min-width:76px">
-                  <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:.04em;color:#aaa">Cobro</div>
+                <div class="gasto-pend-cobro text-center" style="min-width:76px">
+                  <div class="gasto-pend-cobro-lbl" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint)">Cobro</div>
                   <div class="${vencido ? 'text-danger fw-bold' : 'text-muted'}" style="font-size:0.82rem">${fmtDate(g.fechaPago)}</div>
                 </div>
-                <div class="fw-bold text-end" style="min-width:80px">${currency(g.importe)}</div>
-                <div class="d-flex gap-1">
+                <div class="gasto-pend-importe fw-bold text-end" style="min-width:80px">${currency(g.importe)}</div>
+                <div class="gasto-pend-acciones d-flex gap-1">
                   <button class="btn btn-sm btn-outline-primary btn-confirmar-gasto" data-id="${g.id}" style="white-space:nowrap">
                     <i class="bi bi-check-lg me-1"></i>Confirmar
                   </button>
@@ -1161,10 +1161,10 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                 data-bs-toggle="collapse" data-bs-target="#acc-c-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
-          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:#888">
+          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:var(--text-muted)">
             <span>Total: <strong>${currency(totalGrupo)}</strong></span>
             <span class="btn-csv-contado" data-group-idx="${idx}" title="Descargar CSV"
-                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid #dee2e6;color:#6c757d;background:rgba(255,255,255,0.8);line-height:1.8">
+                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--text-muted);background:var(--card-bg);line-height:1.8">
               <i class="bi bi-download" style="pointer-events:none"></i>
             </span>
           </span>
@@ -1222,7 +1222,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                         <td>
                           <span data-dif-icon class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
                           <span class="fw-500">${c.compra}</span>
-                          <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
+                          <span class="badge bg-warning text-dark ms-1" style="font-size:var(--fs-nano)">Diferido</span>
                           ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
                           <span style="font-size:0.7rem" class="${allRegistered ? 'text-success' : 'text-danger'}">
                             ${allRegistered ? '✓' : `○ ${currency(Math.max(0, pend))}`}
@@ -1244,8 +1244,8 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                       </tr>`;
 
                       const pagoRows = expanded ? pagos.map(p => `
-                        <tr data-pago-de="${c.id}" style="background:#fffde7">
-                          <td style="padding-left:28px;color:#666;font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
+                        <tr data-pago-de="${c.id}" class="row-highlight">
+                          <td style="padding-left:28px;color:var(--text-muted);font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}</td>
                           <td></td>
                           <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
                           <td>—</td>
@@ -1338,10 +1338,10 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                 data-bs-toggle="collapse" data-bs-target="#acc-m-${idx}">
           <span style="width:10px;height:10px;border-radius:50%;background:${color};margin-right:10px;flex-shrink:0"></span>
           <span class="flex-grow-1">${label}</span>
-          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:#888">
+          <span class="ms-auto me-3 d-flex align-items-center gap-2" style="font-size:0.8rem;color:var(--text-muted)">
             <span class="d-flex gap-3">${headerStats}</span>
             <span class="btn-csv-msi" data-group-idx="${idx}" title="Descargar CSV"
-                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid #dee2e6;color:#6c757d;background:rgba(255,255,255,0.8);line-height:1.8">
+                  style="cursor:pointer;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--text-muted);background:var(--card-bg);line-height:1.8">
               <i class="bi bi-download" style="pointer-events:none"></i>
             </span>
           </span>
@@ -1460,7 +1460,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                         <td>
                           <span data-dif-icon class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
                           <span class="fw-500">${m.compra}</span>
-                          <span class="badge bg-warning text-dark ms-1" style="font-size:0.6rem">Diferido</span>
+                          <span class="badge bg-warning text-dark ms-1" style="font-size:var(--fs-nano)">Diferido</span>
                           ${m.enlaceCompra ? `<a href="${m.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
                           <div class="d-flex align-items-center gap-2 mt-1">
                             <div class="progress" style="width:120px;flex-shrink:0">
@@ -1513,14 +1513,14 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                           const ppn = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
                           if (ppn?.fechaPago) { const n = anteriorNomina(ppn.fechaPago, festivosMX); pProximoCell = n ? _pagoHighlight(n, ppn.fechaPago) : fmtDate(toISODate(ppn.fechaPago)); }
                         }
-                        return `<tr data-pago-de="${m.id}" style="background:#fffde7">
-                          <td style="padding-left:28px;color:#666;font-size:0.85rem">
+                        return `<tr data-pago-de="${m.id}" class="row-highlight">
+                          <td style="padding-left:28px;color:var(--text-muted);font-size:0.85rem">
                             └ Pago ${fmtDate(p.fecha)}
                             ${multiCiclo ? `<div class="progress mt-1" style="width:100px"><div class="progress-bar ${pDone ? 'bg-success' : 'bg-primary'}" style="width:${pPct}%"></div></div>` : ''}
                           </td>
                           <td></td>
                           <td class="text-center">${multiCiclo ? `${pMesPag}/${m.mesesTotal || 0}` : '—'}</td>
-                          <td>—</td>
+                          <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>
                           <td style="white-space:nowrap">${multiCiclo ? pPrimerCell : '—'}</td>
                           ${filtro === 'curso' ? `<td style="white-space:nowrap">${multiCiclo ? pProximoCell : '—'}</td>` : ''}
                           <td style="white-space:nowrap">${multiCiclo ? pUltimoCell : '—'}</td>
@@ -1747,7 +1747,7 @@ function _bonifTotal(item, totalVal, conIva = false) {
   return `
     <span class="fw-bold ${cls}">${currency(final)}</span>
     <span class="text-muted text-decoration-line-through ms-1" style="font-size:0.78rem">${currency(totalVal)}</span>
-    <br><span class="${cls}" style="font-size:0.7rem"><i class="bi bi-gift me-1"></i>${label}${b.tipo === 'porcentaje' ? ` = ${currency(montoBase)}` : ''}${b.conIva ? ` +IVA = ${currency(monto)}` : ''} · ${fmtDate(b.fechaMaxima)}${b.enlace ? ` <a href="${b.enlace}" target="_blank" rel="noopener" class="${cls}" title="Ver promoción"><i class="bi bi-box-arrow-up-right" style="font-size:0.65rem"></i></a>` : ''}</span>`;
+    <br><span class="${cls}" style="font-size:0.7rem"><i class="bi bi-gift me-1"></i>${label}${b.tipo === 'porcentaje' ? ` = ${currency(montoBase)}` : ''}${b.conIva ? ` +IVA = ${currency(monto)}` : ''} · ${fmtDate(b.fechaMaxima)}${b.enlace ? ` <a href="${b.enlace}" target="_blank" rel="noopener" class="${cls}" title="Ver promoción"><i class="bi bi-box-arrow-up-right" style="font-size:var(--fs-mini)"></i></a>` : ''}</span>`;
 }
 
 // ── Modal De Contado ────────────────────────────────────────────────────────────

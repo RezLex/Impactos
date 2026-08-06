@@ -48,7 +48,7 @@ function renderNumsCell(numeros) {
     <div class="d-flex align-items-center gap-1 mb-1">
       <span class="admin-num-badge ${n.formato === 'fisica' ? 'fisica' : 'digital'}">${n.formato === 'fisica' ? 'F' : 'D'}</span>
       <span class="fw-mono" style="font-size:0.78rem">${maskCard(n.numero)}</span>
-      ${n.fechaVencimiento ? `<span style="font-size:0.65rem;color:var(--text-muted)">${n.fechaVencimiento}</span>` : ''}
+      ${n.fechaVencimiento ? `<span style="font-size:var(--fs-mini);color:var(--text-muted)">${n.fechaVencimiento}</span>` : ''}
       <button class="btn-copy-data" data-value="${n.numero}" title="Copiar"><i class="bi bi-copy"></i></button>
     </div>`).join('');
 }
