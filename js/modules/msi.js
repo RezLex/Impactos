@@ -1712,13 +1712,16 @@ function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
 
-  const _cardOpts = (cards, showInst = false) => cards
+  // El texto del <option> se muestra tal cual cuando el <select> colapsa a la
+  // opción elegida — ahí se pierde el <optgroup> que hoy da el nombre del
+  // banco, así que la institución va siempre en el texto, no solo en Favoritas.
+  const _cardOpts = cards => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .flatMap(t => {
       const numeros  = Array.isArray(t.numeros) ? t.numeros : [];
       const all      = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
                         ...numeros.filter(n => n.formato === 'digital' && n.numero)];
-      const instPrefix = showInst && instMap[t.institucionId]?.nombre
+      const instPrefix = instMap[t.institucionId]?.nombre
         ? `${instMap[t.institucionId].nombre} — ` : '';
       if (!all.length) {
         const sel = item?.tarjetaId === t.id && !item?.numeroTarjeta ? 'selected' : '';
@@ -1737,7 +1740,7 @@ function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const normales  = lista.filter(t => !t.favorita);
 
   const favGroup = favoritas.length
-    ? `<optgroup label="⭐ Favoritas">${_cardOpts(favoritas, true)}</optgroup>`
+    ? `<optgroup label="⭐ Favoritas">${_cardOpts(favoritas)}</optgroup>`
     : '';
 
   const byInst = {};

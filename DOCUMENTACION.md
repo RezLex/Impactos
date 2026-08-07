@@ -498,7 +498,9 @@ CRUD completo de instituciones y tarjetas:
   - Una tarjeta **favorita** no puede ocultarse (botón 👁 deshabilitado)
   - Una tarjeta **oculta** no puede marcarse como favorita (botón ⭐ deshabilitado)
 
-> Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). En ese grupo, cada opción muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`) para identificarlas sin el contexto del optgroup de institución. Las tarjetas del grupo Favoritas no se duplican en los grupos de institución del mismo selector.
+> Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). Las tarjetas del grupo Favoritas no se duplican en los grupos de institución del mismo selector.
+>
+> Cada opción de tarjeta muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`), en todos los grupos y no solo en Favoritas: el `<optgroup>` que agrupa por institución no aparece en el texto colapsado del `<select>` una vez elegida una opción, así que sin el prefijo la tarjeta seleccionada quedaría sin decir a qué banco pertenece.
 
 > Las tarjetas **ocultas** (`oculta: true`) se excluyen automáticamente de `/tarjetas` y de todos los selectores del sistema. Para **De Contado** y **A Plazos** (formulario normal y registro rápido) los selectores muestran únicamente tarjetas de **crédito** (no débito ni préstamo).
 

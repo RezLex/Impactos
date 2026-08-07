@@ -129,13 +129,16 @@ function showModal(fijo, instituciones, tarjetas, container) {
   const isEdit  = !!fijo;
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
 
-  const _opts = (cards, showInst = false) => cards
+  // El texto del <option> se muestra tal cual cuando el <select> colapsa a la
+  // opción elegida — ahí se pierde el <optgroup> que hoy da el nombre del
+  // banco, así que la institución va siempre en el texto, no solo en Favoritas.
+  const _opts = cards => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .flatMap(t => {
       const numeros    = Array.isArray(t.numeros) ? t.numeros : [];
       const all        = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
                           ...numeros.filter(n => n.formato === 'digital' && n.numero)];
-      const instPrefix = showInst && instMap[t.institucionId]?.nombre
+      const instPrefix = instMap[t.institucionId]?.nombre
         ? `${instMap[t.institucionId].nombre} — ` : '';
       if (!all.length) {
         const sel = fijo?.tarjetaId === t.id && !fijo?.numeroTarjeta ? 'selected' : '';
@@ -159,7 +162,7 @@ function showModal(fijo, instituciones, tarjetas, container) {
   });
 
   const cardOptions =
-    (favoritas.length ? `<optgroup label="⭐ Favoritas">${_opts(favoritas, true)}</optgroup>` : '') +
+    (favoritas.length ? `<optgroup label="⭐ Favoritas">${_opts(favoritas)}</optgroup>` : '') +
     Object.values(byInst)
       .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'))
       .map(({ inst, cards }) =>
