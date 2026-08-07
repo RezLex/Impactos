@@ -14,15 +14,16 @@
 6. [Modelo de Datos — Firestore](#modelo-de-datos--firestore)
 7. [Módulos de la Aplicación](#módulos-de-la-aplicación)
 8. [Navegación y Routing](#navegación-y-routing)
-9. [Ciclo de Facturación](#ciclo-de-facturación)
-10. [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)
-11. [Cálculo de Impacto Mensual](#cálculo-de-impacto-mensual)
-12. [Cálculo de Rendimientos](#cálculo-de-rendimientos)
-13. [Cálculo de Nómina](#cálculo-de-nómina)
-14. [Tema Claro / Oscuro](#tema-claro--oscuro)
-15. [Ejecución Local](#ejecución-local)
-16. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-17. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+9. [Pre-registro de Compra vía URL](#pre-registro-de-compra-vía-url)
+10. [Ciclo de Facturación](#ciclo-de-facturación)
+11. [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible)
+12. [Cálculo de Impacto Mensual](#cálculo-de-impacto-mensual)
+13. [Cálculo de Rendimientos](#cálculo-de-rendimientos)
+14. [Cálculo de Nómina](#cálculo-de-nómina)
+15. [Tema Claro / Oscuro](#tema-claro--oscuro)
+16. [Ejecución Local](#ejecución-local)
+17. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+18. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -719,6 +720,87 @@ Los módulos se cargan de forma **lazy** (`import()` dinámico).
 - **Ajustes:** Administración, Gastos Fijos, Días Festivos
 - **Footer sidebar:** Exportar Datos, Cerrar Sesión
 - En móvil, los ítems duplicados en bottom nav se ocultan del sidebar (`data-hide-mobile`)
+
+---
+
+## Pre-registro de Compra vía URL
+
+Un enlace externo (ej. una automatización que lee correos de notificación bancaria) puede abrir
+la app con `#/compras?desc=...&total=...` y precargar el modal de Registro Rápido con los datos
+de la compra, lista para revisar y confirmar. No se guarda nada automáticamente — el usuario
+siempre confirma en el modal antes de escribir en Firestore.
+
+### Parámetros
+
+Siete parámetros, siempre en este orden dentro del hash. Los que no aplican a una compra de
+contado (`meses`, `mensualidad`) **se omiten del query string**, nunca llegan vacíos.
+
+| Parámetro | Formato | Presencia | Notas |
+|---|---|---|---|
+| `desc` | texto libre | Siempre | Descripción de la compra |
+| `total` | decimal con punto | Siempre | Cargo real a la tarjeta, sin símbolo ni separador de millares (`1372.23`) |
+| `fecha` | `AAAA-MM-DD` | Siempre | Fecha de la compra |
+| `hora` | `HH:MM` 24h | Siempre | Hora de la compra |
+| `tarjeta` | 4 dígitos | Siempre | Terminación de la tarjeta; `NA` si no se pudo determinar |
+| `meses` | entero, 3–24 | Solo a plazos | Número de mensualidades. Su sola presencia es lo que marca la compra como A Plazos |
+| `mensualidad` | decimal con punto | Solo a plazos | Pago mensual real, siempre junto con `meses` |
+| `msgId` | texto | Siempre | Llave de idempotencia — no es un dato de la compra |
+
+```
+#/compras?desc=Oxxo%20Casa&total=271.00&fecha=2026-08-02&hora=10:44&tarjeta=4902&msgId=1a0f...
+#/compras?desc=API%20Global&total=1372.23&fecha=2026-07-27&hora=17:10&tarjeta=6734&meses=6&mensualidad=228.71&msgId=19fa...
+```
+
+### Cómo se procesa
+
+**Router (`router.js`):** el hash se separa en ruta y query **antes** de decodificar — si se
+decodificara todo junto, un `%26` dentro de un valor se volvería un separador real y
+`URLSearchParams` cortaría el valor ahí. La ruta `/compras` recibe el query como tercer
+argumento (`URLSearchParams`) y lo pasa a `msi.js` (`js/app.js`).
+
+**Tipo de compra:** lo decide la *presencia* de `meses`, no un parámetro `tipo` aparte. Sin
+`meses` → De Contado; con `meses` → A Plazos (`msi.js` → `render()`).
+
+**Resolución de tarjeta (`_matchTarjetaPorTerminacion`):** busca la terminación solo entre
+tarjetas de **crédito** — los selectores de Compras y Registro Rápido no listan débito, así que
+casar con una de débito dejaría el campo sin opción correspondiente. Si la terminación aparece
+en más de una tarjeta o número, **gana la física**: es la que suele aparecer en el cargo del
+banco, y el orden en que vienen los números no lo garantiza. Sin coincidencia (incluye
+`tarjeta=NA`), el modal abre sin tarjeta preseleccionada.
+
+**Anti-duplicado:** `msgId` se busca en **ambas** colecciones (`contado` y `msi`), no solo en la
+del tipo que trae el enlace — desde el modal se puede cambiar de tipo antes de guardar, así que
+un mismo `msgId` puede haber terminado en cualquiera de las dos. Si ya existe, no se abre modal
+y se muestra un toast; si no, `_prefillDesdeQuery` arma el objeto de precarga.
+
+**Mensualidad:** si el enlace la trae, tiene prioridad sobre el cálculo `total / meses` del
+modal — puede no coincidir exactamente por redondeos del banco.
+
+**Hora:** viaja como campo explícito (`datos.hora`), no se deduce del datetime combinado. La
+razón: en el resto de la app, `T12:00:00` es el centinela interno de "sin hora capturada"
+(`_hasRealTime`), así que una compra real a las 12:00 en punto se habría perdido al reconstruirla
+desde el datetime.
+
+**Limpieza de la URL:** al procesar el query, `history.replaceState` quita `?...` de la barra de
+direcciones sin disparar `hashchange` — así un refresh o "atrás" no reabre el modal con datos
+viejos.
+
+### El modal
+
+El pre-registro abre el modal del **Registro Rápido** (`quick-add.js` → `openQuickAdd(action,
+prefill, onSaved)`), no los modales propios de la vista de Compras — trae la vista previa
+(fechas de ciclo, disponible/usado, impacto del mes), que es justo lo que conviene revisar antes
+de aceptar un dato que no capturó el usuario directamente.
+
+Con precarga (y solo con precarga) aparece un botón para cambiar de tipo sin recapturar nada:
+**"Es a plazos"** en el modal De Contado, **"Es de contado"** en el de A Plazos. Arrastran lo que
+el usuario tenga en pantalla en ese momento (`_leerFormulario`), no solo lo que trajo el enlace,
+y esperan a que el modal actual termine de cerrarse (`hidden.bs.modal`) antes de abrir el otro —
+abrirlos encima dejaría un backdrop huérfano.
+
+> `openModal` (`utils/ui.js`) descarta la instancia de Bootstrap y cualquier `.modal-backdrop`
+> suelto antes de montar un modal nuevo. Es necesario para este encadenamiento: sin eso, el
+> segundo salto entre modales dejaba un backdrop con `opacity .5` bloqueando toda la pantalla.
 
 ---
 
