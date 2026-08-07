@@ -57,11 +57,12 @@ import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
 
-export async function render(container, tab = null) {
-  await renderView(container, tab || 'contado');
+export async function render(container, tab = null, query = null) {
+  const tipoQuery = query?.get('tipo') === 'msi' ? 'plazos' : null;
+  await renderView(container, tab || tipoQuery || 'contado', query);
 }
 
-async function renderView(container, initialTab = 'contado') {
+async function renderView(container, initialTab = 'contado', query = null) {
   try {
     const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos] = await Promise.all([
       getAll('contado'),
@@ -73,6 +74,21 @@ async function renderView(container, initialTab = 'contado') {
       getAll('gastosFijos'),
       getAll('pagosDiferidos'),
     ]);
+
+    if (query && (query.get('desc') || query.get('total'))) {
+      // Limpiar el query string de la barra de direcciones: no dispara hashchange,
+      // así que un refresh o "atrás" no vuelve a abrir el modal con datos viejos.
+      const cleanHash = location.hash.split('?')[0];
+      history.replaceState(null, '', location.pathname + location.search + cleanHash);
+
+      const pre = _prefillDesdeQuery(query, tarjetas, contadoItems, msiItems);
+      if (pre === 'duplicado') {
+        toast('Esta compra ya fue registrada (mismo enlace usado antes)', 'info');
+      } else if (pre) {
+        if (pre.tipo === 'msi') showModalMsi(pre.datos, instituciones, tarjetas, () => renderView(container, 'plazos'));
+        else                    showModalContado(pre.datos, instituciones, tarjetas, () => renderView(container, 'contado'));
+      }
+    }
 
     // Index pagosDiferidos by compraId for fast lookup
     const pagosMap = {};
@@ -1611,6 +1627,49 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
 // ── Card select options (shared) ────────────────────────────────────────────────
 
+// ── Pre-registro de compra vía parámetros de URL (#/compras?desc=...&total=...) ──────
+
+function _matchTarjetaPorTerminacion(tarjetaParam, tarjetas) {
+  const digits = (tarjetaParam || '').replace(/\D/g, '');
+  if (!digits) return null; // incluye el caso "PP" (PayPal/cuenta), que no matchea ninguna tarjeta
+  for (const t of tarjetas.filter(x => !x.oculta)) {
+    const hit = (Array.isArray(t.numeros) ? t.numeros : []).find(n =>
+      n.numero && String(n.numero).replace(/\D/g, '').slice(-4) === digits);
+    if (hit) return { tarjetaId: t.id, numero: hit.numero };
+  }
+  return null;
+}
+
+function _prefillDesdeQuery(query, tarjetas, contadoItems, msiItems) {
+  const desc  = query.get('desc');
+  const total = query.get('total');
+  if (!desc || !total) return null;
+
+  const tipo       = query.get('tipo') === 'msi' ? 'msi' : 'contado';
+  const msgId      = query.get('msgId') || '';
+  const yaExiste    = msgId && (tipo === 'msi' ? msiItems : contadoItems).some(c => c.msgId === msgId);
+  if (yaExiste) return 'duplicado';
+
+  const fechaParam = query.get('fecha');
+  const fecha      = /^\d{4}-\d{2}-\d{2}$/.test(fechaParam || '') ? fechaParam : toISODate(new Date());
+  const hora       = /^\d{2}:\d{2}$/.test(query.get('hora') || '') ? query.get('hora') : '';
+  const match      = _matchTarjetaPorTerminacion(query.get('tarjeta'), tarjetas);
+
+  const datos = {
+    compra: desc,
+    total: Number(total) || '',
+    fechaCompra: hora ? `${fecha}T${hora}:00` : fecha,
+    tarjetaId: match?.tarjetaId || '',
+    numeroTarjeta: match?.numero || '',
+    ...(msgId ? { msgId } : {}),
+  };
+  if (tipo === 'msi') {
+    const meses = Number(query.get('meses'));
+    if (meses > 0) datos.mesesTotal = meses;
+  }
+  return { tipo, datos };
+}
+
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
@@ -1753,13 +1812,16 @@ function _bonifTotal(item, totalVal, conIva = false) {
 // ── Modal De Contado ────────────────────────────────────────────────────────────
 
 function showModalContado(compra, instituciones, tarjetas, onSaved) {
-  const isEdit = !!compra;
+  // Nota: !!compra?.id (no !!compra) porque un prefill armado desde parámetros de URL
+  // (#/compras?desc=...) llega como objeto truthy pero sin id — es un alta, no una edición.
+  const isEdit = !!compra?.id;
 
   openModal({
     title: isEdit ? 'Editar Compra' : 'Nueva Compra de Contado',
     size: 'lg',
     body: `
       <form id="contado-form">
+        <input type="hidden" name="msgId" value="${compra?.msgId || ''}">
         <div class="row g-3">
           <div class="col-12">
             <label class="form-label">Descripción *</label>
@@ -1839,6 +1901,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
       data.total = totalVal;
     }
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
     try {
@@ -1854,13 +1917,16 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
 // ── Modal A Plazos ─────────────────────────────────────────────────────────────
 
 function showModalMsi(msi, instituciones, tarjetas, onSaved) {
-  const isEdit = !!msi;
+  // Nota: !!msi?.id (no !!msi) porque un prefill armado desde parámetros de URL
+  // (#/compras?desc=...&tipo=msi) llega como objeto truthy pero sin id — es un alta, no una edición.
+  const isEdit = !!msi?.id;
 
   openModal({
     title: isEdit ? 'Editar Compra MSI' : 'Nueva Compra MSI',
     size: 'lg',
     body: `
       <form id="msi-form">
+        <input type="hidden" name="msgId" value="${msi?.msgId || ''}">
         <div class="row g-3">
           <div class="col-12">
             <label class="form-label">Descripción *</label>
@@ -1989,6 +2055,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     }
     data.restante      = data.restante !== '' ? r2(Number(data.restante)) : r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
     try {

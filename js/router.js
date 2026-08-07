@@ -13,14 +13,21 @@ export function initRouter(contentEl) {
   _appContent = contentEl;
 
   async function resolve() {
-    const hash  = window.location.hash || '#/';
-    const path  = decodeURIComponent(hash.replace('#', '')).split('?')[0] || '/';
-    const parts = path.split('/').filter(Boolean);
-    const base  = '/' + (parts[0] || '');
+    const hash     = window.location.hash || '#/';
+    const raw      = hash.replace('#', '');
+    const qIdx     = raw.indexOf('?');
+    // Separar ruta y query ANTES de decodificar: si se decodifica todo junto, un '&' codificado
+    // (%26) dentro de un valor se vuelve un separador real y URLSearchParams corta el valor ahí.
+    const rawPath  = qIdx === -1 ? raw : raw.slice(0, qIdx);
+    const rawQuery = qIdx === -1 ? ''  : raw.slice(qIdx + 1);
+    const path     = decodeURIComponent(rawPath) || '/';
+    const parts    = path.split('/').filter(Boolean);
+    const base     = '/' + (parts[0] || '');
+    const query    = new URLSearchParams(rawQuery);
 
     const handler = _routes[path] || _routes[base] || _routes['/'];
     if (handler) {
-      await handler(path, parts);
+      await handler(path, parts, query);
       _updateNav(base || '/');
     }
   }
