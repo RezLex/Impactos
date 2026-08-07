@@ -43,7 +43,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.1`)
+- Versión de la app visible en el footer del sidebar (`v1.9.2`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -1216,4 +1216,6 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-08-06 (v1.9.0) — Tema claro/oscuro con tres estados y color de marca preservado; pasada de densidad en móvil (−10 % de altura, Rendimientos −36 %) con tokens tipográficos; calculadora entre 2 fechas movida a modal; fila de subpago de A Plazos ahora muestra su fecha; sección de gastos pendientes normalizada para móvil. Incluye lo pendiente de v1.8.2 — Rendimientos: interpretación de la tasa configurable por cuenta (nominal o efectiva), desglose del saldo por tramos con barra de reparto, historial día por día, Detalle en modal, ayuda contextual por campo y tarjetas reestructuradas; motor verificado contra abonos reales de dos instituciones con convenciones opuestas*
+*Última actualización: 2026-08-07 (v1.9.2) — Pre-registro de compra vía parámetros de URL (`#/compras?desc=...&total=...`): el router pasa el query string a los módulos, y en Compras un enlace abre el modal de Registro Rápido (De Contado o A Plazos según traiga `meses`) ya precargado con descripción, total, fecha, hora, tarjeta por terminación y la mensualidad real cuando aplica; detección de duplicados por `msgId` en ambas colecciones y botón para cambiar de tipo sin recapturar los datos. El texto de la tarjeta seleccionada en todos los dropdowns del proyecto ahora siempre incluye la institución, no solo en el grupo Favoritas.
+Incluye lo enviado en v1.9.1 — texto legible calculado sobre el color de cada institución (tarjetas, wallet, cabeceras admin) en vez de blanco fijo, y redondeo diario configurable en cuentas de rendimiento.
+Incluye lo enviado en v1.9.0 — Tema claro/oscuro con tres estados y color de marca preservado; pasada de densidad en móvil (−10 % de altura, Rendimientos −36 %) con tokens tipográficos; calculadora entre 2 fechas movida a modal; fila de subpago de A Plazos ahora muestra su fecha; sección de gastos pendientes normalizada para móvil; y lo pendiente de v1.8.2 — Rendimientos: interpretación de la tasa configurable por cuenta (nominal o efectiva), desglose del saldo por tramos con barra de reparto, historial día por día, Detalle en modal, ayuda contextual por campo y tarjetas reestructuradas; motor verificado contra abonos reales de dos instituciones con convenciones opuestas*
