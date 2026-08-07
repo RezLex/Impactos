@@ -1,6 +1,33 @@
 import { getAll, getById, create, recentWhere } from '../utils/db.js';
 import { r2 } from '../utils/formatters.js';
 
+// Mediodía es la hora neutra que se guarda cuando NO se capturó hora real
+const _hasRealTime = dt => dt?.length > 10 && !dt.includes('T12:00:00');
+
+// Escapar para interpolar dentro de un atributo HTML (la descripción viene de
+// un enlace externo y puede traer comillas)
+const _attr = s => String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+// Recoge lo que el usuario tenga capturado para arrastrarlo al otro modal
+const _leerFormulario = (formId, base = {}) => {
+  const form = document.getElementById(formId);
+  if (!form) return base;
+  const d = Object.fromEntries(new FormData(form));
+  const [tarjetaId, numeroTarjeta] = (d.tarjetaId || '').split('::');
+  return {
+    ...base,
+    compra:        d.compra || '',
+    total:         d.total || '',
+    enlaceCompra:  d.enlaceCompra || '',
+    tarjetaId:     tarjetaId || '',
+    numeroTarjeta: numeroTarjeta || '',
+    fechaCompra:   _applyTime(d.fechaCompra, d.fechaCompraTime),
+    // Se relee del campo, no de `base`: si el usuario la editó (o la borró)
+    // antes de cambiar de modal, debe viajar el valor actual
+    hora:          d.fechaCompraTime || undefined,
+  };
+};
+
 const _addTime = s => {
   if (!s || s.length !== 10) return s;
   const n = new Date();
@@ -30,6 +57,14 @@ const _wireTimeToggle = () => {
     if (!input) return;
     const wrapper    = input.closest('.time-toggle-wrapper') || input;
     const dateInput  = document.querySelector(`[name="${btn.dataset.toggleTime.replace(/Time$/, '')}"]`);
+
+    // Si el campo ya trae hora (precarga desde un enlace), hay que mostrarlo:
+    // si no, el dato existe y se guardaría, pero el usuario no lo ve.
+    if (input.value) {
+      wrapper.style.display = '';
+      btn.querySelector('i').style.color = 'var(--bs-primary)';
+    }
+
     btn.addEventListener('click', () => {
       const visible = wrapper.style.display !== 'none';
       wrapper.style.display = visible ? 'none' : '';
@@ -332,36 +367,40 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
 
 // ── Public ────────────────────────────────────────────────────────────────────
 
-export async function openQuickAdd(action) {
+// `prefill` precarga el formulario (lo usa el pre-registro por URL de msi.js).
+// `onSaved` permite al llamante refrescar su vista tras guardar.
+export async function openQuickAdd(action, prefill = null, onSaved = null) {
   const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos } = await _loadData();
-  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
-  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
+  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
+  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
   else if (action === 'gasto')  _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
 }
 
 // ── De Contado ────────────────────────────────────────────────────────────────
 
-function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = []) {
+function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], prefill = null, onSaved = null) {
+  const p = prefill || {};
   openModal({
     title: 'Nueva Compra De Contado',
     size: 'lg',
     body: `
       <form id="qa-contado-form">
+        <input type="hidden" name="msgId" value="${p.msgId || ''}">
         <div class="row g-3">
           <div class="col-md-6">
             <label class="form-label">Tarjeta *</label>
             <select class="form-select" name="tarjetaId" required>
               <option value="">— Seleccionar —</option>
-              ${_buildCardOptions(null, instituciones, tarjetas, true)}
+              ${_buildCardOptions(prefill, instituciones, tarjetas, true)}
             </select>
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
             <div class="d-flex align-items-center gap-1">
-              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${toISODate(new Date())}" required>
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${(p.fechaCompra || '').slice(0, 10) || toISODate(new Date())}" required>
               <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
               <div class="time-toggle-wrapper" style="display:none">
-                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="${p.hora ?? (_hasRealTime(p.fechaCompra) ? p.fechaCompra.slice(11, 16) : '')}">
               </div>
             </div>
           </div>
@@ -369,16 +408,16 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
             <label class="form-label">Total *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="total" required min="0" step="0.01">
+              <input type="number" class="form-control" name="total" value="${p.total ?? ''}" required min="0" step="0.01">
             </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Enlace</label>
-            <input type="url" class="form-control" name="enlaceCompra" placeholder="https://...">
+            <input type="url" class="form-control" name="enlaceCompra" value="${p.enlaceCompra || ''}" placeholder="https://...">
           </div>
           <div class="col-12">
             <label class="form-label">Descripción *</label>
-            <input type="text" class="form-control" name="compra" required placeholder="Ej: Amazon — Auriculares">
+            <input type="text" class="form-control" name="compra" value="${_attr(p.compra)}" required placeholder="Ej: Amazon — Auriculares">
           </div>
           ${_bonifFieldsQA(null)}
         </div>
@@ -386,6 +425,9 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
       ${PREVIEW_HTML}`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      ${prefill ? `<button type="button" class="btn btn-outline-primary btn-sm" id="qa-to-plazos" title="Registrar esta compra a meses en vez de contado">
+        <i class="bi bi-calendar-range me-1"></i>Es a plazos
+      </button>` : ''}
       <button type="button" class="btn btn-primary btn-sm" id="qa-save-contado">Guardar</button>`,
   });
 
@@ -393,6 +435,19 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos);
+
+  // Solo en el pre-registro por enlace: la fuente no siempre dice si fue a
+  // meses, así que se permite cambiar de opinión sin recapturar los datos.
+  const btnPlazos = document.getElementById('qa-to-plazos');
+  if (btnPlazos) btnPlazos.addEventListener('click', () => {
+    const datos = _leerFormulario('qa-contado-form', p);
+    const el = document.getElementById('app-modal');
+    // Esperar al cierre: abrir el segundo modal encima deja el backdrop huérfano
+    el.addEventListener('hidden.bs.modal', () =>
+      _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, datos, onSaved),
+      { once: true });
+    closeModal();
+  });
 
   document.getElementById('qa-save-contado').addEventListener('click', async () => {
     const form = document.getElementById('qa-contado-form');
@@ -403,39 +458,43 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     data.numeroTarjeta = numeroTarjeta || '';
     data.total = Number(data.total);
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonifQA(data);
     try {
       await create('contado', data);
       closeModal();
       toast('Compra registrada');
+      if (onSaved) onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }
 
 // ── A Plazos ──────────────────────────────────────────────────────────────────
 
-function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = []) {
+function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], prefill = null, onSaved = null) {
+  const p = prefill || {};
   openModal({
     title: 'Nueva Compra A Plazos',
     size: 'lg',
     body: `
       <form id="qa-plazos-form">
+        <input type="hidden" name="msgId" value="${p.msgId || ''}">
         <div class="row g-3">
           <div class="col-md-6">
             <label class="form-label">Tarjeta de crédito *</label>
             <select class="form-select" name="tarjetaId" required>
               <option value="">— Seleccionar —</option>
-              ${_buildCardOptions(null, instituciones, tarjetas, true)}
+              ${_buildCardOptions(prefill, instituciones, tarjetas, true)}
             </select>
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de compra *</label>
             <div class="d-flex align-items-center gap-1">
-              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${toISODate(new Date())}" required>
+              <input type="date" class="form-control" style="min-width:0" name="fechaCompra" value="${(p.fechaCompra || '').slice(0, 10) || toISODate(new Date())}" required>
               <button type="button" class="btn-icon" data-toggle-time="fechaCompraTime" title="Registrar hora"><i class="bi bi-clock"></i></button>
               <div class="time-toggle-wrapper" style="display:none">
-                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="">
+                <input type="time" class="form-control form-control-sm" name="fechaCompraTime" value="${p.hora ?? (_hasRealTime(p.fechaCompra) ? p.fechaCompra.slice(11, 16) : '')}">
               </div>
             </div>
           </div>
@@ -443,27 +502,27 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
             <label class="form-label">Total *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="total" id="qa-total" required min="0" step="0.01">
+              <input type="number" class="form-control" name="total" id="qa-total" value="${p.total ?? ''}" required min="0" step="0.01">
             </div>
           </div>
           <div class="col-md-3">
             <label class="form-label">Meses *</label>
-            <input type="number" class="form-control" name="mesesTotal" id="qa-meses" required min="1" max="48">
+            <input type="number" class="form-control" name="mesesTotal" id="qa-meses" value="${p.mesesTotal ?? ''}" required min="1" max="48">
           </div>
           <div class="col-md-3">
             <label class="form-label">Mensualidad *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="mensualidad" id="qa-mensualidad" required min="0" step="0.01">
+              <input type="number" class="form-control" name="mensualidad" id="qa-mensualidad" value="${p.mensualidad ?? ''}" required min="0" step="0.01">
             </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Enlace</label>
-            <input type="url" class="form-control" name="enlaceCompra" placeholder="https://...">
+            <input type="url" class="form-control" name="enlaceCompra" value="${p.enlaceCompra || ''}" placeholder="https://...">
           </div>
           <div class="col-12">
             <label class="form-label">Descripción *</label>
-            <input type="text" class="form-control" name="compra" required placeholder="Ej: Amazon — Teclado">
+            <input type="text" class="form-control" name="compra" value="${_attr(p.compra)}" required placeholder="Ej: Amazon — Teclado">
           </div>
           ${_bonifFieldsQA(null)}
         </div>
@@ -471,6 +530,9 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
       ${PREVIEW_HTML}`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      ${prefill ? `<button type="button" class="btn btn-outline-primary btn-sm" id="qa-to-contado" title="Registrar esta compra de contado en vez de a meses">
+        <i class="bi bi-bag me-1"></i>Es de contado
+      </button>` : ''}
       <button type="button" class="btn btn-primary btn-sm" id="qa-save-plazos">Guardar</button>`,
   });
 
@@ -489,6 +551,20 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
     form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos);
 
+  // Solo derivar total/meses si el enlace no trajo la mensualidad del banco,
+  // que puede no cuadrar exactamente con la división por redondeos.
+  if (p.mensualidad == null) recalc();
+
+  const btnContado = document.getElementById('qa-to-contado');
+  if (btnContado) btnContado.addEventListener('click', () => {
+    const datos = _leerFormulario('qa-plazos-form', p);
+    const el = document.getElementById('app-modal');
+    el.addEventListener('hidden.bs.modal', () =>
+      _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, datos, onSaved),
+      { once: true });
+    closeModal();
+  });
+
   document.getElementById('qa-save-plazos').addEventListener('click', async () => {
     const form = document.getElementById('qa-plazos-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
@@ -502,12 +578,14 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     data.mesesPagados  = 0;
     data.restante      = r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
+    if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonifQA(data);
     try {
       await create('msi', data);
       closeModal();
       toast('Compra MSI registrada');
+      if (onSaved) onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }

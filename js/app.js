@@ -40,7 +40,7 @@ function setupRouter() {
   const content = document.getElementById('app-content');
   register('/',          ()       => load('dashboard'));
   register('/tarjetas',  ()       => load('tarjetas'));
-  register('/compras',   (p, pts) => load('msi', pts[1] || null));
+  register('/compras',   (p, pts, query) => load('msi', pts[1] || null, query));
   register('/msi',       ()       => navigate('/compras'));
   register('/fijos',     ()       => load('fijos'));
   register('/impacto',   (p, pts) => load('impacto', pts[1] || null));
