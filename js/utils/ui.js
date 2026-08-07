@@ -24,6 +24,14 @@ export function confirmDelete(nombre) {
 
 // Generic modal: openModal({ title, body, footer })
 export function openModal({ title, body, footer = '', size = '' }) {
+  // Al encadenar modales (cerrar uno y abrir otro en su 'hidden'), el contenedor
+  // se vacía antes de que Bootstrap termine de retirar su backdrop: la instancia
+  // se queda sin elemento y el backdrop sobrevive con opacity .5 sobre toda la
+  // pantalla, que además intercepta los clics. Se limpia antes de montar.
+  const previo = document.getElementById('app-modal');
+  if (previo) bootstrap.Modal.getInstance(previo)?.dispose();
+  document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+
   document.getElementById('modal-container').innerHTML = `
     <div class="modal fade" id="app-modal" tabindex="-1">
       <div class="modal-dialog modal-dialog-centered ${size ? 'modal-' + size : ''}">

@@ -16,6 +16,14 @@ const _wireTimeToggle = () => {
     if (!input) return;
     const wrapper    = input.closest('.time-toggle-wrapper') || input;
     const dateInput  = document.querySelector(`[name="${btn.dataset.toggleTime.replace(/Time$/, '')}"]`);
+
+    // Si el campo ya trae hora (editar una compra con hora real), hay que
+    // mostrarlo: si no, el dato existe y se guardaría, pero el usuario no lo ve.
+    if (input.value) {
+      wrapper.style.display = '';
+      btn.querySelector('i').style.color = 'var(--bs-primary)';
+    }
+
     btn.addEventListener('click', () => {
       const visible = wrapper.style.display !== 'none';
       wrapper.style.display = visible ? 'none' : '';
@@ -58,7 +66,9 @@ import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
 
 export async function render(container, tab = null, query = null) {
-  const tipoQuery = query?.get('tipo') === 'msi' ? 'plazos' : null;
+  // La presencia de `meses` es lo que distingue una compra a plazos: los
+  // parámetros que no aplican se omiten del enlace, no llegan vacíos.
+  const tipoQuery = query?.has('meses') ? 'plazos' : null;
   await renderView(container, tab || tipoQuery || 'contado', query);
 }
 
@@ -85,8 +95,13 @@ async function renderView(container, initialTab = 'contado', query = null) {
       if (pre === 'duplicado') {
         toast('Esta compra ya fue registrada (mismo enlace usado antes)', 'info');
       } else if (pre) {
-        if (pre.tipo === 'msi') showModalMsi(pre.datos, instituciones, tarjetas, () => renderView(container, 'plazos'));
-        else                    showModalContado(pre.datos, instituciones, tarjetas, () => renderView(container, 'contado'));
+        // Se usa el modal del Registro Rápido, no el de esta vista: trae la
+        // vista previa (ciclo, disponible e impacto del mes), que es
+        // justamente lo que se quiere revisar antes de aceptar un pre-registro.
+        const { openQuickAdd } = await import('./quick-add.js');
+        const esMsi = pre.tipo === 'msi';
+        openQuickAdd(esMsi ? 'plazos' : 'contado', pre.datos,
+          () => renderView(container, esMsi ? 'plazos' : 'contado'));
       }
     }
 
@@ -1632,42 +1647,65 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 function _matchTarjetaPorTerminacion(tarjetaParam, tarjetas) {
   const digits = (tarjetaParam || '').replace(/\D/g, '');
   if (!digits) return null; // incluye el caso "PP" (PayPal/cuenta), que no matchea ninguna tarjeta
-  for (const t of tarjetas.filter(x => !x.oculta)) {
-    const hit = (Array.isArray(t.numeros) ? t.numeros : []).find(n =>
-      n.numero && String(n.numero).replace(/\D/g, '').slice(-4) === digits);
-    if (hit) return { tarjetaId: t.id, numero: hit.numero };
+  // Solo crédito: los selectores de De Contado y A Plazos únicamente listan
+  // tarjetas de crédito, así que casar con una de débito daría un tarjetaId
+  // sin opción correspondiente y el campo quedaría vacío sin explicación.
+  const coincidencias = [];
+  for (const t of tarjetas.filter(x => !x.oculta && x.tipo === 'credito')) {
+    (Array.isArray(t.numeros) ? t.numeros : []).forEach(n => {
+      if (n.numero && String(n.numero).replace(/\D/g, '').slice(-4) === digits)
+        coincidencias.push({ tarjetaId: t.id, numero: n.numero, formato: n.formato });
+    });
   }
-  return null;
+  if (!coincidencias.length) return null;
+  // Con varias coincidencias gana la física: es la que suele aparecer en el
+  // cargo del banco, y el orden del array no garantiza cuál viene primero.
+  const elegida = coincidencias.find(c => c.formato === 'fisica') || coincidencias[0];
+  return { tarjetaId: elegida.tarjetaId, numero: elegida.numero };
 }
 
+// Parámetros del enlace: desc, total, fecha, hora, tarjeta y msgId siempre;
+// meses y mensualidad solo en compras a plazos. Los que no aplican se omiten,
+// nunca llegan vacíos.
 function _prefillDesdeQuery(query, tarjetas, contadoItems, msiItems) {
   const desc  = query.get('desc');
-  const total = query.get('total');
-  if (!desc || !total) return null;
+  const total = parseFloat(query.get('total'));   // llega como string: "1372.23"
+  if (!desc || !Number.isFinite(total)) return null;
 
-  const tipo       = query.get('tipo') === 'msi' ? 'msi' : 'contado';
-  const msgId      = query.get('msgId') || '';
-  const yaExiste    = msgId && (tipo === 'msi' ? msiItems : contadoItems).some(c => c.msgId === msgId);
-  if (yaExiste) return 'duplicado';
+  // El tipo lo decide la PRESENCIA de `meses`, no un parámetro aparte
+  const meses  = parseInt(query.get('meses'), 10);
+  const esMsi  = query.has('meses') && Number.isFinite(meses) && meses > 0;
+
+  // El msgId se busca en las DOS colecciones: desde el modal se puede cambiar
+  // de contado a plazos, así que pudo guardarse en cualquiera de las dos.
+  const msgId = query.get('msgId') || '';
+  if (msgId && [...contadoItems, ...msiItems].some(c => c.msgId === msgId)) return 'duplicado';
 
   const fechaParam = query.get('fecha');
-  const fecha      = /^\d{4}-\d{2}-\d{2}$/.test(fechaParam || '') ? fechaParam : toISODate(new Date());
-  const hora       = /^\d{2}:\d{2}$/.test(query.get('hora') || '') ? query.get('hora') : '';
-  const match      = _matchTarjetaPorTerminacion(query.get('tarjeta'), tarjetas);
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(fechaParam || '') ? fechaParam : toISODate(new Date());
+  const hora  = /^\d{2}:\d{2}$/.test(query.get('hora') || '') ? query.get('hora') : '';
+  // `tarjeta` llega como 'NA' cuando el correo no revela la terminación
+  const match = _matchTarjetaPorTerminacion(query.get('tarjeta'), tarjetas);
 
   const datos = {
     compra: desc,
-    total: Number(total) || '',
+    total,
     fechaCompra: hora ? `${fecha}T${hora}:00` : fecha,
+    // La hora va aparte porque el enlace puede traer 12:00 como hora real, y
+    // en el resto de la app mediodía es el centinela de "sin hora capturada":
+    // deducirla del datetime la perdería justo en ese caso.
+    ...(hora ? { hora } : {}),
     tarjetaId: match?.tarjetaId || '',
     numeroTarjeta: match?.numero || '',
     ...(msgId ? { msgId } : {}),
   };
-  if (tipo === 'msi') {
-    const meses = Number(query.get('meses'));
-    if (meses > 0) datos.mesesTotal = meses;
+  if (esMsi) {
+    datos.mesesTotal = meses;
+    // La mensualidad real del banco manda: puede no ser exactamente total/meses
+    const mensualidad = parseFloat(query.get('mensualidad'));
+    if (Number.isFinite(mensualidad)) datos.mensualidad = mensualidad;
   }
-  return { tipo, datos };
+  return { tipo: esMsi ? 'msi' : 'contado', datos };
 }
 
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
