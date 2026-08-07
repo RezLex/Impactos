@@ -1,12 +1,12 @@
 import { getAll, getById, create, update, remove } from '../utils/db.js';
-import { currency, fmtDate } from '../utils/formatters.js';
+import { currency, fmtDate, textoLegibleSobre, rgbLegibleSobre } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import {
   resumenCuenta, totalizarResumenes, rendimientoEntre, timelineCuenta,
   historialDiario, configCuenta, hoyISO, isoDay, diasEntre,
   TRAMOS_DEFAULT, BASE_ANUAL_DEFAULT,
   MODO_PROGRESIVO, MODO_UNICO, ISR_CAPITAL, ISR_INTERES,
-  TASA_NOMINAL, TASA_EFECTIVA,
+  TASA_NOMINAL, TASA_EFECTIVA, REDONDEO_CONTINUO, REDONDEO_CENTAVOS,
 } from '../utils/rendimiento.js';
 
 const COL      = 'inversiones';
@@ -168,6 +168,25 @@ const AYUDA = {
       <p class="inv-ayuda-ej">Una tasa real de 14.849%:<br>
          · truncar → se muestra <strong>14.84%</strong><br>
          · redondear → se muestra <strong>14.85%</strong></p>`,
+  },
+  redondeoDiario: {
+    titulo: 'Redondeo diario',
+    cuerpo: `
+      <p><strong>Continuo</strong> — el interés y la retención de cada día se capitalizan con su
+         valor exacto, sin redondear.</p>
+      <p><strong>Centavos</strong> — se redondean a centavos antes de sumarse al saldo, igual que
+         cuando la institución los abona y los retiene como dos movimientos discretos.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Con instituciones que solo muestran un neto ya limpio, no hay diferencia perceptible.
+         Pero si ves el abono y la retención como movimientos separados en tu estado de cuenta,
+         dejarlo en <strong>continuo</strong> puede hacer que el "Rendimiento neto del día" no
+         cuadre con restar esos dos movimientos, y que el saldo proyectado se desvíe del real
+         centavo a centavo con el tiempo.</p>
+      <p class="inv-ayuda-ej">Saldo $9,006.56 al 10%, retención 0.90%, base 360:<br>
+         · continuo → bruto $2.501822…, retención $0.225164…, neto exacto $2.276658… → se
+         muestra <strong>$2.28</strong><br>
+         · centavos → bruto <strong>$2.50</strong>, retención <strong>$0.23</strong>, neto
+         <strong>$2.27</strong> — igual que en el estado de cuenta</p>`,
   },
   rendimientoObtenido: {
     titulo: 'Rendimiento obtenido',
@@ -423,7 +442,7 @@ function cuentaCard(c, r, inst) {
   return `
     <div class="col-12 col-md-6 col-xl-4 col-xxl-3">
       <div class="inv-card">
-        <div class="inv-head" style="background:${color}">
+        <div class="inv-head" style="background:${color};--on-color:${textoLegibleSobre(color)};--on-color-rgb:${rgbLegibleSobre(color)}">
           <div class="inv-head-txt">
             ${alias(c)
               ? `<div class="inv-inst">${esc(institucion)}</div>
@@ -969,6 +988,7 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
           </a>
           <div class="collapse ${cuenta?.isrAnual
             || cuenta?.isrSobre === ISR_INTERES || cuenta?.redondeoTasa === 'redondear'
+            || cuenta?.redondeoDiario === REDONDEO_CENTAVOS
             || (cuenta?.baseAnual && cuenta.baseAnual !== BASE_ANUAL_DEFAULT)
             || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT) ? 'show' : ''}" id="inv-adv">
             <div class="row g-2 mt-1">
@@ -1009,6 +1029,13 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
                 <select class="form-select" name="redondeoTasa">
                   <option value="truncar"    ${cuenta?.redondeoTasa !== 'redondear' ? 'selected' : ''}>Truncar</option>
                   <option value="redondear"  ${cuenta?.redondeoTasa === 'redondear' ? 'selected' : ''}>Redondear</option>
+                </select>
+              </div>
+              <div class="col-12 col-sm-4">
+                <label class="form-label">Redondeo diario${btnAyuda('redondeoDiario')}</label>
+                <select class="form-select" name="redondeoDiario">
+                  <option value="${REDONDEO_CONTINUO}" ${cuenta?.redondeoDiario !== REDONDEO_CENTAVOS ? 'selected' : ''}>Continuo</option>
+                  <option value="${REDONDEO_CENTAVOS}" ${cuenta?.redondeoDiario === REDONDEO_CENTAVOS ? 'selected' : ''}>A centavos</option>
                 </select>
               </div>
 
@@ -1133,6 +1160,7 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
       isrSobre:           raw.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
       baseIsr:            Number(raw.baseIsr)   || BASE_ANUAL_DEFAULT,
       redondeoTasa:       raw.redondeoTasa === 'redondear' ? 'redondear' : 'truncar',
+      redondeoDiario:     raw.redondeoDiario === REDONDEO_CENTAVOS ? REDONDEO_CENTAVOS : REDONDEO_CONTINUO,
     };
 
     // Si la fecha de actualización cambió, la captura anterior pasa al historial

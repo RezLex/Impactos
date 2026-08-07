@@ -49,6 +49,20 @@
  *
  * La base del interés y la del ISR se configuran por separado porque no siempre
  * coinciden — Revolut MX paga intereses sobre 360 días y retiene sobre 365.
+ *
+ * Redondeo diario
+ * ────────────────
+ * `continuo` (default) — el interés y el ISR de cada día se capitalizan con su
+ * valor exacto, sin redondear. Es lo correcto cuando la institución solo
+ * publica un neto ya limpio y no hay nada contra qué comparar centavo a
+ * centavo.
+ *
+ * `centavos` — bruto y retención se redondean a centavos *antes* de sumarse al
+ * saldo, replicando que el dinero real se liquida en unidades discretas. Úsalo
+ * en cuentas donde ves el abono y la retención como movimientos separados en
+ * el estado de cuenta: si no se redondea aquí, el "neto" mostrado puede diferir
+ * en un centavo del que resulta de restar esos dos movimientos ya redondeados,
+ * y el saldo compuesto se va desviando del real con el tiempo.
  */
 
 export const BASE_ANUAL_DEFAULT = 365;
@@ -64,6 +78,10 @@ export const ISR_INTERES = 'interes';
 /** Cómo se interpreta la tasa anual publicada por la institución. */
 export const TASA_NOMINAL  = 'nominal';
 export const TASA_EFECTIVA = 'efectiva';
+
+/** Si el interés y el ISR de cada día se redondean a centavos antes de capitalizar. */
+export const REDONDEO_CONTINUO = 'continuo';
+export const REDONDEO_CENTAVOS = 'centavos';
 
 /** Tramos precargados al crear una cuenta nueva. */
 export const TRAMOS_DEFAULT = [
@@ -165,6 +183,7 @@ export function configCuenta(cuenta = {}) {
     isrAnual: Number(cuenta.isrAnual)  || 0,
     isrSobre: cuenta.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
     baseIsr:  Number(cuenta.baseIsr)   || BASE_ANUAL_DEFAULT,
+    redondeo: cuenta.redondeoDiario === REDONDEO_CENTAVOS ? REDONDEO_CENTAVOS : REDONDEO_CONTINUO,
   };
 }
 
@@ -217,6 +236,21 @@ export function isrDiario(saldo, cfg, interesBruto) {
 }
 
 /**
+ * Interés bruto y retención de un día, redondeados a centavos antes de
+ * capitalizar cuando `cfg.redondeo === REDONDEO_CENTAVOS` — así el neto que se
+ * capitaliza coincide con el de dos movimientos ya redondeados, en vez de con
+ * la resta de sus valores exactos.
+ */
+function pasoDiario(saldo, cfg) {
+  const bruto = interesDiario(saldo, cfg);
+  const isr   = isrDiario(saldo, cfg, bruto);
+  if (cfg.redondeo === REDONDEO_CENTAVOS) {
+    return { bruto: Math.round(bruto * 100) / 100, isr: Math.round(isr * 100) / 100 };
+  }
+  return { bruto, isr };
+}
+
+/**
  * Capitaliza un saldo día a día, descontando la retención antes de reinvertir
  * (lo que se capitaliza es el interés neto).
  * @returns {{saldoFinal:number, rendimiento:number, bruto:number, isr:number, dias:number}}
@@ -226,8 +260,7 @@ export function componer(saldoInicial, dias, cfg) {
   const n = Math.max(0, Math.min(Math.floor(Number(dias) || 0), MAX_DIAS));
   let saldo = inicial, bruto = 0, isr = 0, ultimo = null;
   for (let i = 0; i < n; i++) {
-    const b = interesDiario(saldo, cfg);
-    const r = isrDiario(saldo, cfg, b);
+    const { bruto: b, isr: r } = pasoDiario(saldo, cfg);
     bruto += b;
     isr   += r;
     ultimo = { bruto: b, isr: r, neto: b - r };
@@ -401,8 +434,7 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
 
   const out = [];
   for (let i = 0; i < n; i++) {
-    const bruto = interesDiario(saldo, cfg);
-    const isr   = isrDiario(saldo, cfg, bruto);
+    const { bruto, isr } = pasoDiario(saldo, cfg);
     const neto  = bruto - isr;
     const saldoFinal = Math.max(0, saldo + neto);
     out.push({ fecha: sumarDias(desde, saltados + i), saldoInicial: saldo, bruto, isr, neto, saldoFinal });
@@ -434,8 +466,7 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   const hastaHoy    = componer(capital, dias, cfg);
   const saldoActual = hastaHoy.saldoFinal;
 
-  const diarioBruto = interesDiario(saldoActual, cfg);
-  const isrDia      = isrDiario(saldoActual, cfg, diarioBruto);
+  const { bruto: diarioBruto, isr: isrDia } = pasoDiario(saldoActual, cfg);
   const proyMensual = componer(saldoActual, 30,  cfg);
   const proyAnual   = componer(saldoActual, 365, cfg);
   // GAT Nominal: como lo publican las instituciones — ANTES de impuestos y con

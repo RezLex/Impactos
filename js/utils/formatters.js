@@ -11,6 +11,33 @@ export function excelDateToISO(serial) {
   return d.toISOString().split('T')[0];
 }
 
+/**
+ * Si un fondo `#rrggbb` es lo bastante claro como para necesitar texto negro
+ * encima, según su luminancia percibida (fórmula YIQ). Para el color
+ * configurado de una institución, cuyo tono elige el usuario libremente.
+ */
+function esColorClaro(hex) {
+  const h = String(hex || '').replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(h)) return false;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  return yiq >= 150;
+}
+
+/** Color de texto legible (negro o blanco) sobre un fondo `#rrggbb`. */
+export const textoLegibleSobre = hex => esColorClaro(hex) ? '#000' : '#fff';
+
+/**
+ * Triplete `r,g,b` (sin `rgba()`) del texto legible sobre un fondo `#rrggbb`,
+ * para componer overlays translúcidos a juego: `rgba(var(--on-color-rgb), .15)`.
+ */
+export const rgbLegibleSobre = hex => esColorClaro(hex) ? '0,0,0' : '255,255,255';
+
+/** El triplete opuesto a `rgbLegibleSobre` — para el estado hover de botones que invierten fondo/texto. */
+export const rgbInversoSobre = hex => esColorClaro(hex) ? '255,255,255' : '0,0,0';
+
 export function fmtDate(iso) {
   if (!iso) return '—';
   const [y, m, d] = iso.split('-');

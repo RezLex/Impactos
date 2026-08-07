@@ -1,5 +1,5 @@
 import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
-import { maskCard, currency, fmtDate } from '../utils/formatters.js';
+import { maskCard, currency, fmtDate, textoLegibleSobre, rgbLegibleSobre, rgbInversoSobre } from '../utils/formatters.js';
 import { calcularSaldo } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 
@@ -104,12 +104,13 @@ async function renderView(container) {
         </div>` : instituciones.map(inst => {
           const cards = tarjetasPorInst[inst.id] || [];
           const color = inst.color || '#607d8b';
+          const headVars = `--on-color:${textoLegibleSobre(color)};--on-color-rgb:${rgbLegibleSobre(color)};--on-color-inv-rgb:${rgbInversoSobre(color)}`;
           return `
           <div class="data-card mb-3">
-            <div class="admin-inst-header" style="background:${color};border-radius:8px 8px 0 0;cursor:pointer"
+            <div class="admin-inst-header" style="background:${color};border-radius:8px 8px 0 0;cursor:pointer;${headVars}"
                  data-bs-toggle="collapse" data-bs-target="#inst-body-${inst.id}" aria-expanded="false">
               <i class="bi bi-chevron-right me-2" style="font-size:0.75rem;transition:transform 0.2s" id="inst-chev-${inst.id}"></i>
-              <span class="fw-semibold text-white">${inst.nombre}</span>
+              <span class="fw-semibold">${inst.nombre}</span>
               ${inst.numeroCliente ? `
                 <span class="admin-client-num">
                   <span class="fw-mono">${inst.numeroCliente}</span>

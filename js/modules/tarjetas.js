@@ -1,5 +1,5 @@
 import { getAll, recentWhere } from '../utils/db.js';
-import { maskCard, currency, fmtShortDate, currentYYYYMM, nextMonth } from '../utils/formatters.js';
+import { maskCard, currency, fmtShortDate, currentYYYYMM, nextMonth, textoLegibleSobre } from '../utils/formatters.js';
 import { toISODate, calcularMes } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
 
@@ -290,7 +290,7 @@ function renderWalletCard(c, inst, festivosMX, saldo = null) {
   }
 
   const front = `
-    <div class="wcard-front" style="background:linear-gradient(135deg,${color} 0%,${dark} 100%)">
+    <div class="wcard-front" style="background:linear-gradient(135deg,${color} 0%,${dark} 100%);--on-color:${textoLegibleSobre(color)}">
       <div class="wcard-top">
         <div>
           <div class="wcard-inst">${inst?.nombre || ''}</div>
