@@ -1386,6 +1386,23 @@ git commit -m "Descripción del cambio"
 git push
 ```
 
+### Versionado — deploys de prueba vs. oficiales
+
+Un deploy no siempre es la versión final de lo que trae — a veces se publica a `main` solo para
+probarlo en el teléfono real (login con Google, Firestore de verdad) antes de darlo por bueno.
+Para eso, `APP_VERSION` admite un sufijo `-Tn`:
+
+- **Deploy de prueba:** se agrega/incrementa el sufijo sobre la ÚLTIMA versión oficial, sin tocar
+  el número base. Ej. con `1.9.3` ya oficial, el primer deploy de prueba sobre esos cambios es
+  `1.9.3-T1`; si hace falta otra vuelta antes de confirmarlo, `1.9.3-T2`, `1.9.3-T3`, etc.
+- **Deploy oficial:** cuando se confirma que un `-Tn` quedó bien, se sube el número base
+  (`1.9.3-T1` → `1.9.4`) y se **quita el sufijo**. El contador `-Tn` vuelve a arrancar en `T1` la
+  próxima vez que haga falta probar algo antes de publicarlo oficialmente.
+
+Esto evita quemar números de versión por cada iteración de prueba — el número base solo avanza
+cuando algo ya se dio por bueno. El contador de caché de `sw.js` sí se sube en **todos** los
+deploys (de prueba u oficiales) para que el navegador siempre sirva los archivos nuevos.
+
 ---
 
 ## Mantenimiento de Datos — Firestore

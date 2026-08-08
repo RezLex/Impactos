@@ -12,6 +12,10 @@ Ver [DOCUMENTACION.md](DOCUMENTACION.md) para la arquitectura, el modelo de dato
   Al desplegar, subir también el contador de caché del Service Worker en `sw.js`.
 - La versión de la app vive en `APP_VERSION` (`js/app.js`) y se refleja en `DOCUMENTACION.md`.
   Subirla **una sola vez por despliegue**, no por cada iteración sin publicar.
+- Deploy de prueba (a confirmar en el teléfono real antes de darlo por bueno): sufijo `-Tn` sobre
+  la última versión oficial (`1.9.3` → `1.9.3-T1`, `-T2`...), sin subir el número base. Deploy
+  oficial: sube el número base y se quita el sufijo (`1.9.3-T1` → `1.9.4`). Ver "Versionado" en
+  DOCUMENTACION.md.
 
 ## Convenciones del código
 
