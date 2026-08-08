@@ -1105,7 +1105,7 @@ saldoFinal = saldoInicial + rendimiento + movimientos + ajustes
 ```javascript
 // Fechas
 isoDay(dateOStringISO) → 'YYYY-MM-DD'
-hoyISO()               → 'YYYY-MM-DD'
+hoyISO()               → 'YYYY-MM-DD'   // hora CDMX (UTC-6 fijo); el día rueda a las 7am, no a medianoche
 diasEntre(inicio, fin) → number     // días calendario completos, negativo si fin < inicio
 sumarDias(iso, n)      → 'YYYY-MM-DD'
 
@@ -1192,7 +1192,7 @@ resumenCuenta(cuenta, hoy?) → {
   aportacionesHistoricas, diasHistoricos,
   diario, mensual, anual,       // NETOS, sobre el saldo YA actualizado a hoy
   diarioBruto, isrDiario,
-  ayer,                         // neto del último día completo — lo abonado hoy
+  ayer,                         // neto del día consultado (+ ajuste ese día, si hay) — lo abonado esa madrugada
   desglose,                     // = desgloseTramos(saldoActual, cfg)
   tasaNominal,                  // % anual ponderado bruto
   gat,                          // GAT Nominal: antes de impuestos, `base` capitalizaciones
@@ -1210,6 +1210,8 @@ totalizarResumenes(resumenes) → { capital, saldoActual, rendimientoHastaHoy,
 `rendimientoEntre` devuelve `null` si el rango completo es previo al primer saldo registrado o si las fechas están invertidas. Si solo el inicio es previo, recorta al primer registro y marca `recortado: true`.
 
 `saldoEnFecha(eventos, fecha, cfg)` da el saldo al **inicio** de `fecha` (antes del rendimiento propio de ese día) — por eso el cierre del renglón `fecha` de `historialDiario` coincide con `saldoEnFecha(eventos, sumarDias(fecha, 1), cfg)`, no con `saldoEnFecha(eventos, fecha, cfg)`.
+
+> **Hallazgo (sin corregir):** `historialDiario(cuenta, hoy, maxDias)` recorta mal cuando `maxDias` deja como primer renglón mostrado uno que NO es el día de la primera ancla — el caso extremo es `maxDias=1`. El renglón `i===0` da por hecho que parte de un saldo ya "cerrado hasta el día anterior" y le aplica `pasoDiario` encima, pero `cierreSaldo` para ese caso sale de `recorrer(eventos, primero.fecha, cierreFecha, ...)` con `cierreFecha` ya en el propio día a mostrar — así que ese día se compone dos veces (una dentro del `recorrer`, otra en el `pasoDiario` explícito) y además no revisa `porFecha`, así que pierde cualquier movimiento/ajuste fechado ese mismo día. Verificado en Node comparando `historialDiario(cuenta, hoy)` completo contra `historialDiario(cuenta, hoy, 1)` con un ajuste fechado hoy: el saldo final difiere y el ajuste desaparece. Hoy nada en la app dispara esta ruta (el modal llama `historialDiario(cuenta, hoy)` sin límite, y el default de `maxDias` es 400), pero sí puede morder a una cuenta con más de 400 días de historial, o cualquier llamado nuevo que pase un `maxDias` chico.
 
 ---
 

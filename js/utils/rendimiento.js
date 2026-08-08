@@ -150,7 +150,22 @@ export function isoDay(v) {
   return String(v).slice(0, 10);
 }
 
-export const hoyISO = () => isoDay(new Date());
+const CDMX_OFFSET_MS   = -6 * 60 * 60000; // CDMX es UTC-6 fijo: México quitó el horario de verano en 2022
+const CORTE_RENDIMIENTOS = 7;             // hora CDMX en la que "hoy" empieza a contar
+
+/**
+ * "Hoy" para efectos de rendimientos: hora de Ciudad de México, pero el día
+ * natural rueda a las 7am en vez de a medianoche. Antes de esa hora ya se
+ * sabe qué generaron/abonaron las instituciones la madrugada anterior (ver
+ * `historialDiario`) — contarlo como "hoy" desde las 00:00 mostraría un día
+ * de más que todavía nadie abonó. No depende de la zona horaria del
+ * dispositivo: se calcula la hora CDMX explícitamente.
+ */
+export function hoyISO() {
+  const cdmx = new Date(Date.now() + CDMX_OFFSET_MS);
+  if (cdmx.getUTCHours() < CORTE_RENDIMIENTOS) cdmx.setUTCDate(cdmx.getUTCDate() - 1);
+  return `${cdmx.getUTCFullYear()}-${String(cdmx.getUTCMonth() + 1).padStart(2, '0')}-${String(cdmx.getUTCDate()).padStart(2, '0')}`;
+}
 
 function utcMs(iso) {
   const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
@@ -947,8 +962,13 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     mensual: proyMensual.rendimiento,
     anual:   proyAnual.rendimiento,
     diarioBruto, isrDiario: isrDia,
-    // Lo generado el último día completo — es lo que la institución abonó hoy
-    ayer: hastaHoy.ultimo ? hastaHoy.ultimo.neto : 0,
+    // Lo generado el día consultado (`hoy` ya trae el corte de las 7am CDMX
+    // aplicado) — es lo que la institución abonó esa madrugada. `hastaHoy.ultimo`
+    // es solo el paso de interés puro: un EVENTO_AJUSTE no lo toca (`recorrer`
+    // lo suma directo al saldo/rendimiento acumulado, no al paso del día), así
+    // que un ajuste registrado ese mismo día se suma aparte.
+    ayer: (hastaHoy.ultimo ? hastaHoy.ultimo.neto : 0)
+        + eventos.reduce((s, e) => e.tipo === EVENTO_AJUSTE && e.fecha === hoy ? s + e.monto : s, 0),
     desglose: desgloseTramos(saldoActual, cfg),
     // La tasa ponderada y el GAT son brutos — es como los publica la institución
     tasaNominal: tasaNominal(saldoActual, cfg),
