@@ -1,0 +1,9 @@
+{
+  "name": "impactos",
+  "private": true,
+  "type": "module",
+  "description": "Declara los .js como ESM para Node. No hay build step: la app se sirve estática y el navegador ya los carga así.",
+  "scripts": {
+    "test": "node test/rendimiento.test.mjs"
+  }
+}

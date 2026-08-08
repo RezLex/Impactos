@@ -1,0 +1,9 @@
+# Snapshot real de Firestore que descarga el botón "Sincronizar" del modo pruebas
+# (test/banner.js -> test/sync.js). Contiene datos financieros reales y es distinto
+# por dispositivo — nunca debe entrar al historial del repo. El resto de test/ (el
+# código del entorno de pruebas y la semilla ficticia test/fixtures/seed.json) sí
+# se commitea normalmente.
+test/fixtures/firestore.json
+
+# Bytecode cache de test/serve.py — se regenera solo, nada que versionar
+test/__pycache__/

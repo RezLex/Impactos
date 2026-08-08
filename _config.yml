@@ -1,0 +1,13 @@
+# Config de Jekyll para GitHub Pages. Este sitio no usa Jekyll para nada (es HTML/JS
+# estático, sin plantillas ni Markdown pensado como contenido) — este archivo existe
+# solo por su bloque `exclude`, para que Jekyll no copie al `_site` publicado lo que
+# sí queremos commiteado en `main` pero no servido en vivo.
+exclude:
+  # Entorno de pruebas: viaja por git para tenerlo en varios dispositivos, pero
+  # nunca debe llegar al sitio público.
+  - test/
+  # Notas internas de desarrollo, no contenido pensado para un visitante del sitio.
+  - CLAUDE.md
+  - DOCUMENTACION.md
+  - MODO-OSCURO.md
+  - MOVIL.md

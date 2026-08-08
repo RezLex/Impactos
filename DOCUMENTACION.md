@@ -22,8 +22,9 @@
 14. [Cálculo de Nómina](#cálculo-de-nómina)
 15. [Tema Claro / Oscuro](#tema-claro--oscuro)
 16. [Ejecución Local](#ejecución-local)
-17. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
-18. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
+17. [Entorno de Pruebas (Modo Pruebas)](#entorno-de-pruebas-modo-pruebas)
+18. [Despliegue en GitHub Pages](#despliegue-en-github-pages)
+19. [Instituciones Bancarias Soportadas](#instituciones-bancarias-soportadas)
 
 ---
 
@@ -44,7 +45,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.2`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -110,6 +111,10 @@ impactos/
         ├── rendimiento.js      # Motor de rendimientos compuestos con tramos progresivos
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
+
+> `test/` (entorno de pruebas + suite del motor de cálculo) y `package.json`, `_config.yml`,
+> `.gitignore` en la raíz se commitean con la app pero quedan fuera del sitio publicado en Pages —
+> ver [Entorno de Pruebas (Modo Pruebas)](#entorno-de-pruebas-modo-pruebas).
 
 ---
 
@@ -417,8 +422,33 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
 | `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `historialRendimiento` | array? | Capturas anteriores de `rendimientoObtenido`: `{ fecha, monto }`, máximo 60, ascendente |
+| `movimientos` | array? | Aportes, retiros y traspasos — no son rendimiento (ver estructura abajo) |
+| `ajustes` | array? | Correcciones al rendimiento que el modelo no predijo (ver estructura abajo) |
 | ~~`referencia`~~ | string? | **Obsoleto** — ya no se captura ni se muestra. Puede seguir presente en documentos antiguos |
 | ~~`notas`~~ | string? | **Obsoleto** — ídem |
+
+**Estructura de cada elemento en `movimientos`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `fecha` | string | Fecha ISO (`YYYY-MM-DD`) en que el dinero sale o entra |
+| `tipo` | string | `aporte` o `retiro` |
+| `monto` | number | Siempre positivo — el signo lo da `tipo`, no el número |
+| `nota` | string? | Texto libre |
+| `transferenciaId` | string? | Presente solo si es una pata de traspaso entre cuentas propias — une las dos patas espejo |
+| `contraparteId` | string? | ID de la otra cuenta del traspaso (solo junto con `transferenciaId`) |
+
+> Un traspaso entre dos cuentas del módulo se guarda como **dos** movimientos espejo (un retiro en el origen, un aporte en el destino) unidos por el mismo `transferenciaId`, cada uno en el documento de su propia cuenta — así cada cuenta se sigue calculando sola, sin depender de cargar la otra. Se capturan una sola vez desde el modal de **Movimientos**; editarlos o eliminarlos actualiza ambas patas a la vez (`js/utils/db.js`:`batchUpdate`). Si el dinero tarda en llegar (traspaso entre instituciones distintas), la pata de destino puede llevar una fecha posterior a la de origen — esos días en tránsito no generan interés en ninguna de las dos cuentas.
+
+**Estructura de cada elemento en `ajustes`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `fecha` | string | Fecha ISO (`YYYY-MM-DD`) en que se aplica la corrección |
+| `monto` | number | Con signo — positivo suma al rendimiento, negativo resta |
+| `motivo` | string | Texto libre; criterio del usuario, nunca se recalcula |
+| `tipo` | string? | `saldo` (default si falta) — corrige el saldo/rendimiento acumulado hasta esa fecha, capturado desde el modal de **Ajuste** · `diario` — corrige el rendimiento de un día puntual, capturado desde una fila del **Historial diario**. Es una etiqueta de presentación: el motor de cálculo no la lee, ambos tipos afectan el saldo y el rendimiento acumulado exactamente igual |
+| `derivado` | boolean | `true` si el importe se recalcula solo cuando cambia algo anterior (absorbe el residuo completo de una conciliación); `false` si el usuario lo dimensionó a mano y debe respetarse tal cual |
 
 **Estructura de cada elemento en `tramos`:**
 
@@ -592,14 +622,14 @@ Las tarjetas se centran cuando la última fila no se llena (`justify-content-cen
 
 | Bloque | Contenido |
 |---|---|
-| Encabezado | Color de la institución, institución arriba y alias abajo (si no hay alias, la institución ocupa la línea principal) y las 4 acciones |
+| Encabezado | Color de la institución, institución arriba y alias abajo (si no hay alias, la institución ocupa la línea principal) y las acciones |
 | Saldo | **Saldo actual estimado**, el importe protagonista |
 | Tasa | **Rendimiento anual** con la tasa del saldo actual, y una **ⓘ** que abre el desglose por tramos |
 | Ganado | Línea descriptiva `Hasta hoy $X · Último $Y` con un botón 🕐 que abre el historial diario |
 | Rendimientos | **Diario · Mensual (30 d) · Anual (365 d)**, netos de ISR, en una fila con divisores |
 | Pie | Botón **Ver detalle** |
 
-- Acciones del encabezado: **Actualizar monto** (🔄), **Actualizar rendimiento** (📈), **Editar** (✏️), **Eliminar** (🗑️)
+- Acciones del encabezado: **Ajuste** (🔄 `bi-arrow-repeat`) — captura de saldo/rendimiento reales · **Movimientos** (⇄ `bi-arrow-left-right`) — aportes, retiros y traspasos · **⋮ Más acciones** — menú flotante con *Editar cuenta* y *Eliminar cuenta*. Editar/eliminar se usan poco y el borrado no debe quedar pegado a las acciones de captura diaria, así que viven aparte en el menú
 - La **ⓘ** de la tasa aparece **solo si más de un tramo tiene dinero**. Con un único tramo aportando, la tasa no es un promedio y no hay nada que desglosar, así que el botón se omite
 
 **Modal Detalle** — se abre desde la tarjeta, en tres secciones:
@@ -609,7 +639,21 @@ Las tarjetas se centran cuando la última fila no se llena (`justify-content-cen
 
 Al pie, botones para saltar al **Historial diario** o a **Editar**. Como los tres comparten `#modal-container`, el salto espera al evento `hidden.bs.modal` antes de abrir el siguiente.
 
-**Modal Historial diario** — un renglón por día desde la última captura del monto, del más reciente al más antiguo, con el más reciente marcado como *último*. Columnas: día, saldo inicial, bruto e ISR (solo si hay retención) y rendimiento. Encabezado y totales fijos al hacer scroll.
+**Modal Historial diario** — un renglón por día desde la primera ancla de la cuenta hasta **hoy inclusive** (no solo desde la última captura: capturar un ajuste de tipo *saldo* mueve la ancla más reciente hacia adelante, y si la tabla solo mirara desde ahí, capturar un dato borraría de la vista todo el historial anterior — ver [Modelo de eventos](#modelo-de-eventos-anclas-movimientos-y-ajustes)), del más reciente al más antiguo, con el más reciente marcado como *hoy*. Columnas: día, **Saldo** (el saldo al *cierre* de ese día, ya con su rendimiento aplicado — no el saldo con el que arrancó), bruto e ISR (solo si hay retención) y rendimiento. El rendimiento de un día con un ajuste tipo `diario` se muestra en **naranja** y ya incluye ese ajuste (neto + ajuste); un día con un ajuste tipo `saldo` capturado ahí lleva solo un pequeño indicador junto a la fecha, sin cambiar el color del rendimiento — ese tipo de ajuste corrige el acumulado, no el rendimiento puntual de ese día. Encabezado y totales fijos al hacer scroll.
+- Cada fila tiene un botón **corregir** (lápiz) que abre, en un modal aparte, la captura de un ajuste tipo `diario` para ese día: precarga el rendimiento ya calculado (redondeado a centavos, como se ve en la tabla), con botones **−¢ / +¢** para afinarlo, y guarda la diferencia contra lo calculado usando el mismo mecanismo de conciliación que el modal de Ajuste. Al guardar, vuelve a abrir el historial ya actualizado
+- Bloque colegible **Cómo se calcula** — la misma fórmula y configuración que el modal Detalle, para no tener que saltar de modal para entender una cifra de la tabla
+- Botón **Generar reporte** — exporta la tabla a Excel (`XLSX`) con una columna adicional "(exacto)" sin redondear por cada importe (saldo, rendimiento, bruto, ISR, saldo inicial), más movimiento, ajuste de rendimiento y su motivo por día, y una segunda hoja con la fórmula y la configuración con la que se calculó todo — para que el archivo se explique solo sin volver a la app
+
+**Modal Movimientos** — aportes, retiros y traspasos entre cuentas propias del módulo; el dinero que entra o sale **no es rendimiento**, así que se separa para no inflarlo. Lista de movimientos (más reciente primero) con opción de captura retroactiva — se aplica en su día y corrige el rendimiento del periodo — y de eliminar cada uno.
+- Un movimiento sin contraparte es un aporte o retiro suelto
+- Elegir una contraparte lo convierte en **traspaso**: se registran las dos patas (retiro en origen, aporte en destino) atómicamente vía `batchUpdate`, unidas por `transferenciaId`. Con una **fecha de llegada** distinta a la de salida, el dinero pasa esos días "en tránsito" sin generar interés en ninguna de las dos cuentas — para transferencias entre instituciones distintas que tardan en acreditarse
+- Eliminar cualquiera de las dos patas de un traspaso elimina la otra también, con confirmación
+
+**Modal Ajuste** — reemplaza a los antiguos modales separados *Actualizar monto* y *Actualizar rendimiento*: comparten fecha y casi todo el flujo, así que capturar los dos en un solo paso evita desincronizarlos.
+- **Saldo**: muestra el saldo estimado a hoy con botón *Usar este valor*; al capturar un monto distinto, un panel de **conciliación** desglosa la diferencia (`conciliar()`) y pide clasificarla como *deriva del cálculo* (se guarda como ajuste tipo `saldo`, marcado `derivado: true` si absorbe el residuo completo) o *aportación/retiro que no se registró* (redirige a Movimientos). Guarda la captura anterior en `historial`
+- **Rendimiento obtenido**: mismo patrón, para `rendimientoObtenido` / `historialRendimiento`
+- **Ajustes registrados** — lista filtrable (**Saldo · Diario · Todos**, abre siempre en *Saldo*) de todos los ajustes de la cuenta, con edición inline y borrado. Editar o eliminar un ajuste recalcula en cascada los demás ajustes derivados y pide confirmación si alguno cambia de importe (`ajustesTrasEditar`)
+- Si la nueva fecha de captura es anterior a datos ya existentes en `historial`, se ofrece descartarlos con confirmación explícita (`historialConsistente` / `capturasDescartadas`) — es una corrección deliberada del punto de partida, nunca algo silencioso
 
 **Bloque de tramos** — sustituye al resaltado del "tramo activo", que sugería que solo esa tasa aplicaba cuando en modo progresivo todos los tramos con dinero aportan a la vez:
 - Barra apilada con el reparto del saldo, coloreada por tramo, con leyenda de porcentajes
@@ -638,10 +682,6 @@ Ningún campo lleva texto de ayuda inline: cada uno tiene un botón **ⓘ** que 
 Detalles de implementación que conviene conocer antes de tocarlos:
 - La ayuda **no usa `openModal`**: monta su propio modal en `<body>` para poder apilarse sobre el formulario de la cuenta sin destruirlo. Al cerrarse restaura la clase `modal-open` del body si todavía hay un modal abierto detrás
 - Un solo listener delegado atiende todos los botones, presentes y futuros. Ignora los que no traen `data-ayuda`, porque el botón del desglose de tramos reusa el estilo sin ser ayuda de un campo
-
-**Modal Actualizar monto:** muestra el saldo estimado a hoy con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado (aportación, retiro o ajuste de tasa). Guarda la captura anterior en el `historial`.
-
-**Modal Actualizar rendimiento:** funciona igual que el de monto, pero para `rendimientoObtenido` — muestra el rendimiento estimado a hoy (`"Hasta hoy"` actual) con botón *Usar este valor*, precarga ese valor y reporta en vivo la diferencia contra lo capturado. Guarda la captura anterior en el `historialRendimiento`.
 
 > **Qué capturar (monto):** el saldo que muestra la app del banco en ese momento, tal cual. Ese saldo **ya incluye** el interés abonado esa madrugada, así que al capturarlo con la fecha de hoy la tarjeta mostrará `Hasta hoy $0.00` — **siempre y cuando no haya un `rendimientoObtenido` capturado por separado** (ver abajo). Al día siguiente, `Hasta hoy` ya reflejará ese abono.
 
@@ -1032,15 +1072,33 @@ Se enumeraron las 32 combinaciones de *interpretación × base × modo de ISR ×
 
 > **Pendiente:** el abono diario llega bruto, pero la institución sí retiene ISR. Lo más probable es que lo cobre por separado (mensual) en lugar de por abono. Mientras eso no se confirme contra un estado de cuenta, la cuenta va con `isrAnual: 0` — el diario coincide con lo que se ve, a costa de que la proyección anual quede optimista por el monto de la retención.
 
-### Línea de tiempo y aportaciones
+### Modelo de eventos (anclas, movimientos y ajustes)
 
-`montoInvertido` + `fechaActualizacion` son el saldo real observado más reciente; las capturas anteriores viven en `historial[]`. Entre dos puntos observados el saldo se proyecta; al llegar a un punto observado el saldo se **reemplaza** por el valor real y la diferencia se reporta como aportación (o retiro), nunca como rendimiento. Se cumple siempre:
+El motor no calcula solo a partir de dos puntos observados: cada cuenta es una lista de **eventos** ordenados que `eventosCuenta(cuenta)` arma a partir de tres fuentes distintas y `recorrer()` (interno) aplica día a día:
+
+| Evento | De dónde sale | Qué hace |
+|---|---|---|
+| **Ancla** | `montoInvertido`/`fechaActualizacion` + `historial[]` (vía `timelineCuenta`) | Un saldo real observado. Lo observado manda: reemplaza el saldo proyectado y absorbe en silencio cualquier residuo, salvo que ese residuo ya tenga un ajuste explícito ese día |
+| **Movimiento** | `movimientos[]` | Un aporte o retiro. Su propio día de llegada rinde sobre el saldo **viejo** (el que había antes de sumarlo) — el saldo nuevo recién empieza a componer desde el día siguiente, igual que en la realidad: el dinero que entra a mediodía no generó interés esa madrugada |
+| **Ajuste** | `ajustes[]` | Una corrección al rendimiento que el modelo no supo predecir. A diferencia del movimiento, sí compone ese mismo día sobre el saldo ya con la corrección incluida |
+
+Dentro de una misma fecha el orden de aplicación es siempre **movimiento → ajuste → ancla** (`ORDEN_EVENTO`): la ancla cierra el día porque es el dato observado, y debe ganarle a cualquier proyección previa.
+
+Se cumple siempre:
 
 ```
-saldoFinal = saldoInicial + rendimiento + aportaciones
+saldoFinal = saldoInicial + rendimiento + movimientos + ajustes
 ```
 
-`rendimientoObtenido` + `fechaActualizacionRendimiento` siguen el mismo patrón pero para el rendimiento: es la última cifra real capturada, y `rendimientoHastaHoy` se calcula como `rendimientoObtenido + rendimientoEntre(timeline, fechaActualizacionRendimiento, hoy, cfg).rendimiento`. Sin captura, `fechaActualizacionRendimiento` cae de vuelta en `fechaActualizacion`, y el resultado es matemáticamente idéntico a `componer(montoInvertido, dias, cfg).rendimiento` — el comportamiento previo a este campo.
+**Conciliación.** Capturar un ajuste no le pide al usuario que calcule nada: `conciliar(cuenta, saldoReal, fecha, cfg)` compara el saldo real contra lo que el motor proyectaba desde la ancla anterior y devuelve el `residuo`. El modal de **Ajuste** clasifica ese residuo como *deriva del cálculo* (ajuste tipo `saldo`, ver [`inversiones/{id}`](#inversionesid)) o *aportación/retiro no registrado* (redirige a Movimientos), y calcula además una `derivaAnual` — el residuo anualizado sobre el capital — que sirve para detectar una configuración equivocada (base, interpretación de la tasa, redondeo) cuando se repite captura tras captura con el mismo signo.
+
+**Recálculo en cascada.** Un ajuste marcado `derivado: true` absorbe *todo* el residuo de la ancla en la que vive, así que si algo anterior cambia (se edita el monto o la fecha de una ancla previa, o se registra retroactivamente un movimiento) ese residuo ya no es el mismo. `recalcularAjustes(cuenta, cfg)` recalcula el importe de cada ajuste derivado dejando intacto el motivo y sin tocar los que el usuario dimensionó a mano (`derivado: false`, o sueltos sin ancla ese día). La UI (`ajustesTrasEditar`) nunca aplica esto en silencio: si algún importe cambia, pide confirmación mostrando el antes/después de cada uno.
+
+**Corrección de la raíz.** Editar `fechaActualizacion` (o `fechaActualizacionRendimiento`) a una fecha más vieja que capturas que ya había en `historial` deja esas capturas "en el futuro" respecto a la nueva raíz — dejan de poder representarse como su historial. `capturasDescartadas`/`historialConsistente` detectan y limpian ese caso; la UI (`historialTrasCorregirRaiz`) siempre pide confirmación explícita antes de descartar nada — es la forma de arrancar una cuenta vieja desde otro punto de partida sin reconstruir todo el camino intermedio.
+
+**Transferencias.** Un traspaso entre dos cuentas del módulo se guarda como dos movimientos espejo unidos por `transferenciaId` (ver [`inversiones/{id}`](#inversionesid)) — cada cuenta se sigue calculando sola. Para el motor no son nada especial: cada pata es un movimiento común, así que ninguna de las dos cuentas la cuenta como rendimiento, y el dinero en tránsito (si `fechaDestino` es posterior a la salida) no genera interés en ninguna de las dos mientras viaja.
+
+`rendimientoObtenido` + `fechaActualizacionRendimiento` siguen el mismo patrón que el saldo pero para el rendimiento: es la última cifra real capturada, y `rendimientoHastaHoy` se calcula como `rendimientoObtenido + rendimientoEntre(eventos, fechaActualizacionRendimiento, hoy, cfg).rendimiento`. Sin captura, `fechaActualizacionRendimiento` cae de vuelta en `fechaActualizacion`, y el resultado es matemáticamente idéntico a `componer(montoInvertido, dias, cfg).rendimiento` — el comportamiento previo a este campo.
 
 ### API pública de `rendimiento.js`
 
@@ -1060,6 +1118,11 @@ tramoActivo(tramosNorm, saldo)    → index | -1
 MODO_PROGRESIVO 'progresivo' · MODO_UNICO 'unico'
 ISR_CAPITAL     'capital'    · ISR_INTERES 'interes'
 TASA_NOMINAL    'nominal'    · TASA_EFECTIVA 'efectiva'
+REDONDEO_CONTINUO 'continuo' · REDONDEO_CENTAVOS 'centavos'
+
+// Tipo de evento y dirección de un movimiento — ver Modelo de eventos arriba
+EVENTO_ANCLA 'ancla' · EVENTO_MOVIMIENTO 'movimiento' · EVENTO_AJUSTE 'ajuste'
+MOV_APORTE   'aporte' · MOV_RETIRO 'retiro'
 
 // Valores por omisión
 BASE_ANUAL_DEFAULT  365          // base del interés y del ISR
@@ -1083,16 +1146,39 @@ tasaNominal(saldo, cfg)            → number   // % anual ponderado, sobre las 
 // Reparto del saldo entre los tramos — la suma de `aporte` es interesDiario()
 desgloseTramos(saldo, cfg) → [{ desde, hasta, tasa, monto, aporte, pct, marginal }]
 
-// Línea de tiempo de una cuenta
-timelineCuenta(cuenta)                        → [{ fecha, monto }]  // ascendente, sin fechas repetidas
-saldoEnFecha(timeline, fecha, cfg)            → number | null
-rendimientoEntre(timeline, fIni, fFin, cfg)
+// Línea de tiempo de una cuenta — solo anclas, compatible con datos previos al
+// modelo de eventos
+timelineCuenta(cuenta)  → [{ fecha, monto }]  // ascendente, sin fechas repetidas
+
+// Corrección de la raíz — ver Modelo de eventos arriba
+capturasDescartadas(historial, nuevaFecha)  → historial[]   // lo que quedaría en el futuro
+historialConsistente(historial, nuevaFecha) → historial[]   // solo lo estrictamente anterior
+
+// Modelo de eventos — ver descripción arriba
+eventosCuenta(cuenta) → [{ fecha, tipo, monto, nota?, motivo? }]   // ordenado, retiros con signo
+saldoEnFecha(eventos, fecha, cfg)             → number | null     // saldo al INICIO de `fecha`
+rendimientoEntre(eventos, fIni, fFin, cfg)
   → { rendimiento, bruto, isr, saldoInicial, saldoFinal, aportaciones, desde, hasta, dias, recortado } | null
 
-// Rendimiento día por día desde la última captura del monto. Cada entrada es el
-// día que GENERÓ el interés; se abona a la madrugada siguiente.
+// Transferencias entre cuentas propias — ver Modelo de eventos arriba
+validarTransferencia({ origenId, destinoId, monto, fecha, fechaDestino }) → string | null   // motivo de error, o null si es válida
+movimientosTransferencia(spec)   → { transferenciaId, origen, destino }   // throws si no es válida — validar antes
+esTransferencia(movimiento)      → boolean   // si trae transferenciaId
+sinTransferencia(movimientos, transferenciaId) → movimientos[]  // sin esa pata
+conTransferencia(movimientos, pata)            → movimientos[]  // inserta, reemplazando si ya existía
+
+// Conciliación y recálculo en cascada — ver Modelo de eventos arriba
+conciliar(cuenta, saldoReal, fecha?, cfg?)
+  → { desde, hasta, dias, saldoAnterior, rendimientoProyectado, movimientos, ajustes,
+      saldoEsperado, saldoReal, residuo, derivaAnual, cuadra } | null
+recalcularAjustes(cuenta, cfg?) → [{ fecha, monto, motivo, derivado, cambio }]   // cambio = nuevo − anterior
+
+// Rendimiento día por día desde la PRIMERA ancla de la cuenta hasta hoy inclusive
+// (no solo desde la más reciente — ver el modal Historial diario). Cada entrada
+// es el día que GENERÓ el interés; se abona a la madrugada siguiente. El último
+// renglón es el de hoy mismo, aunque sea una proyección todavía no "cobrada".
 historialDiario(cuenta, hoy?, maxDias = 400)
-  → [{ fecha, saldoInicial, bruto, isr, neto, saldoFinal }]   // ascendente
+  → [{ fecha, saldoInicial, bruto, isr, neto, saldoFinal, movimiento, ajuste }]   // ascendente
 
 // Resumen completo de una cuenta a una fecha de corte
 resumenCuenta(cuenta, hoy?) → {
@@ -1119,9 +1205,11 @@ totalizarResumenes(resumenes) → { capital, saldoActual, rendimientoHastaHoy,
                                   isrHastaHoy, gat, cuentas }
 ```
 
-**Orden del cálculo** (el punto clave del módulo): primero se actualiza el monto invertido desde su última fecha de actualización hasta hoy, y **sobre ese saldo ya actualizado** se calculan los rendimientos diario, mensual y anual.
+**Orden del cálculo** (el punto clave del módulo): primero se actualiza el monto invertido desde su última fecha de actualización hasta hoy —recorriendo movimientos y ajustes posteriores como cualquier otro tramo del calendario— y **sobre ese saldo ya actualizado** se calculan los rendimientos diario, mensual y anual.
 
 `rendimientoEntre` devuelve `null` si el rango completo es previo al primer saldo registrado o si las fechas están invertidas. Si solo el inicio es previo, recorta al primer registro y marca `recortado: true`.
+
+`saldoEnFecha(eventos, fecha, cfg)` da el saldo al **inicio** de `fecha` (antes del rendimiento propio de ese día) — por eso el cierre del renglón `fecha` de `historialDiario` coincide con `saldoEnFecha(eventos, sumarDias(fecha, 1), cfg)`, no con `saldoEnFecha(eventos, fecha, cfg)`.
 
 ---
 
@@ -1188,6 +1276,81 @@ cd C:\Users\gabito\impactos
 python -m http.server 8080
 # Abrir: http://localhost:8080
 ```
+
+---
+
+## Entorno de Pruebas (Modo Pruebas)
+
+Un modo que corre **el front real** (`index.html`, todos los módulos, tal como están en el
+working tree) contra un espejo de Firestore guardado en archivo, para poder probar cambios sin
+riesgo de tocar datos financieros reales — sin levantar un backend propio ni depender de una
+segunda cuenta/proyecto de Firebase.
+
+### Cómo se activa
+
+`?modoPruebas=1` en la URL (una vez; queda memorizado en `localStorage['impactos_modo_pruebas']`)
+· `?modoPruebas=0` lo apaga. Un `<script>` inline en `<head>` de `index.html`, colocado **antes**
+de cualquier carga de módulos, inyecta con `document.write` un import map que redirige
+`./js/utils/db.js` → `./test/file-store.js` — ningún módulo de la app se entera del cambio, y
+`db.js` real queda sin tocar. La pantalla de login real (Google + verificación contra
+`_config/owner`) sigue intacta: el modo pruebas solo cambia la capa de datos.
+
+Con el modo activo aparece una píldora fija en la esquina superior derecha (`test/banner.js`),
+visible desde antes de iniciar sesión, con un botón **Sincronizar** y un enlace **Salir**.
+
+### Servir la app en modo pruebas
+
+`test/serve.py` es un servidor de desarrollo (sin dependencias externas) pensado para este modo:
+
+```bash
+python test/serve.py [puerto]   # default 8080
+# Abrir: http://localhost:8080/index.html?modoPruebas=1
+```
+
+Se diferencia de `python -m http.server` en dos cosas: manda `Cache-Control: no-store` en cada
+respuesta (para no quedarse con un `.js` viejo mientras se itera) y expone `POST /api/fixture`,
+el endpoint donde escribe `test/file-store.js`.
+
+### Los archivos de datos
+
+| Archivo | Git | Contenido |
+|---|---|---|
+| `test/fixtures/seed.json` | commiteado | Semilla ficticia inicial, coherente con el motor real (`instituciones` + `inversiones` calculadas con `rendimiento.js`, arrays vacíos para el resto) |
+| `test/fixtures/firestore.json` | **ignorado** (`.gitignore`) | Snapshot real que descarga **Sincronizar**; datos financieros reales, uno por dispositivo, nunca debe llegar al historial del repo |
+
+`test/file-store.js` implementa la misma superficie que `js/utils/db.js` (`getAll, getById,
+create, update, remove, upsert, batchCreate, batchUpdate, recentWhere, clearCache, orderBy,
+where`), incluyendo el filtrado real de `recentWhere` — así el dashboard y los demás módulos se
+comportan igual que contra Firestore real, no distinto por estar en pruebas. Al cargar intenta
+`firestore.json` primero y cae a `seed.json` si no existe todavía en ese dispositivo (primer uso).
+**Toda** mutación en modo pruebas —no solo lo que trae Sincronizar— se persiste de inmediato con
+un `POST /api/fixture` (encolado para evitar carreras de escritura), así que el archivo sigue
+siendo verdad incluso después de cerrar la pestaña, entrar en incógnito o cambiar de dispositivo
+en la misma red.
+
+**Sincronizar** (`test/banner.js` → `test/sync.js`, carga perezosa) hace una lectura real y
+autenticada de Firestore —iterando `test/collections.js`, la lista única de colecciones
+compartida con `file-store.js`— y sobrescribe `test/fixtures/firestore.json` por completo. Importa
+`js/firebase.js` directo, sin pasar por el import map, para no terminar leyéndose a sí mismo.
+
+> Si se agrega una colección nueva a la app, hay que sumarla también a `test/collections.js` — el
+> SDK de Firestore para navegador no puede listar colecciones (eso solo existe del lado servidor),
+> así que esta lista es necesariamente manual.
+
+### Que viaje por git pero no se publique
+
+`test/` sí se commitea a `main` (para tener el entorno de pruebas disponible en varios
+dispositivos vía `git pull`), pero **no debe** aparecer en el sitio publicado de GitHub Pages.
+`_config.yml` en la raíz declara un `exclude:` de Jekyll con `test/` (y de paso los `.md` internos
+de desarrollo, que sin este archivo también se publicaban como páginas por el comportamiento
+default de Jekyll). Es la separación correcta porque el objetivo es *sí* commitear el código de
+pruebas y *no* commitear datos reales — cosa distinta, resuelta aparte, en `.gitignore` (ver
+tabla arriba). `test/` tampoco se precachea: el `SHELL` de `sw.js` es una lista explícita de
+archivos que no lo incluye, y los archivos locales usan network-first.
+
+> Excluir de Pages no es lo mismo que ocultar del repositorio: si el repo de GitHub es público,
+> cualquiera que lo navegue ahí (no el sitio publicado) puede seguir viendo `test/` completo. Por
+> eso los datos reales viven aparte, en el archivo ignorado por git.
 
 ---
 
@@ -1298,6 +1461,7 @@ La app incluye colores predefinidos para las siguientes instituciones. Se puede 
 
 ---
 
-*Última actualización: 2026-08-07 (v1.9.2) — Pre-registro de compra vía parámetros de URL (`#/compras?desc=...&total=...`): el router pasa el query string a los módulos, y en Compras un enlace abre el modal de Registro Rápido (De Contado o A Plazos según traiga `meses`) ya precargado con descripción, total, fecha, hora, tarjeta por terminación y la mensualidad real cuando aplica; detección de duplicados por `msgId` en ambas colecciones y botón para cambiar de tipo sin recapturar los datos. El texto de la tarjeta seleccionada en todos los dropdowns del proyecto ahora siempre incluye la institución, no solo en el grupo Favoritas.
+*Última actualización: 2026-08-08 (v1.9.3) — Rendimientos: el motor de cálculo (`js/utils/rendimiento.js`) pasa de proyectar solo entre puntos observados a un modelo de eventos (anclas, movimientos, ajustes) que permite registrar aportes, retiros y traspasos entre cuentas propias (modal **Movimientos**), conciliar el saldo real contra lo proyectado clasificando la diferencia, y recalcular en cascada los ajustes derivados cuando cambia algo anterior — siempre con confirmación explícita antes de correr una cifra ya registrada. El modal de Ajuste unifica la antigua captura separada de monto y de rendimiento en un solo paso, con la lista de ajustes filtrable por tipo (saldo / diario). El historial diario ahora recorre la cuenta completa desde su primera ancla hasta **hoy inclusive** (antes se ocultaba todo lo previo a la última captura), muestra el saldo de cierre de cada día, resalta en naranja los días con una corrección puntual, marca con una insignia los días con una corrección de saldo, permite corregir el rendimiento de un día concreto desde su propia fila, y exporta un reporte a Excel con columnas exactas y la fórmula usada. Se agrega un entorno de pruebas (`test/`, activable con `?modoPruebas=1`) que corre el front real contra un espejo de Firestore en archivo sin arriesgar datos reales — viaja por git para estar disponible en varios dispositivos, pero queda excluido del sitio publicado en Pages. Corrige además una condición de carrera en el Service Worker (`Response body is already used`) al refrescar assets en segundo plano.
+Incluye lo enviado en v1.9.2 — Pre-registro de compra vía parámetros de URL (`#/compras?desc=...&total=...`): el router pasa el query string a los módulos, y en Compras un enlace abre el modal de Registro Rápido (De Contado o A Plazos según traiga `meses`) ya precargado con descripción, total, fecha, hora, tarjeta por terminación y la mensualidad real cuando aplica; detección de duplicados por `msgId` en ambas colecciones y botón para cambiar de tipo sin recapturar los datos. El texto de la tarjeta seleccionada en todos los dropdowns del proyecto ahora siempre incluye la institución, no solo en el grupo Favoritas.
 Incluye lo enviado en v1.9.1 — texto legible calculado sobre el color de cada institución (tarjetas, wallet, cabeceras admin) en vez de blanco fijo, y redondeo diario configurable en cuentas de rendimiento.
 Incluye lo enviado en v1.9.0 — Tema claro/oscuro con tres estados y color de marca preservado; pasada de densidad en móvil (−10 % de altura, Rendimientos −36 %) con tokens tipográficos; calculadora entre 2 fechas movida a modal; fila de subpago de A Plazos ahora muestra su fecha; sección de gastos pendientes normalizada para móvil; y lo pendiente de v1.8.2 — Rendimientos: interpretación de la tasa configurable por cuenta (nominal o efectiva), desglose del saldo por tramos con barra de reparto, historial día por día, Detalle en modal, ayuda contextual por campo y tarjetas reestructuradas; motor verificado contra abonos reales de dos instituciones con convenciones opuestas*

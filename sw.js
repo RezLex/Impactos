@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v13';
+const CACHE = 'impactos-v16';
 
 const SHELL = [
   './',
@@ -75,7 +75,12 @@ self.addEventListener('fetch', e => {
     e.respondWith(
       caches.match(e.request).then(cached => {
         const fresh = fetch(e.request).then(res => {
-          if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+          // Clonar YA, antes de que nadie lea el body — `caches.open()` es async,
+          // y para cuando resolviera, el body de `res` ya podía estar consumido
+          // (quien recibe la respuesta de `respondWith` la lee de inmediato),
+          // lanzando "Response body is already used" en el clone tardío.
+          const copia = res.clone();
+          if (res.ok) caches.open(CACHE).then(c => c.put(e.request, copia));
           return res;
         });
         return cached || fresh;
@@ -87,7 +92,8 @@ self.addEventListener('fetch', e => {
   // Archivos locales → network first, caché solo si hay error de red (offline)
   e.respondWith(
     fetch(e.request).then(res => {
-      if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+      const copia = res.clone(); // mismo motivo que arriba: clonar antes de devolver
+      if (res.ok) caches.open(CACHE).then(c => c.put(e.request, copia));
       return res;
     }).catch(() => caches.match(e.request))
   );

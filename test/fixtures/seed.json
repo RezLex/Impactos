@@ -1,0 +1,187 @@
+{
+  "instituciones": [
+    {
+      "id": "inst-revolut",
+      "nombre": "Revolut",
+      "color": "#0b1013"
+    },
+    {
+      "id": "inst-mp",
+      "nombre": "Mercado Pago",
+      "color": "#00a1ea"
+    },
+    {
+      "id": "inst-nu",
+      "nombre": "Nu",
+      "color": "#820ad1"
+    }
+  ],
+  "tarjetas": [],
+  "contado": [],
+  "msi": [],
+  "gastos": [],
+  "pagosDiferidos": [],
+  "gastosFijos": [],
+  "festivosMX": [],
+  "config": [],
+  "impacto": [],
+  "eventos": [],
+  "inversiones": [
+    {
+      "id": "cta-cajita",
+      "institucionId": "inst-revolut",
+      "nombre": "Cajita",
+      "tramos": [
+        {
+          "hasta": 25000,
+          "tasa": 15
+        },
+        {
+          "hasta": 100000,
+          "tasa": 7
+        },
+        {
+          "hasta": null,
+          "tasa": 5
+        }
+      ],
+      "modoTramos": "progresivo",
+      "modoTasa": "nominal",
+      "baseAnual": 360,
+      "isrAnual": 0.9,
+      "isrSobre": "capital",
+      "baseIsr": 365,
+      "redondeoTasa": "truncar",
+      "redondeoDiario": "centavos",
+      "movimientos": [
+        {
+          "fecha": "2026-06-14",
+          "tipo": "aporte",
+          "monto": 15000,
+          "nota": "Quincena"
+        },
+        {
+          "fecha": "2026-07-08",
+          "tipo": "retiro",
+          "monto": 2000,
+          "nota": "Imprevisto"
+        }
+      ],
+      "ajustes": [
+        {
+          "fecha": "2026-06-29",
+          "monto": -2.46,
+          "motivo": "Deriva del cálculo",
+          "derivado": true
+        },
+        {
+          "fecha": "2026-07-27",
+          "monto": -1.83,
+          "motivo": "Deriva del cálculo",
+          "derivado": true
+        }
+      ],
+      "historial": [
+        {
+          "fecha": "2026-05-30",
+          "monto": 30000
+        },
+        {
+          "fecha": "2026-06-29",
+          "monto": 45356.06
+        }
+      ],
+      "montoInvertido": 43719.79,
+      "fechaActualizacion": "2026-07-27",
+      "rendimientoObtenido": 719.79,
+      "fechaActualizacionRendimiento": "2026-07-27"
+    },
+    {
+      "id": "cta-mp",
+      "institucionId": "inst-mp",
+      "nombre": "Ahorro",
+      "tramos": [
+        {
+          "hasta": null,
+          "tasa": 12
+        }
+      ],
+      "modoTramos": "unico",
+      "modoTasa": "efectiva",
+      "baseAnual": 365,
+      "isrAnual": 0,
+      "isrSobre": "capital",
+      "baseIsr": 365,
+      "redondeoTasa": "redondear",
+      "redondeoDiario": "continuo",
+      "movimientos": [
+        {
+          "fecha": "2026-07-21",
+          "tipo": "retiro",
+          "monto": 5000,
+          "transferenciaId": "demo-tr-1",
+          "contraparteId": "cta-nu",
+          "nota": "Paso a Nu por mejor tasa"
+        }
+      ],
+      "ajustes": [],
+      "historial": [
+        {
+          "fecha": "2026-06-24",
+          "monto": 27500
+        }
+      ],
+      "montoInvertido": 27714.29,
+      "fechaActualizacion": "2026-07-19",
+      "rendimientoObtenido": 214.29,
+      "fechaActualizacionRendimiento": "2026-07-19"
+    },
+    {
+      "id": "cta-nu",
+      "institucionId": "inst-nu",
+      "nombre": "",
+      "tramos": [
+        {
+          "hasta": null,
+          "tasa": 12.5
+        }
+      ],
+      "modoTramos": "unico",
+      "modoTasa": "nominal",
+      "baseAnual": 365,
+      "isrAnual": 0,
+      "isrSobre": "capital",
+      "baseIsr": 365,
+      "redondeoTasa": "truncar",
+      "redondeoDiario": "continuo",
+      "movimientos": [
+        {
+          "fecha": "2026-07-22",
+          "tipo": "aporte",
+          "monto": 5000,
+          "transferenciaId": "demo-tr-1",
+          "contraparteId": "cta-mp",
+          "nota": "Paso a Nu por mejor tasa"
+        }
+      ],
+      "ajustes": [
+        {
+          "fecha": "2026-07-30",
+          "monto": 0.74,
+          "motivo": "Deriva del cálculo",
+          "derivado": true
+        }
+      ],
+      "historial": [
+        {
+          "fecha": "2026-07-09",
+          "monto": 12000
+        }
+      ],
+      "montoInvertido": 17101.05,
+      "fechaActualizacion": "2026-07-30",
+      "rendimientoObtenido": 101.05,
+      "fechaActualizacionRendimiento": "2026-07-30"
+    }
+  ]
+}

@@ -117,6 +117,26 @@ export async function batchCreate(col, items) {
   }
 }
 
+/**
+ * Updates several documents of a collection in one atomic write.
+ * Needed when a single user action touches more than one document — a transfer
+ * between accounts writes both legs, and leaving one half behind would corrupt
+ * the calculation on both sides.
+ *
+ * @param {string} col
+ * @param {Array<{id:string, data:object}>} items
+ */
+export async function batchUpdate(col, items) {
+  _invalidate(col);
+  const CHUNK = 499; // atomicity holds within a chunk; a transfer is always 2 docs
+  for (let i = 0; i < items.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    items.slice(i, i + CHUNK).forEach(({ id, data }) =>
+      batch.update(userDoc(col, id), { ...data, _updatedAt: new Date().toISOString() }));
+    await batch.commit();
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Returns a Firestore `where` constraint limiting a date/mes field to the last N months. */
