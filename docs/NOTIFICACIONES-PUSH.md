@@ -37,13 +37,15 @@ el usuario ve y procesa las pendientes. Ver "Flujo que se descarta" más abajo.
 notificaciones/{id}
   tipo:      'compra'                      // a futuro: 'recordatorio', etc. — no se implementa aún
   estatus:   'pendiente' | 'procesada' | 'descartada'
-  datos:     { compra, total, fechaCompra, hora, tarjetaId, numeroTarjeta, meses, mensualidad, msgId }
+  datos:     { compra, total, fechaCompra, hora, tarjetaId, numeroTarjeta, meses, mensualidad, msgId, asunto }
   creado:    timestamp
 ```
 
-`datos` son los mismos campos que hoy viajan en el query string del deep-link — el cambio es
-dónde viven (Firestore en vez de la URL) y cómo llegan al modal (tap en la lista, no parseo de
-`location.search`).
+`datos` son casi los mismos campos que hoy viajan en el query string del deep-link — el cambio
+es dónde viven (Firestore en vez de la URL) y cómo llegan al modal (tap en la lista, no parseo
+de `location.search`). Se suma `asunto` (`msg.getSubject()`), que hoy no se guarda en ningún
+lado: la lista de notificaciones lo necesita para mostrarlo junto al comercio (ver abajo), así
+que los 5 parsers pasan a capturarlo, no solo el de PayPal nuevo.
 
 ## Nueva fuente de correo: PayPal "Autorizó un pago"
 
@@ -62,10 +64,10 @@ sacar el patrón:
   `procesarCompras` la rellene con `msg.getDate()`, igual que ya hacen `parsePaypal`,
   `parseMercadoPago` y `parseMiSaldo`.
 
-**Pendiente de definir:** un mismo pago de PayPal puede generar tanto un correo de "Autorizó un
-pago" (autorización) como más adelante uno de "Recibo de su pago" (captura) — falta decidir si
-eso duplica la notificación o si alguna de las dos fuentes se ignora cuando ya se vio la otra
-para el mismo comercio/monto en la ventana de tiempo.
+Va al mismo pipeline que las otras 4 fuentes: crea su documento en `notificaciones` con
+`tipo: 'compra'` igual que cualquier detección — sin lógica especial de deduplicación contra
+"Recibo de su pago". Si un mismo pago genera las dos notificaciones, el usuario descarta la que
+sobre desde la sección de notificaciones (la `X`); no se filtra en el script.
 
 ## Sección "Notificaciones" en la app (nueva)
 
@@ -74,6 +76,9 @@ Nuevo módulo (p. ej. `js/modules/notificaciones.js`), ruta `#/notificaciones`:
 - Por default muestra las de `estatus: pendiente` y `tipo: compra` (a futuro habrá más tipos,
   como recordatorios de vencimiento, pero esos no se implementan todavía — el filtro por
   defecto ya queda pensado para convivir con ellos).
+- Cada fila muestra **el comercio** (`datos.compra`, la descripción ya resuelta por el
+  diccionario) **y el asunto** (`datos.asunto`, el asunto crudo del correo) — el asunto da
+  contexto extra cuando el diccionario no reconoció el comercio.
 - Tocar una notificación abre el **mismo modal que ya existe** para ajustar/registrar una
   compra (`_showContado`/`_showPlazos` en `js/modules/quick-add.js`), pasándole `datos`
   directamente como `prefill` — mismo mecanismo que usa hoy `msi.js` con el query string, solo
@@ -95,13 +100,21 @@ recibiendo un `prefill`, solo que ahora entra desde la sección de notificacione
 
 Solo aplica a `_showContado` (de contado, no a plazos). Se agrega un toggle "Acumular compra":
 
-- Al activarlo, aparece un `<select>` con las últimas 5 compras de contado de la tarjeta
-  seleccionada en el form (mismo patrón de `recentWhere`/`getAll('contado')` que ya usa el
-  módulo, filtrando por `tarjetaId` y ordenando por fecha descendente, límite 5).
-- Al elegir una y guardar: el total de la compra nueva = total del form + total de la compra
-  elegida para acumular.
-- Al completar el registro, la compra que se eligió para acumular se **elimina** (su monto ya
-  quedó absorbido en la nueva).
+- Al activarlo, aparece un `<select>` con dos grupos, visualmente distinguibles (dos
+  `<optgroup>`, mismo patrón que ya usa `_buildCardOptions` para separar favoritas/instituciones):
+  - **Notificaciones pendientes** de esa tarjeta (`notificaciones`, `tipo: compra`,
+    `estatus: pendiente`, filtradas por `tarjetaId`).
+  - **Compras registradas**: las últimas 5 compras de contado de esa tarjeta (mismo patrón de
+    `recentWhere`/`getAll('contado')` que ya usa el módulo, filtrando por `tarjetaId` y
+    ordenando por fecha descendente, límite 5).
+- Al elegir una opción y guardar: el total de la compra nueva = total del form + total de la
+  opción elegida para acumular. Esto es igual sin importar de qué grupo venga la opción.
+- Al completar el registro, lo que pasa con la opción elegida depende de qué era:
+  - Si era una **compra ya registrada**: se **elimina** (su monto ya quedó absorbido en la
+    nueva) — comportamiento sin cambios respecto al planteo original.
+  - Si era una **notificación pendiente**: no hay nada que borrar (nunca llegó a ser una
+    compra registrada) — pasa a `estatus: procesada`, igual que si se hubiera tocado desde la
+    sección de notificaciones.
 
 ## Lo que sigue igual del plan anterior
 
@@ -120,7 +133,6 @@ Solo aplica a `_showContado` (de contado, no a plazos). Se agrega un toggle "Acu
 
 ## Pendiente de definir
 
-- Duplicado potencial entre "Autorizó un pago" y "Recibo de su pago" de PayPal (ver arriba).
 - Reglas de recordatorios de vencimientos/eventos (tipo `recordatorio`) — no entran en este
   alcance, quedan para después de tener el tipo `compra` funcionando.
 - Texto/formato exacto de los pushes (título, cuerpo, ícono — reusar `icons/icon-192.png`).
