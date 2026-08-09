@@ -1,101 +1,129 @@
 # Notificaciones push — plan completo
 
-> Plan acordado, sin implementar todavía. Reemplaza el enfoque de `APK-ANDROID.md`: en vez de
-> empaquetar una app nativa, se queda como PWA y se le agrega Web Push. Motivo del cambio y
-> comparativa completa: ver el historial de conversación — en resumen, Web Push cubre Android y
-> Windows por igual sin necesitar Capacitor/APK, y el único hueco real de la PWA (recordatorios
-> programados sin servidor) deja de importar porque **todo el disparo de avisos queda del lado
-> de Apps Script**, no del dispositivo.
+> Plan acordado, sin implementar todavía. Reemplaza el enfoque de `APK-ANDROID.md` (Capacitor):
+> la app se queda como PWA y se le agrega Web Push. El disparo de todo aviso queda del lado de
+> Apps Script (`docs/app-script.gs`, el que ya corre en producción), no del dispositivo — por
+> eso alcanza con Web Push y no hace falta empaquetar nativo.
 
-## Punto de partida: ya existe un Apps Script en producción
+## Arranque: dos triggers en vez de uno
 
-`docs/app-script.gs` es el script real que ya corre hoy (no es parte de este plan, es la base
-sobre la que se construye):
+Hoy `docs/app-script.gs` tiene un solo trigger, `procesarCompras()`, cada 15 minutos, que
+detecta compras por correo y manda un email con el deep-link de precarga. Se separa en dos:
 
-- Trigger por tiempo cada 15 minutos → `procesarCompras()`.
-- Lee Gmail (`GmailApp`) buscando correos de compra de 4 fuentes (Santander, PayPal, Mercado
-  Pago, Mi Saldo), con una query distinta por fuente.
-- Parsea monto, tarjeta, fecha/hora y comercio de cada correo; deduplica por `msgId` guardado en
-  `PropertiesService` (últimos 300).
-- Arma un deep-link a `https://rezlex.github.io/Impactos/#/compras?...` con los datos como query
-  params — eso precarga el formulario de alta rápida (`js/modules/quick-add.js`).
-- Hoy ese link se manda por **correo** (`MailApp.sendEmail`), con un HTML armado a mano.
+### Trigger A — cada 15 min, sin cambios de frecuencia
 
-Este plan **no reemplaza ese flujo**, lo extiende: el mismo script gana acceso a Firestore y a
-FCM para poder, además de mandar el correo, empujar una notificación push con el mismo link.
+Sigue siendo `procesarCompras()`. Cambia lo que hace al detectar una compra nueva:
 
-## Qué cambia respecto al plan anterior (APK)
+1. Escribe un documento en una colección nueva de Firestore, `notificaciones` (ver modelo de
+   datos abajo), con estatus `pendiente`.
+2. Manda un **push** vía FCM a los dispositivos registrados del usuario (título/monto/comercio,
+   con el `id` del documento de notificación).
+3. **Ya no manda el correo individual por compra** — ese correo queda reemplazado por el push.
+   El único correo que sigue existiendo es el de "correos sin parsear" (fallos), que no cambia.
 
-| | Plan anterior (APK) | Este plan (PWA + Push) |
-|---|---|---|
-| Empaquetado | Capacitor, compilar `.apk` vía GitHub Actions | Ninguno — sigue siendo la PWA actual |
-| Recordatorios de vencimientos | `@capacitor/local-notifications`, programados en el dispositivo | Los decide Apps Script leyendo Firestore, igual que la detección de compras |
-| Alcance de plataformas | Solo Android | Android y Windows (Web Push es del navegador, no del SO) |
-| Cambios en el código de la app | Ninguno (Capacitor no toca el JS) | Sí: registrar push, guardar token, manejar `push`/`notificationclick` en `sw.js` |
+### Trigger B — una vez al día, a una hora fija (nuevo)
 
-## Los dos flujos de notificación
+Función nueva, con su propio trigger de tiempo diario (no cada 15 min — no hace falta esa
+frecuencia para un resumen). Recorre `notificaciones` con `tipo: 'compra'` y
+`estatus: 'pendiente'`, y si hay alguna, manda **un solo correo** de recordatorio listándolas.
 
-### 1. Compra detectada (extiende el flujo que ya existe)
+A diferencia del correo actual, el enlace de este correo **no** precarga un formulario con query
+params — redirige directo a la sección de notificaciones de la app (`#/notificaciones`), donde
+el usuario ve y procesa las pendientes. Ver "Flujo que se descarta" más abajo.
 
-En `enviarLink()` del `.gs`, además del correo actual, se agrega un envío a FCM con el mismo
-título/monto/link. Nada cambia en la detección ni en el parseo — es un segundo canal de salida
-para el mismo evento.
+## Modelo de datos: colección `notificaciones`
 
-### 2. Recordatorios de vencimientos y eventos (nuevo)
+```
+notificaciones/{id}
+  tipo:      'compra'                      // a futuro: 'recordatorio', etc. — no se implementa aún
+  estatus:   'pendiente' | 'procesada' | 'descartada'
+  datos:     { compra, total, fechaCompra, hora, tarjetaId, numeroTarjeta, meses, mensualidad, msgId }
+  creado:    timestamp
+```
 
-Una función nueva en el mismo proyecto de Apps Script, en un trigger de tiempo separado (diario,
-no cada 15 min — no hace falta esa frecuencia para esto):
+`datos` son los mismos campos que hoy viajan en el query string del deep-link — el cambio es
+dónde viven (Firestore en vez de la URL) y cómo llegan al modal (tap en la lista, no parseo de
+`location.search`).
 
-1. Lee `gastosFijos`, `tarjetas` y `eventos` desde Firestore vía REST, autenticado con
-   `ScriptApp.getOAuthToken()`.
-2. Decide qué avisar (vencimientos próximos, eventos del día — reglas exactas: pendiente de
-   definir, ver abajo).
-3. Llama a la API de FCM (`https://fcm.googleapis.com/v1/projects/impactos-b4307/messages:send`)
-   para cada dispositivo registrado.
+## Nueva fuente de correo: PayPal "Autorizó un pago"
 
-## Lo que hace falta agregar
+Además de las 4 fuentes actuales, el Apps Script debe procesar los correos de
+`service@paypal.com.mx` con asunto que empieza con **"Autorizó un pago"** — son de autorización
+de pago (no el recibo final que ya cubre `parsePaypal`). Reviso varios reales en la bandeja para
+sacar el patrón:
 
-**Del lado de Apps Script** (mismo proyecto que ya corre `app-script.gs`):
+- Asunto: `Autorizó un pago para {comercio}` — el comercio sale limpio del propio asunto, igual
+  que ya hace `parseMercadoPago` con el suyo.
+- Cuerpo: `Ha autorizado un pago de $195.70 MXN a UBR PAGOS MEXICO` (a veces con `€`/otra
+  moneda). Mismo patrón de monto que los parsers existentes.
+- Tarjeta: aparece en la sección "Formas de pago utilizadas", formato `Visa-2167` — coincide con
+  la regex que ya usa `parsePaypal` para tarjeta, se puede reusar tal cual.
+- Fecha: viene como `8 ago 2026` (texto, no `DD/MM/YYYY`) — más simple dejarla en blanco y que
+  `procesarCompras` la rellene con `msg.getDate()`, igual que ya hacen `parsePaypal`,
+  `parseMercadoPago` y `parseMiSaldo`.
 
-- En el manifiesto del proyecto (`appsscript.json`), sumar los scopes OAuth:
-  `https://www.googleapis.com/auth/datastore` (leer Firestore) y
-  `https://www.googleapis.com/auth/firebase.messaging` (mandar push). Los scopes actuales
-  (Gmail, `MailApp`) quedan igual.
-- Vincular el proyecto al mismo GCP project que Firebase (`impactos-b4307`) desde
-  Configuración del proyecto → Proyecto de Google Cloud Platform — si no, el OAuth token no
-  tiene permisos sobre ese Firestore/FCM.
-- Función nueva para el envío FCM (helper reusable desde `enviarLink()` y desde el chequeo de
-  vencimientos).
-- Función nueva + trigger diario para el chequeo de vencimientos/eventos.
-- Re-autorizar el script (Google pide consentimiento de nuevo al agregar scopes).
+**Pendiente de definir:** un mismo pago de PayPal puede generar tanto un correo de "Autorizó un
+pago" (autorización) como más adelante uno de "Recibo de su pago" (captura) — falta decidir si
+eso duplica la notificación o si alguna de las dos fuentes se ignora cuando ya se vio la otra
+para el mismo comercio/monto en la ventana de tiempo.
 
-**Del lado de la PWA** (`sw.js`, y un módulo nuevo en `js/`):
+## Sección "Notificaciones" en la app (nueva)
 
-- Pedir permiso de notificaciones al usuario (con un gesto explícito, no al cargar la app).
-- Integrar el SDK de Firebase Cloud Messaging para web (`firebase-messaging`, mismo patrón de
-  import por URL que ya usa `js/firebase.js`) para pedir el token con la clave VAPID.
-- Guardar/actualizar ese token en Firestore, p. ej. `users/{uid}/dispositivos/{token}`.
-- Agregar a `sw.js` los listeners `push` (mostrar la notificación) y `notificationclick` (abrir
-  o enfocar el deep-link, mismo destino que ya arma `enviarLink()`).
+Nuevo módulo (p. ej. `js/modules/notificaciones.js`), ruta `#/notificaciones`:
 
-**Del lado de Firebase Console** (fuera del repo, necesita la cuenta del usuario):
+- Por default muestra las de `estatus: pendiente` y `tipo: compra` (a futuro habrá más tipos,
+  como recordatorios de vencimiento, pero esos no se implementan todavía — el filtro por
+  defecto ya queda pensado para convivir con ellos).
+- Tocar una notificación abre el **mismo modal que ya existe** para ajustar/registrar una
+  compra (`_showContado`/`_showPlazos` en `js/modules/quick-add.js`), pasándole `datos`
+  directamente como `prefill` — mismo mecanismo que usa hoy `msi.js` con el query string, solo
+  que la fuente del `prefill` cambia.
+- Al completar el registro (guardar la compra), el documento de notificación pasa a
+  `estatus: procesada`.
+- Cada fila tiene una `X` para marcarla `descartada` sin registrar nada — deja de aparecer entre
+  las pendientes.
 
-- Generar el par de claves VAPID: Configuración del proyecto → Cloud Messaging → Web Push
-  certificates. Sin esto no se puede pedir el token desde el navegador.
+## Flujo que se descarta
 
-## Plan de Firebase: sigue sin hacer falta Blaze
+El pre-registro por query string en `#/compras?desc=...&total=...` (`_prefillDesdeQuery` en
+`msi.js`, alimentado hoy por el link del correo) **se elimina**. Dejar de mandar ese tipo de
+enlace desde Apps Script (Trigger A ya no manda correo individual) lo vuelve código muerto; se
+saca junto con la limpieza de `msi.js`. El modal de `quick-add.js` en sí **no cambia** — sigue
+recibiendo un `prefill`, solo que ahora entra desde la sección de notificaciones en vez de la URL.
 
-Igual que en el plan anterior — FCM es gratis en cualquier plan, las lecturas/escrituras desde
-Apps Script cuentan contra la misma cuota gratuita de Firestore que ya usa la app (Spark), y
-Apps Script tiene su propia cuota gratuita independiente del plan de Firebase. Lo único que
-exige Blaze es Cloud Functions, que este plan no usa.
+## Modal de compra de contado: "Acumular compra" (nuevo)
+
+Solo aplica a `_showContado` (de contado, no a plazos). Se agrega un toggle "Acumular compra":
+
+- Al activarlo, aparece un `<select>` con las últimas 5 compras de contado de la tarjeta
+  seleccionada en el form (mismo patrón de `recentWhere`/`getAll('contado')` que ya usa el
+  módulo, filtrando por `tarjetaId` y ordenando por fecha descendente, límite 5).
+- Al elegir una y guardar: el total de la compra nueva = total del form + total de la compra
+  elegida para acumular.
+- Al completar el registro, la compra que se eligió para acumular se **elimina** (su monto ya
+  quedó absorbido en la nueva).
+
+## Lo que sigue igual del plan anterior
+
+- **Firebase se queda en el plan Spark** — FCM es gratis en cualquier plan, las
+  lecturas/escrituras de Apps Script cuentan contra la misma cuota gratuita de Firestore que ya
+  usa la app, y Apps Script tiene su propia cuota independiente. Nada de esto necesita Blaze.
+- **Scopes nuevos en el Apps Script existente**: `https://www.googleapis.com/auth/datastore`
+  (Firestore) y `https://www.googleapis.com/auth/firebase.messaging` (FCM), sumados a los que
+  ya tiene (Gmail, `MailApp`). Requiere vincular el proyecto al GCP de `impactos-b4307` y
+  volver a autorizar.
+- **Del lado de la PWA** sigue faltando: pedir permiso de notificaciones, integrar el SDK de
+  FCM para web, guardar el token en Firestore (`users/{uid}/dispositivos`), y agregar los
+  listeners `push`/`notificationclick` a `sw.js`.
+- **Del lado de Firebase Console** (fuera del repo): generar el par de claves VAPID en Cloud
+  Messaging → Web Push certificates.
 
 ## Pendiente de definir
 
-- Reglas exactas de los recordatorios: qué dispara cada aviso y con cuántos días de
-  anticipación (vencimiento de tarjeta, gasto fijo, evento próximo).
-- Si el push de "compra detectada" reemplaza al correo o conviven los dos canales.
-- Texto/formato de las notificaciones push (título, cuerpo, ícono — reusar `icons/icon-192.png`).
+- Duplicado potencial entre "Autorizó un pago" y "Recibo de su pago" de PayPal (ver arriba).
+- Reglas de recordatorios de vencimientos/eventos (tipo `recordatorio`) — no entran en este
+  alcance, quedan para después de tener el tipo `compra` funcionando.
+- Texto/formato exacto de los pushes (título, cuerpo, ícono — reusar `icons/icon-192.png`).
 
 ## Nota sobre `APK-ANDROID.md`
 
