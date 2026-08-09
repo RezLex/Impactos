@@ -428,9 +428,6 @@ async function renderView(container) {
       <div class="page-header">
         <div class="page-header-text">
           <h2>Rendimientos</h2>
-          <p>${cuentas.length} ${cuentas.length === 1 ? 'cuenta' : 'cuentas'} de inversión ·
-             Capital ${currency(tot.capital)} ·
-             Ganado hasta hoy <strong class="text-success">${currency(tot.rendimientoHastaHoy)}</strong></p>
         </div>
         <div class="d-flex flex-wrap gap-2">
           <button class="btn btn-outline-primary btn-sm" id="btn-calc-periodo"
