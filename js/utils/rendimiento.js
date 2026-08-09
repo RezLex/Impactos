@@ -562,6 +562,43 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg) {
   return acc;
 }
 
+/**
+ * Igual que `recorrer()`, pero para cuando `desde` es una fecha de CAPTURA
+ * (una ancla, o cualquier saldo que se conoce con certeza a esa fecha) —
+ * compone primero el propio día de la captura antes de recorrer lo demás.
+ *
+ * `recorrer()` a solas trata `saldoInicial` como ya vigente al CIERRE de
+ * `desde` (así lo dice su docstring), pero `saldoEnFecha()` — y por lo tanto
+ * `historialDiario()`, que arranca su primer renglón ahí — lo trata como el
+ * saldo al INICIO de `desde`, todavía sin su propio día de interés. Un
+ * recorrer(desde,hasta,...) de un solo tramo llamado directo sobre una
+ * captura queda entonces un día de interés por debajo de lo que muestra el
+ * historial. Ver DOCUMENTACION.md § Cálculo de Rendimientos.
+ *
+ * Solo se usa donde `desde` es sin duda una captura (`resumenCuenta`) — NO
+ * reemplaza a `recorrer()`/`rendimientoEntre()` en general: "Calcular
+ * periodo" y el reporte Excel aceptan fechas arbitrarias elegidas por el
+ * usuario que no son necesariamente una captura, y ahí no se verificó si
+ * aplica la misma corrección.
+ */
+function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg) {
+  const { bruto, isr } = pasoDiario(saldoCapturado, cfg);
+  const neto           = bruto - isr;
+  const saldoTrasSuDia = Math.max(0, saldoCapturado + neto);
+  const resto          = recorrer(eventos, desde, hasta, saldoTrasSuDia, cfg);
+  return {
+    ...resto,
+    bruto:        resto.bruto + bruto,
+    isr:          resto.isr + isr,
+    rendimiento:  resto.rendimiento + neto,
+    aportaciones: resto.movimientos + resto.residuo,
+    dias:         diasEntre(desde, hasta),
+    // Si nada compuso después (ej. `desde === hasta`), el propio día de la
+    // captura ES el último — igual que el primer renglón de historialDiario.
+    ultimo:       resto.ultimo || { bruto, isr, neto },
+  };
+}
+
 /** Saldo proyectado al cierre de una fecha; `null` si es anterior a la primera ancla. */
 export function saldoEnFecha(eventos, fecha, cfg) {
   const evs = ordenarEventos(eventos);
@@ -919,10 +956,26 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   const capital   = ultimo ? ultimo.monto : 0;
   const dias      = Math.max(0, diasEntre(fechaBase, hoy));
 
-  // Se proyecta desde la última ancla recorriendo los eventos posteriores: un
-  // aporte de ayer ya cuenta aunque todavía no se haya capturado el saldo real
-  const hastaHoy    = recorrer(eventos, fechaBase, hoy, capital, cfg);
-  const saldoActual = hastaHoy.saldo;
+  // El saldo/rendimiento "hasta hoy" sale de la MISMA tabla día-por-día que ve
+  // el usuario en el historial (historialDiario), no de un recorrer() aparte
+  // de un solo tramo: un recorrer(fechaBase,hoy,...) ancho y la cadena de
+  // recorrer() de un día a la vez de historialDiario NO dan siempre el mismo
+  // resultado en cuanto hay un movimiento de por medio — el paso `unDia()`
+  // que le da al movimiento su propio día sobre el saldo viejo termina en una
+  // posición distinta del calendario según qué tan lejos esté `hasta`
+  // (verificado con datos sintéticos). Reusar historialDiario evita mantener
+  // dos caminos que se desincronizan; el costo es recorrer la cuenta entera
+  // en cada resumen (~35ms hasta para una cuenta de 10+ años, aceptable para
+  // el puñado de cuentas de esta app). Se le pasa MAX_DIAS explícito: el
+  // default de historialDiario (400 días) recortaría cuentas viejas y
+  // dispararía el bug de recorte documentado en DOCUMENTACION.md — aquí no
+  // hace falta el límite, que existe solo para no pintar una tabla gigante.
+  const filasHastaHoy = timeline.length ? historialDiario(cuenta, hoy, MAX_DIAS) : [];
+  const filaHoy        = filasHastaHoy[filasHastaHoy.length - 1] || null;
+  const saldoActual    = filaHoy ? filaHoy.saldoFinal : capital;
+  const brutoHastaHoy  = filasHastaHoy.reduce((s, f) => s + f.bruto, 0);
+  const isrHastaHoy    = filasHastaHoy.reduce((s, f) => s + f.isr,   0);
+  const rendimientoDesdeBase = filasHastaHoy.reduce((s, f) => s + f.neto + (f.ajuste || 0), 0);
 
   const { bruto: diarioBruto, isr: isrDia } = pasoDiario(saldoActual, cfg);
   const proyMensual = componer(saldoActual, 30,  cfg);
@@ -932,9 +985,10 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   // Revolut MX (base 360): 15% → 16.18%, 7% → 7.25%, 7.50% → 7.79%.
   const proyBruta = componer(saldoActual, cfg.base, { ...cfg, isrAnual: 0 });
 
-  // Acumulado desde el primer saldo observado, descontando aportaciones
+  // Acumulado desde el primer saldo observado, descontando aportaciones —
+  // timeline[0] también es una captura, mismo motivo que fechaBase arriba.
   const historico = timeline.length
-    ? rendimientoEntre(eventos, timeline[0].fecha, hoy, cfg)
+    ? recorrerDesdeCaptura(eventos, timeline[0].fecha, hoy, timeline[0].monto, cfg)
     : null;
 
   // Rendimiento obtenido: captura real del usuario (ej. estado de cuenta) +
@@ -943,8 +997,15 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   const rendimientoObtenido = Number(cuenta.rendimientoObtenido) || 0;
   const fechaRendimiento    = isoDay(cuenta.fechaActualizacionRendimiento) || fechaBase;
   const diasRendimiento     = Math.max(0, diasEntre(fechaRendimiento, hoy));
-  const proyRendimiento     = timeline.length ? rendimientoEntre(eventos, fechaRendimiento, hoy, cfg) : null;
-  const rendimientoHastaHoy = rendimientoObtenido + (proyRendimiento ? proyRendimiento.rendimiento : hastaHoy.rendimiento);
+  // También una captura: `fechaActualizacionRendimiento` es "la última cifra
+  // real capturada" (ver docstring de rendimientoObtenido más abajo), así que
+  // el saldo que la acompaña sale de saldoEnFecha (saldo al INICIO de esa
+  // fecha) y se le aplica la misma corrección de recorrerDesdeCaptura.
+  const saldoParaRendimiento = timeline.length ? saldoEnFecha(eventos, fechaRendimiento, cfg) : null;
+  const proyRendimiento      = saldoParaRendimiento != null
+    ? recorrerDesdeCaptura(eventos, fechaRendimiento, hoy, saldoParaRendimiento, cfg)
+    : null;
+  const rendimientoHastaHoy = rendimientoObtenido + (proyRendimiento ? proyRendimiento.rendimiento : rendimientoDesdeBase);
 
   return {
     ...cfg, timeline, eventos, fechaBase, dias,
@@ -952,9 +1013,8 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     saldoActual,
     rendimientoObtenido, fechaRendimiento, diasRendimiento,
     rendimientoHastaHoy,
-    brutoHastaHoy:        hastaHoy.bruto,
-    isrHastaHoy:          hastaHoy.isr,
-    rendimientoHistorico: historico ? historico.rendimiento : hastaHoy.rendimiento,
+    brutoHastaHoy, isrHastaHoy,
+    rendimientoHistorico: historico ? historico.rendimiento : rendimientoDesdeBase,
     aportacionesHistoricas: historico ? historico.aportaciones : 0,
     diasHistoricos: historico ? historico.dias : dias,
     // Los montos mostrados son netos: es lo que realmente se abona y se capitaliza
@@ -963,12 +1023,10 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     anual:   proyAnual.rendimiento,
     diarioBruto, isrDiario: isrDia,
     // Lo generado el día consultado (`hoy` ya trae el corte de las 7am CDMX
-    // aplicado) — es lo que la institución abonó esa madrugada. `hastaHoy.ultimo`
-    // es solo el paso de interés puro: un EVENTO_AJUSTE no lo toca (`recorrer`
-    // lo suma directo al saldo/rendimiento acumulado, no al paso del día), así
-    // que un ajuste registrado ese mismo día se suma aparte.
-    ayer: (hastaHoy.ultimo ? hastaHoy.ultimo.neto : 0)
-        + eventos.reduce((s, e) => e.tipo === EVENTO_AJUSTE && e.fecha === hoy ? s + e.monto : s, 0),
+    // aplicado) — es lo que la institución abonó esa madrugada. Viene del
+    // mismo renglón que pinta el historial (neto + ajuste de ese día), así
+    // nunca puede desalinearse de lo que ahí se ve.
+    ayer: filaHoy ? filaHoy.neto + (filaHoy.ajuste || 0) : 0,
     desglose: desgloseTramos(saldoActual, cfg),
     // La tasa ponderada y el GAT son brutos — es como los publica la institución
     tasaNominal: tasaNominal(saldoActual, cfg),
