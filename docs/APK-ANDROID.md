@@ -1,4 +1,8 @@
-# APK Android — plan de adaptación
+# APK Android — plan de adaptación (superado)
+
+> **Descartado a favor de `NOTIFICACIONES-PUSH.md`.** Se evaluó empaquetar con Capacitor para
+> lograr notificaciones aunque la app no estuviera abierta, pero Web Push cubre lo mismo (y en
+> Android *y* Windows) sin necesitar un APK. Queda este documento como registro de la evaluación.
 
 > Plan acordado, sin implementar todavía. Objetivo: empaquetar IMPACTOS como app nativa de
 > Android que reciba notificaciones aunque no esté abierta ni la esté sirviendo GitHub Pages en
