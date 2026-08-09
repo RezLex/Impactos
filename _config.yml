@@ -7,7 +7,5 @@ exclude:
   # nunca debe llegar al sitio público.
   - test/
   # Notas internas de desarrollo, no contenido pensado para un visitante del sitio.
-  - CLAUDE.md
-  - DOCUMENTACION.md
-  - MODO-OSCURO.md
-  - MOVIL.md
+  # Todo .md en la raíz cae acá (documentación, no páginas del sitio).
+  - "*.md"
