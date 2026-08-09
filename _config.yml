@@ -6,6 +6,4 @@ exclude:
   # Entorno de pruebas: viaja por git para tenerlo en varios dispositivos, pero
   # nunca debe llegar al sitio público.
   - test/
-  # Notas internas de desarrollo, no contenido pensado para un visitante del sitio.
-  # Todo .md en la raíz cae acá (documentación, no páginas del sitio).
-  - "*.md"
+  - docs/
