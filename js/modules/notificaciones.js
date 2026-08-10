@@ -1,24 +1,24 @@
 import { getAll, update, where } from '../utils/db.js';
 import { toast } from '../utils/ui.js';
-import { currency, fmtDate, textoLegibleSobre } from '../utils/formatters.js';
+import { currency, fmtDate, fmtMonth, textoLegibleSobre } from '../utils/formatters.js';
 import { prefillDesdeDatos, matchTarjetaPorTerminacion } from '../utils/prefill-compra.js';
+import { navigate } from '../router.js';
 
-// Compras que el Apps Script detectó en el correo y todavía no se registran.
-// El script escribe el documento; aquí se revisan y se convierten en compra
-// (o se descartan). Ver docs/NOTIFICACIONES-PUSH.md.
+// Compras que el Apps Script detectó en el correo y todavía no se registran
+// (tipo `compra`), más los recordatorios que agrega — corte de tarjeta,
+// gasto fijo por confirmar, cierre de mes (tipos `corte`/`gastoFijo`/
+// `rendimiento`). El script escribe los documentos; aquí se revisan y se
+// procesan. Ver docs/NOTIFICACIONES-PUSH.md y docs/RECORDATORIOS-PUSH.md.
 
 // El comercio y el asunto vienen de un correo externo: se interpolan escapados.
 // Las comillas también, porque el asunto va además en un atributo `title`.
 const esc = s => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Pendientes de tipo compra, más recientes arriba. */
+/** Pendientes de los 4 tipos (compra, corte, gastoFijo, rendimiento), más recientes arriba. */
 async function _cargarPendientes() {
   const notis = await getAll('notificaciones', where('estatus', '==', 'pendiente'));
-  // El filtro por `tipo` va en JS y no en la consulta: con dos `where` haría
-  // falta un índice compuesto en Firestore, y a este volumen no compensa.
   return notis
-    .filter(n => n.tipo === 'compra')
     .sort((a, b) => String(b.creado || '').localeCompare(String(a.creado || '')));
 }
 
@@ -45,8 +45,8 @@ async function renderList(container) {
         <div class="page-header-text">
           <h2>Notificaciones</h2>
           <p>${pendientes.length
-                ? `${pendientes.length} compra${pendientes.length === 1 ? '' : 's'} detectada${pendientes.length === 1 ? '' : 's'} sin registrar`
-                : 'Compras detectadas en tu correo'}</p>
+                ? `${pendientes.length} pendiente${pendientes.length === 1 ? '' : 's'}`
+                : 'Compras detectadas en tu correo y recordatorios de la app'}</p>
         </div>
       </div>
 
@@ -54,7 +54,7 @@ async function renderList(container) {
 
       ${pendientes.length === 0
         ? `<div class="empty-state"><i class="bi bi-bell"></i>
-             <p>Nada pendiente.<br>Las compras que se detecten en tu correo aparecerán aquí.</p>
+             <p>Nada pendiente.<br>Las compras detectadas en tu correo y los recordatorios de la app aparecerán aquí.</p>
            </div>`
         : `<div class="data-card">
              <div class="data-card-body p-0">
@@ -73,7 +73,10 @@ async function renderList(container) {
       btn.addEventListener('click', async e => {
         e.stopPropagation();   // el click no debe abrir el modal
         const n = pendientes.find(x => x.id === btn.dataset.id);
-        if (!window.confirm(`¿Descartar "${n.datos?.desc || 'esta notificación'}"? No se registrará ninguna compra.`)) return;
+        const aviso = n.tipo === 'compra'
+          ? `¿Descartar "${n.datos?.desc || 'esta notificación'}"? No se registrará ninguna compra.`
+          : `¿Descartar "${_textoRecordatorio(n).titulo}"?`;
+        if (!window.confirm(aviso)) return;
         try {
           await update('notificaciones', n.id, { estatus: 'descartada' });
           toast('Notificación descartada');
@@ -141,6 +144,8 @@ function _pillTarjeta(terminacion, tarjetas, instMap) {
 }
 
 function _fila(n, tarjetas, instMap) {
+  if (n.tipo !== 'compra') return _filaRecordatorio(n);
+
   const d       = n.datos || {};
   const aPlazos = d.meses != null && d.meses !== '';
 
@@ -168,6 +173,44 @@ function _fila(n, tarjetas, instMap) {
     </div>`;
 }
 
+// ── Recordatorios (corte / gastoFijo / rendimiento) ─────────────────────────
+
+const RECORDATORIO_ICONO = {
+  corte: 'bi-credit-card-2-front',
+  gastoFijo: 'bi-calendar-check',
+  rendimiento: 'bi-graph-up-arrow',
+};
+
+/** Título/cuerpo cortos para la fila — mismos textos acordados en docs/RECORDATORIOS-PUSH.md. */
+function _textoRecordatorio(n) {
+  const d = n.datos || {};
+
+  if (n.tipo === 'corte') {
+    if (d.subtipo === 'faltaImpacto') return { titulo: `Genera el Impacto de ${fmtMonth(d.mes)}`, cuerpo: 'Toca para generarlo' };
+    if (d.subtipo === 'sinConfirmar') return { titulo: `Cortó tu tarjeta ${d.nombre}`, cuerpo: `${currency(d.monto)} por confirmar — ${fmtMonth(d.mes)}` };
+    if (d.subtipo === 'sinCerrar')    return { titulo: `Impacto de ${fmtMonth(d.mes)} sin cerrar`, cuerpo: 'Toca para revisarlo y cerrarlo' };
+  }
+  if (n.tipo === 'gastoFijo')   return { titulo: d.nombre, cuerpo: `Gasto fijo por confirmar — ${currency(d.importe)}` };
+  if (n.tipo === 'rendimiento') return { titulo: 'Fin de mes', cuerpo: 'Revisa los rendimientos de tus cuentas' };
+  return { titulo: 'Recordatorio', cuerpo: '' };
+}
+
+function _filaRecordatorio(n) {
+  const { titulo, cuerpo } = _textoRecordatorio(n);
+  const icono = RECORDATORIO_ICONO[n.tipo] || 'bi-bell';
+  return `
+    <div class="noti-item" data-id="${n.id}">
+      <div class="metric-icon tint-info"><i class="bi ${icono}"></i></div>
+      <div class="noti-recordatorio-texto">
+        <div class="noti-recordatorio-titulo">${esc(titulo)}</div>
+        <div class="noti-recordatorio-cuerpo">${esc(cuerpo)}</div>
+      </div>
+      <button class="btn-icon danger btn-descartar-noti" data-id="${n.id}" title="Descartar">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>`;
+}
+
 /**
  * Abre el modal del Registro Rápido —el mismo del FAB, con su vista previa de
  * ciclo, disponible e impacto— precargado con los datos de la notificación.
@@ -175,6 +218,20 @@ function _fila(n, tarjetas, instMap) {
  * del modal, así que la notificación se cierra en cualquiera de los dos casos.
  */
 async function _abrir(n, tarjetas, contadoItems, msiItems, container) {
+  if (n.tipo !== 'compra') {
+    // El auto-resuelto de docs/RECORDATORIOS-PUSH.md (Apps Script) es el
+    // mecanismo principal para cerrar estos recordatorios; el tap solo
+    // adelanta el `procesada` si el usuario entra manualmente antes.
+    const ruta = n.tipo === 'corte'       ? (n.datos?.mes ? `/impacto/${n.datos.mes}` : '/impacto')
+               : n.tipo === 'gastoFijo'   ? '/compras/gastos'
+               : n.tipo === 'rendimiento' ? '/rendimientos'
+               : '/notificaciones';
+    await update('notificaciones', n.id, { estatus: 'procesada' });
+    refrescarBadge();
+    navigate(ruta);
+    return;
+  }
+
   const pre = prefillDesdeDatos(n.datos || {}, tarjetas, contadoItems, msiItems);
 
   if (pre === 'duplicado') {

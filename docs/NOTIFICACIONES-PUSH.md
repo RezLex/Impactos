@@ -45,11 +45,14 @@ el usuario ve y procesa las pendientes.
 
 ```
 users/{uid}/notificaciones/{id}
-  tipo:      'compra'                      // a futuro: 'recordatorio', etc. — no se implementa aún
+  tipo:      'compra'                      // ver docs/RECORDATORIOS-PUSH.md para 'corte' | 'gastoFijo' | 'rendimiento'
   estatus:   'pendiente' | 'procesada' | 'descartada'
   datos:     { desc, total, fecha, hora, tarjeta, meses?, mensualidad?, msgId, asunto, match }
   creado:    timestamp
 ```
+
+(Modelo completo de los 4 tipos, con el detalle de `datos` y `ultimoAviso` por tipo, en
+`docs/DOCUMENTACION.md` → [`notificaciones/{id}`](DOCUMENTACION.md#notificacionesid).)
 
 `datos` usa **los mismos nombres de campo que hoy viajan en el query string del deep-link**; el
 cambio es dónde viven (Firestore en vez de la URL) y cómo llegan al modal (tap en la lista, no
@@ -197,8 +200,9 @@ alfa). Los importes se formatean con `pesos()` — llegan como `number`, y `'$' 
 
 ## Pendiente de definir
 
-- Reglas de recordatorios de vencimientos/eventos (tipo `recordatorio`) — no entran en este
-  alcance, quedan para después de tener el tipo `compra` funcionando.
+- ~~Reglas de recordatorios de vencimientos/eventos (tipo `recordatorio`)~~ — implementado en
+  `docs/RECORDATORIOS-PUSH.md` (`docs/app-script-recordatorios.gs`, tipos `corte`/`gastoFijo`/
+  `rendimiento`, colección `notificaciones` compartida con el tipo `compra` de este documento).
 
 ## Nota sobre `APK-ANDROID.md`
 

@@ -323,16 +323,31 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 
 ### `notificaciones/{id}`
 
-Compras que el Apps Script detectó en el correo y todavía no se registran. Es la **única colección que escribe algo distinto de la app**: la crea `procesarCompras()` (ver `docs/app-script.gs` y `docs/NOTIFICACIONES-PUSH.md`); la app solo la lee y le cambia el `estatus`.
+Bandeja de avisos accionables: compras que el Apps Script detectó en el correo, más los tres
+recordatorios que agrega `docs/app-script-recordatorios.gs` (corte de tarjeta, gasto fijo por
+confirmar, cierre de mes). Es la **única colección que escribe algo distinto de la app**: la
+crean `procesarCompras()` y `procesarRecordatorios()` (ver `docs/app-script.gs`,
+`docs/app-script-recordatorios.gs`, `docs/NOTIFICACIONES-PUSH.md` y
+`docs/RECORDATORIOS-PUSH.md`); la app solo la lee y le cambia el `estatus`.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `tipo` | string | `compra`. Reservado para tipos futuros (`recordatorio`), aún no implementados |
+| `tipo` | string | `compra` \| `corte` \| `gastoFijo` \| `rendimiento` |
 | `estatus` | string | `pendiente`, `procesada` o `descartada` |
-| `datos` | object | La compra detectada (ver abajo) |
-| `creado` | string | Timestamp ISO del momento de la detección |
+| `datos` | object | El detalle del aviso — forma distinta por `tipo` (ver abajo) |
+| `creado` | string | Timestamp ISO del momento en que se creó el documento |
+| `ultimoAviso` | string? | Solo en `tipo: corte` — timestamp ISO del último push mandado por esta clave; controla la cadencia de reintento de 2 días (`DIAS_REINTENTO`) |
 
-**Estructura de `datos`** — son los mismos nombres de campo que viajaban en el query string del [pre-registro por URL](#pre-registro-de-compra-vía-url), a propósito: las dos entradas comparten la traducción de `js/utils/prefill-compra.js`.
+El documento de un recordatorio de corte usa como **id** su propia clave natural en vez de un id
+autogenerado (`faltaImpacto-{mes}`, `sinConfirmar-{tarjetaId}-{mes}`, `sinCerrar-{mes}`) — así
+la corrida diaria hace *upsert* sobre el mismo doc en vez de acumular uno nuevo por aviso. Los de
+`gastoFijo` y `rendimiento` no llevan reintento (eventos puntuales), pero también usan clave
+natural como id para no duplicarse entre corridas: `gastoFijo-{gastaFijoId}-{mes}` y
+`rendimiento-{mes}`.
+
+**Estructura de `datos` en `tipo: compra`** — son los mismos nombres de campo que viajaban en el
+query string del [pre-registro por URL](#pre-registro-de-compra-vía-url), a propósito: las dos
+entradas comparten la traducción de `js/utils/prefill-compra.js`.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -346,6 +361,21 @@ Compras que el Apps Script detectó en el correo y todavía no se registran. Es 
 | `msgId` | string | Id del mensaje de Gmail — sirve para detectar que la compra ya se registró |
 | `asunto` | string | Asunto crudo del correo, el contexto que salva la fila cuando no hubo match |
 | `match` | boolean | Si el diccionario reconoció el comercio |
+
+**Estructura de `datos` en `tipo: corte`** — discriminada por `datos.subtipo`:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `subtipo` | string | `faltaImpacto` \| `sinConfirmar` \| `sinCerrar` |
+| `mes` | string | `YYYY-MM` del impacto afectado |
+| `tarjetaId` | string? | Solo en `sinConfirmar` |
+| `nombre` | string? | Solo en `sinConfirmar` — alias de la tarjeta |
+| `fechaCorte` | string? | Solo en `sinConfirmar` |
+| `monto` | number? | Solo en `sinConfirmar` — `montoAPagar` confirmado, o `estimadoTotal` si aún no |
+
+**Estructura de `datos` en `tipo: gastoFijo`:** `{ gastaFijoId, nombre, importe, fechaPago }`.
+
+**Estructura de `datos` en `tipo: rendimiento`:** `{ mes }`.
 
 El `estatus` no lo revisa ningún proceso en segundo plano: lo escribe la app al registrar o descartar. El trigger diario del script sí borra las `procesada`/`descartada` con más de 30 días.
 
@@ -631,30 +661,40 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 
 ### Notificaciones (`#/notificaciones`)
 
-Bandeja de compras que el Apps Script detectó en el correo (colección
-[`notificaciones`](#notificacionesid)) y que todavía no se registran. Sustituye al correo
-individual por compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
+Bandeja de avisos accionables (colección [`notificaciones`](#notificacionesid)): compras que el
+Apps Script detectó en el correo, y los tres recordatorios de `docs/RECORDATORIOS-PUSH.md` —
+corte de tarjeta, gasto fijo por confirmar, cierre de mes. Sustituye al correo individual por
+compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
 
-- Lista solo las de `tipo: compra` y `estatus: pendiente`, más recientes arriba. El filtro por
-  `estatus` va en la consulta; el de `tipo` en JS, para no necesitar un índice compuesto.
-- Cada fila muestra el importe, el comercio (`datos.desc`), el **asunto crudo del correo**
-  (`datos.asunto`), la fecha/hora y la terminación de la tarjeta como píldora teñida con el color
-  de su institución (se resuelve con `matchTarjetaPorTerminacion`, porque la notificación solo
-  guarda los 4 dígitos; sin coincidencia va en gris neutro). Dos insignias más: `N MSI` en compras
-  a plazos y `sin match` cuando el diccionario del script no reconoció el comercio — ahí el asunto
-  es lo único que orienta.
-- **Escritorio:** todo en un renglón, con el asunto absorbiendo el ancho sobrante. **Móvil:** dos
-  renglones exactos — arriba lo que identifica el cargo, abajo el asunto. El asunto baja con
-  `order`, no reordenando el HTML, y el año de la fecha se oculta para que el primer renglón
-  quepa (ninguna detección pasa de 30 días).
-- **Tocar la fila** abre el modal del Registro Rápido precargado
-  (`prefillDesdeDatos` → `openQuickAdd`), el mismo del FAB, con su vista previa de ciclo,
-  disponible e impacto. Al guardar, la notificación pasa a `estatus: procesada`. Si el modal se
-  cambia de contado a plazos (o al revés), la notificación se cierra igual: `onSaved` viaja con
-  el cambio.
-- Si el `msgId` ya está en `contado` o `msi`, la compra se registró antes: no se abre el modal,
-  la notificación se marca `procesada` directamente.
-- **La `×`** la marca `descartada` sin registrar nada, con confirmación.
+- Lista **los 4 tipos** con `estatus: pendiente`, más recientes arriba (`_cargarPendientes`) — ya
+  no filtra por `tipo`, así que `refrescarBadge`/`pintarBadge` cuentan los recordatorios sin
+  cambios adicionales.
+- **Fila de compra** (`tipo: compra`): importe, comercio (`datos.desc`), el **asunto crudo del
+  correo** (`datos.asunto`), fecha/hora y la terminación de la tarjeta como píldora teñida con el
+  color de su institución (se resuelve con `matchTarjetaPorTerminacion`, porque la notificación
+  solo guarda los 4 dígitos; sin coincidencia va en gris neutro). Dos insignias más: `N MSI` en
+  compras a plazos y `sin match` cuando el diccionario del script no reconoció el comercio — ahí
+  el asunto es lo único que orienta.
+  - **Escritorio:** todo en un renglón, con el asunto absorbiendo el ancho sobrante. **Móvil:**
+    dos renglones exactos — arriba lo que identifica el cargo, abajo el asunto. El asunto baja
+    con `order`, no reordenando el HTML, y el año de la fecha se oculta para que el primer
+    renglón quepa (ninguna detección pasa de 30 días).
+  - **Tocar la fila** abre el modal del Registro Rápido precargado (`prefillDesdeDatos` →
+    `openQuickAdd`), el mismo del FAB, con su vista previa de ciclo, disponible e impacto. Al
+    guardar, la notificación pasa a `estatus: procesada`. Si el modal se cambia de contado a
+    plazos (o al revés), la notificación se cierra igual: `onSaved` viaja con el cambio.
+  - Si el `msgId` ya está en `contado` o `msi`, la compra se registró antes: no se abre el modal,
+    la notificación se marca `procesada` directamente.
+- **Fila de recordatorio** (`tipo: corte` \| `gastoFijo` \| `rendimiento`): plantilla genérica más
+  simple — ícono por tipo, título y cuerpo corto (`_textoRecordatorio`, mismos textos que el push
+  de `docs/app-script-recordatorios.gs`). **Tocar la fila** no abre el modal de compra: navega a
+  `#/impacto/{mes}` (corte), `#/compras/gastos` (gastoFijo) o `#/rendimientos` (rendimiento), y
+  marca `estatus: procesada`. El auto-resuelto que hace Apps Script cuando la condición deja de
+  cumplirse (tarjeta confirmada, impacto creado, mes cerrado) sigue siendo el mecanismo
+  principal — el tap solo adelanta el `procesada` si el usuario entra manualmente antes de la
+  próxima corrida.
+- **La `×`** la marca `descartada` sin registrar/procesar nada, con confirmación — igual en los 4
+  tipos.
 - **Indicadores de pendientes**, los dos alimentados por `refrescarBadge` (que llama `app.js` al
   iniciar sesión y esta vista tras cada cambio; `pintarBadge(0)` los apaga al cerrar sesión):
   - **Escritorio:** insignia con el número en el enlace del sidebar. Con el sidebar colapsado se

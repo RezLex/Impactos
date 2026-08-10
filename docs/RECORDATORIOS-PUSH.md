@@ -1,8 +1,16 @@
 # Recordatorios push — plan
 
-> Extiende el sistema de notificaciones (`docs/NOTIFICACIONES-PUSH.md`) con el
-> `tipo: 'recordatorio'` que ese diseño dejó pendiente. Este archivo es el plan
-> acordado, todavía sin implementar.
+> Extiende el sistema de notificaciones (`docs/NOTIFICACIONES-PUSH.md`) con los
+> tipos `corte`/`gastoFijo`/`rendimiento` que ese diseño dejó pendientes. Este
+> archivo es el plan acordado.
+>
+> **Estado:** implementado del lado del cliente (`js/modules/notificaciones.js`)
+> y escrito el Apps Script nuevo (`docs/app-script-recordatorios.gs`), **sin
+> desplegar ni verificar** todavía: falta correr `pruebaRecordatorios()` desde
+> el editor de Apps Script, crear el trigger diario de `procesarRecordatorios()`
+> y confirmar en el teléfono real (ver "Verificación" al final de este
+> archivo). El detalle vigente de cada pieza vive en `docs/DOCUMENTACION.md`;
+> este archivo queda como registro del diseño acordado.
 
 ## Alcance
 

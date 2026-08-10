@@ -1998,6 +1998,24 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
    útil, pero no hay institución de la cual sacar un color. */
 .noti-tarjeta-nd { background: var(--tint-neutral); color: var(--on-tint-neutral); }
 
+/* Recordatorios (corte, gastoFijo, rendimiento): fila más simple que la de
+   compra — ícono + título/cuerpo, sin monto ni insignias. */
+.noti-recordatorio-texto { flex: 1; min-width: 0; }
+.noti-recordatorio-titulo {
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.noti-recordatorio-cuerpo {
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Móvil: dos renglones exactos. Arriba todo lo que identifica el cargo —monto,
    comercio, insignias, fecha/hora y la terminación—; abajo el asunto, que es lo
    único realmente largo. Cabe porque el año se oculta (estas detecciones nunca
