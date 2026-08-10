@@ -7,7 +7,7 @@ import {
   getPlazosMes, getGastosDebitoCompleto, calcularTotalesCredito,
   recalcTotalesImpacto,
 } from '../utils/impacto-calc.js';
-import { resumenCuenta, totalizarResumenes } from '../utils/rendimiento.js';
+import { resumenCuenta, totalizarResumenes, registrarInhabiles } from '../utils/rendimiento.js';
 
 export async function render(container) {
   container.innerHTML = `<div class="loading-overlay"><div class="spinner-border text-primary" role="status"></div></div>`;
@@ -74,6 +74,9 @@ export async function render(container) {
     const usadoPct       = creditoTotal > 0 ? Math.round((deudaTotal / creditoTotal) * 100) : 0;
 
     // ── Rendimientos de las cuentas de inversión ─────────────────────────────
+    // Los festivos van antes del cálculo: las cuentas que solo abonan en días
+    // hábiles los necesitan para saber cuándo se acredita el interés.
+    registrarInhabiles(festivosMX);
     const rend = totalizarResumenes(inversiones.map(c => resumenCuenta(c, hoy)));
     // Con 3 tarjetas hacen falta ~313px cada una para que el importe no se
     // corte; con el sidebar eso solo se cumple desde xxl. Debajo, la tercera

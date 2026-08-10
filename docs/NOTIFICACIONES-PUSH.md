@@ -170,13 +170,30 @@ Solo aplica a `_showContado` (de contado, no a plazos). Se agrega un toggle "Acu
 ## Texto de los pushes
 
 Mensajes **data-only** (sin bloque `notification`), para que el `push` de `sw.js` controle el
-`showNotification` y el navegador no muestre además una copia propia:
+`showNotification` y el navegador no muestre además una copia propia.
 
-- Título: `$1,234.56 — Amazon`, más ` (6 MSI)` cuando la compra trae meses.
-- Cuerpo: `···2167 · toca para registrar`, o el asunto crudo del correo cuando
+**Un solo aviso por corrida**, no uno por compra. `procesarCompras` acumula lo que creó y manda el
+push al final. Un reproceso puede detectar diez correos de golpe, y eso eran diez vibraciones
+seguidas; los documentos en Firestore se siguen creando uno por compra, que es lo que importa.
+
+**Una compra** — el detalle, que es lo útil cuando es una sola:
+
+- Título: `$1,372.23 — Amazon`, más ` (6 MSI)` cuando trae meses.
+- Cuerpo: `···2167 — toca para registrarla`, o el asunto crudo del correo cuando
   `match === false` (ahí el comercio no dice nada útil).
-- Ícono: `icons/icon-192.png`. `tag` = id del documento de notificación, para que un reintento no
-  apile copias de la misma compra.
+- `tag` = id del documento.
+
+**Varias** — cuántas, de dónde y por cuánto. El detalle de cada una no cabe y tampoco hace falta:
+el aviso lleva a la lista, que sí lo tiene.
+
+- Título: `3 compras detectadas`
+- Cuerpo: `Uber, Amazon y 1 más · $1,654.93 en total`
+- `tag` = `resumen-{timestamp}`, único por corrida: dos resúmenes seguidos son avisos distintos y
+  el segundo no debe tapar al primero.
+
+Ícono `icons/icon-192.png` y badge `icons/badge-96.png` (monocromo: Android lo enmascara por canal
+alfa). Los importes se formatean con `pesos()` — llegan como `number`, y `'$' + 195.7` daría
+`$195.7`.
 
 ## Pendiente de definir
 

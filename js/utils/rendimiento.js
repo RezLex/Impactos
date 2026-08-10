@@ -64,6 +64,50 @@
  * en un centavo del que resulta de restar esos dos movimientos ya redondeados,
  * y el saldo compuesto se va desviando del real con el tiempo.
  *
+ * Calendario de abono
+ * ───────────────────
+ * Devengar y abonar no son lo mismo, aunque en la mayoría de las cuentas
+ * coincidan. El dinero TRABAJA todos los días naturales; lo que cambia entre
+ * instituciones es cuándo el interés ganado se acredita al saldo — y hasta que
+ * no se acredita, no compone.
+ *
+ *   `natural` (default)  Devenga y abona todos los días. Es como operan las
+ *                        fintech (Revolut, Nu, Mercado Pago) y es idéntico,
+ *                        peso a peso, al comportamiento previo a este campo.
+ *
+ *   `habilAcumula`       Devenga todos los días, pero solo mueve dinero en días
+ *                        hábiles: lo generado en fin de semana o festivo se
+ *                        guarda y se abona junto el siguiente día hábil.
+ *
+ *   `habilSolo`          Ni siquiera devenga en día inhábil. Es como operan los
+ *                        fondos de inversión, que solo tienen precio los días
+ *                        que abre el mercado.
+ *
+ * La regla que ordena todo es una sola:
+ *
+ *   fecha de abono del devengo del día D = siguiente día hábil desde D
+ *
+ * Va sobre el propio día D, no sobre D+1, porque así es como la app presenta el
+ * dato en todos lados: el renglón de `historialDiario` de un día es lo que la
+ * institución movió ESE día (de ahí el corte de las 7am de `hoyISO`, que espera
+ * a que la madrugada haya abonado antes de contar el día como propio). Bajo esa
+ * convención, un sábado tiene que mostrar $0 de abono y el lunes el acumulado
+ * del puente — que es literalmente lo que se ve en la app del banco.
+ *
+ * Lo devengado y todavía no acreditado vive en `pendiente`, fuera del saldo, que
+ * es exactamente donde lo tiene la institución. Por eso el saldo proyectado de
+ * un domingo vuelve a coincidir con el del estado de cuenta, en vez de ir
+ * inflándose cada fin de semana y dejar un residuo espurio al conciliar.
+ *
+ * Distinguir `habilAcumula` de `habilSolo` importa porque el costo de
+ * confundirlas es de órdenes distintos: la primera solo retrasa la composición
+ * un par de días (centavos al año), la segunda quita ~110 días de devengo.
+ *
+ * Qué días son inhábiles sale de `registrarInhabiles()` — los fines de semana
+ * son gratis y los festivos vienen de la colección `festivosMX`, la misma que
+ * ya usa el ciclo de las tarjetas. Sin festivos registrados el cálculo degrada
+ * a solo fines de semana, que es la mayor parte del efecto.
+ *
  * Eventos de la cuenta
  * ────────────────────
  * El saldo cambia por tres razones distintas, y confundirlas es lo que hace que
@@ -117,6 +161,11 @@ export const TASA_EFECTIVA = 'efectiva';
 export const REDONDEO_CONTINUO = 'continuo';
 export const REDONDEO_CENTAVOS = 'centavos';
 
+/** Qué días devenga y qué días abona la cuenta. Ver la nota de calendario arriba. */
+export const ABONO_NATURAL      = 'natural';
+export const ABONO_HABIL_ACUMULA = 'habilAcumula';
+export const ABONO_HABIL_SOLO    = 'habilSolo';
+
 /** Por qué cambió el saldo. Ver la nota de eventos en la cabecera. */
 export const EVENTO_ANCLA      = 'ancla';
 export const EVENTO_MOVIMIENTO = 'movimiento';
@@ -128,6 +177,9 @@ export const MOV_RETIRO = 'retiro';
 
 /** Diferencia por debajo de la cual dos importes se consideran el mismo. */
 const EPS = 0.005; // medio centavo
+
+/** Redondea a centavos. Dinero real nunca tiene fracción de centavo. */
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
 /** Tramos precargados al crear una cuenta nueva. */
 export const TRAMOS_DEFAULT = [
@@ -184,6 +236,59 @@ export function sumarDias(iso, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// ── Días inhábiles ────────────────────────────────────────────────────────────
+
+/**
+ * Los festivos son una propiedad del país, no de la cuenta: el mismo calendario
+ * aplica a todas y llega de Firestore (`festivosMX`) de forma asíncrona, mientras
+ * que las entradas del motor —`resumenCuenta`, `historialDiario`— son síncronas y
+ * reciben solo el documento de la cuenta. De ahí este registro de módulo: la app
+ * lo llena una vez al cargar la vista y `configCuenta` lo fotografía dentro de la
+ * `cfg`, así el cálculo en sí sigue dependiendo únicamente de sus argumentos.
+ */
+let _inhabiles = new Set();
+
+/**
+ * Registra los días festivos que usarán las cuentas con calendario hábil.
+ * @param {Array<string|{fecha:string}>} fechas - documentos de `festivosMX` o ISO sueltos
+ */
+export function registrarInhabiles(fechas) {
+  _inhabiles = new Set(
+    (Array.isArray(fechas) ? fechas : [])
+      .map(f => isoDay(typeof f === 'string' ? f : f?.fecha))
+      .filter(Boolean));
+  return _inhabiles;
+}
+
+/** Los festivos registrados. */
+export const inhabilesRegistrados = () => _inhabiles;
+
+/** Si una fecha cae en fin de semana o en un festivo registrado. */
+export function esInhabil(fecha, inhabiles = _inhabiles) {
+  const iso = isoDay(fecha);
+  if (!iso) return false;
+  const dow = new Date(utcMs(iso)).getUTCDay();
+  return dow === 0 || dow === 6 || !!inhabiles?.has?.(iso);
+}
+
+/** Primer día hábil en o después de `fecha`. */
+export function siguienteHabil(fecha, inhabiles = _inhabiles) {
+  let f = isoDay(fecha);
+  // Un puente jamás llega a 10 días; el tope solo evita un bucle infinito si
+  // alguien registrara medio calendario como festivo.
+  for (let i = 0; i < 10 && esInhabil(f, inhabiles); i++) f = sumarDias(f, 1);
+  return f;
+}
+
+/**
+ * Cuándo se acredita el interés devengado el día `fecha`: ese mismo día si la
+ * institución opera, y si no, el siguiente hábil. Ver la nota de calendario.
+ */
+export function fechaAbono(fecha, cfg) {
+  const dia = isoDay(fecha);
+  return cfg?.abonaSoloHabil ? siguienteHabil(dia, cfg.inhabiles) : dia;
+}
+
 // ── Tramos ────────────────────────────────────────────────────────────────────
 
 /**
@@ -225,6 +330,62 @@ export function tramoActivo(tramos, saldo) {
   return tramos.findIndex(t => saldo > t.desde && (t.hasta == null || saldo <= t.hasta));
 }
 
+// ── Vigencias de tasa ─────────────────────────────────────────────────────────
+
+/**
+ * Las instituciones cambian la tasa que publican de vez en cuando, y el saldo
+ * que ya estaba invertido siguió ganando la tasa VIEJA hasta el día del
+ * cambio — recalcular todo el historial con la tasa nueva falsearía lo
+ * ganado antes del cambio. Por eso una cuenta no tiene una sola tasa: tiene
+ * una línea de tiempo de vigencias, cada una con sus propios tramos.
+ *
+ * `tramos`/`modoTramos`/`modoTasa` en la raíz de la cuenta son la vigencia
+ * ACTUAL — mismo patrón que `montoInvertido`/`fechaActualizacion` para el
+ * saldo — y `tasaDesde` es desde cuándo aplica. Las vigencias superadas viven
+ * en `historialTasas`, cada una con su propio `desde`.
+ *
+ * `desde: null` significa "vigente desde el origen de la cuenta" — así se
+ * comportan todas las cuentas que nunca registraron un cambio de tasa, y así
+ * queda la vigencia más antigua de cualquier cuenta que sí los registra.
+ *
+ * @param {object} cuenta
+ * @returns {Array<{desde:string|null, tramos:Array, modo:string, modoTasa:string}>} ascendente
+ */
+export function vigenciasTasa(cuenta = {}) {
+  const normaliza = v => ({
+    desde:    v.desde == null ? null : isoDay(v.desde),
+    tramos:   normalizarTramos(v.tramos),
+    modo:     v.modoTramos === MODO_UNICO ? MODO_UNICO : MODO_PROGRESIVO,
+    modoTasa: v.modoTasa === TASA_EFECTIVA ? TASA_EFECTIVA : TASA_NOMINAL,
+  });
+
+  const pasadas = (Array.isArray(cuenta.historialTasas) ? cuenta.historialTasas : [])
+    .filter(Boolean)
+    .map(normaliza);
+
+  const actual = normaliza({
+    desde: cuenta.tasaDesde ?? null,
+    tramos: cuenta.tramos, modoTramos: cuenta.modoTramos, modoTasa: cuenta.modoTasa,
+  });
+
+  return [...pasadas, actual].sort((a, b) => (a.desde ?? '').localeCompare(b.desde ?? ''));
+}
+
+/**
+ * La vigencia que aplica en una fecha: la de `desde` más reciente que no sea
+ * posterior a ella. Una fecha anterior a toda vigencia con `desde` explícito
+ * cae en la primera (que es la que tiene `desde: null`, si la cuenta está bien
+ * formada) — no puede quedar sin ninguna.
+ */
+export function vigenciaEnFecha(vigencias, fecha) {
+  const dia = isoDay(fecha);
+  let v = vigencias[0];
+  for (const x of vigencias) {
+    if (x.desde == null || (dia && x.desde <= dia)) v = x; else break;
+  }
+  return v;
+}
+
 // ── Configuración de cálculo ──────────────────────────────────────────────────
 
 /**
@@ -232,14 +393,34 @@ export function tramoActivo(tramos, saldo) {
  * funciones de cálculo. Todas ellas reciben este objeto en lugar de una lista
  * larga de parámetros posicionales.
  *
+ * `inhabiles` se fotografía aquí (por defecto, del registro de módulo) para que
+ * las funciones de cálculo no lean nada de fuera de su `cfg`.
+ *
  * @param {object} cuenta
+ * @param {Set<string>|Array} [inhabiles] - festivos a usar; default, los registrados
  * @returns {{tramos:Array, modo:string, base:number, isrAnual:number, baseIsr:number}}
  */
-export function configCuenta(cuenta = {}) {
+export function configCuenta(cuenta = {}, inhabiles) {
+  const abono = cuenta.calendarioAbono === ABONO_HABIL_ACUMULA ? ABONO_HABIL_ACUMULA
+              : cuenta.calendarioAbono === ABONO_HABIL_SOLO    ? ABONO_HABIL_SOLO
+              : ABONO_NATURAL;
   return {
+    abono,
+    // Derivadas del modo para que el bucle diario no vuelva a compararlo cada día
+    devengaInhabil: abono !== ABONO_HABIL_SOLO,
+    abonaSoloHabil: abono !== ABONO_NATURAL,
+    inhabiles: inhabiles instanceof Set ? inhabiles
+             : Array.isArray(inhabiles)
+               ? new Set(inhabiles.map(f => isoDay(typeof f === 'string' ? f : f?.fecha)).filter(Boolean))
+               : _inhabiles,
+    // tramos/modo/modoTasa son la vigencia ACTUAL — lo que muestra toda la UI
+    // que no depende de una fecha (tarjeta, desglose de hoy, GAT). `vigencias`
+    // es la línea de tiempo completa; solo el compuesto diario la consulta,
+    // para usar la tasa que corresponda a cada día en vez de la de hoy.
     tramos:   normalizarTramos(cuenta.tramos),
     modo:     cuenta.modoTramos === MODO_UNICO ? MODO_UNICO : MODO_PROGRESIVO,
     modoTasa: cuenta.modoTasa === TASA_EFECTIVA ? TASA_EFECTIVA : TASA_NOMINAL,
+    vigencias: vigenciasTasa(cuenta),
     base:     Number(cuenta.baseAnual) || BASE_ANUAL_DEFAULT,
     isrAnual: Number(cuenta.isrAnual)  || 0,
     isrSobre: cuenta.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
@@ -306,29 +487,88 @@ function pasoDiario(saldo, cfg) {
   const bruto = interesDiario(saldo, cfg);
   const isr   = isrDiario(saldo, cfg, bruto);
   if (cfg.redondeo === REDONDEO_CENTAVOS) {
-    return { bruto: Math.round(bruto * 100) / 100, isr: Math.round(isr * 100) / 100 };
+    return { bruto: r2(bruto), isr: r2(isr) };
   }
   return { bruto, isr };
 }
 
 /**
+ * Un día completo: lo que devenga y si eso se acredita al saldo o engrosa la
+ * bolsa de pendientes. Es el único lugar donde el calendario entra al cálculo
+ * — y, si la cuenta registró más de una vigencia de tasa, también el único
+ * lugar donde se decide cuál tramo/tasa le toca a ESTE día en particular.
+ *
+ * `fecha` puede omitirse — sin ella no hay calendario que aplicar (el día se
+ * resuelve como `natural`) ni vigencia que resolver (se usa la actual,
+ * `cfg.tramos`). Es el caso de las proyecciones abstractas ("¿cuánto en 30
+ * días?") que no arrancan de una fecha concreta.
+ *
+ * @returns {{bruto, isr, neto, abonado, pendiente, saldo}} `neto` es lo devengado
+ *          hoy; `abonado`, lo que efectivamente entró al saldo (puede incluir
+ *          días anteriores); `pendiente` y `saldo`, cómo queda todo al cierre.
+ */
+function pasoCalendario(saldo, pendiente, cfg, fecha) {
+  const conCalendario = !!fecha && (cfg.abonaSoloHabil || !cfg.devengaInhabil);
+
+  // Con una sola vigencia (el caso normal) esto es cfg tal cual — no hay nada
+  // que resolver día a día. Con varias, cada día usa la tasa que estaba
+  // vigente ESE día, no la de hoy: lo ya ganado con la tasa vieja no se
+  // recalcula con la nueva.
+  const cfgDia = (fecha && cfg.vigencias?.length > 1)
+    ? { ...cfg, ...vigenciaEnFecha(cfg.vigencias, fecha) }
+    : cfg;
+
+  const paso = (conCalendario && !cfg.devengaInhabil && esInhabil(fecha, cfg.inhabiles))
+    ? { bruto: 0, isr: 0 }
+    : pasoDiario(saldo, cfgDia);
+  const neto = paso.bruto - paso.isr;
+
+  // En día inhábil la institución no mueve dinero: lo devengado engorda la bolsa
+  // y no compone hasta que se acredite. El primer día hábil la vacía junto con
+  // lo suyo propio.
+  if (conCalendario && cfg.abonaSoloHabil && esInhabil(fecha, cfg.inhabiles)) {
+    return { ...paso, neto, abonado: 0, pendiente: pendiente + neto, saldo };
+  }
+
+  const abonado = pendiente + neto;
+  return { ...paso, neto, abonado, pendiente: 0, saldo: Math.max(0, saldo + abonado) };
+}
+
+/**
  * Capitaliza un saldo día a día, descontando la retención antes de reinvertir
  * (lo que se capitaliza es el interés neto).
- * @returns {{saldoFinal:number, rendimiento:number, bruto:number, isr:number, dias:number}}
+ *
+ * `desde` solo hace falta cuando la cuenta tiene calendario de abono; sin ella
+ * se compone como `natural`, que es lo que quieren las proyecciones abstractas.
+ *
+ * `rendimiento` es lo DEVENGADO en el tramo —incluye lo que quedó pendiente de
+ * abono— mientras que `saldoFinal` es lo efectivamente acreditado, que es lo que
+ * muestra la institución. En una cuenta `natural` nunca hay pendiente y las dos
+ * cifras vuelven a ser la misma resta de siempre.
+ *
+ * @returns {{saldoFinal, rendimiento, bruto, isr, dias, pendiente, ultimo}}
  */
-export function componer(saldoInicial, dias, cfg) {
+export function componer(saldoInicial, dias, cfg, desde = null, pendienteInicial = 0) {
   const inicial = Number(saldoInicial) || 0;
+  const pend0   = Number(pendienteInicial) || 0;
   const n = Math.max(0, Math.min(Math.floor(Number(dias) || 0), MAX_DIAS));
-  let saldo = inicial, bruto = 0, isr = 0, ultimo = null;
+  let saldo = inicial, pendiente = pend0, bruto = 0, isr = 0, ultimo = null;
+  let fecha = desde ? isoDay(desde) : null;
   for (let i = 0; i < n; i++) {
-    const { bruto: b, isr: r } = pasoDiario(saldo, cfg);
-    bruto += b;
-    isr   += r;
-    ultimo = { bruto: b, isr: r, neto: b - r };
-    saldo = Math.max(0, saldo + b - r);
+    const p = pasoCalendario(saldo, pendiente, cfg, fecha);
+    bruto += p.bruto;
+    isr   += p.isr;
+    ultimo = { bruto: p.bruto, isr: p.isr, neto: p.neto, abonado: p.abonado };
+    saldo     = p.saldo;
+    pendiente = p.pendiente;
+    if (fecha) fecha = sumarDias(fecha, 1);
   }
   // `ultimo` es el último día compuesto — sirve para reportar "ayer" sin recorrer de nuevo
-  return { saldoFinal: saldo, rendimiento: saldo - inicial, bruto, isr, dias: n, ultimo };
+  return {
+    saldoFinal: saldo,
+    rendimiento: (saldo + pendiente) - (inicial + pend0),
+    bruto, isr, dias: n, pendiente, ultimo,
+  };
 }
 
 /**
@@ -498,22 +738,32 @@ function ordenarEventos(eventos) {
  *
  * Los eventos exactamente en `desde` quedan fuera —ya están incorporados al saldo
  * de partida— y los de `hasta` sí entran: todo saldo es de cierre del día.
+ *
+ * `pendienteInicial` es el interés ya devengado y todavía sin abonar al arrancar
+ * (ver el calendario de abono). Quien encadena tramos —`historialDiario`, que
+ * llama de a un día— tiene que pasarlo, o el interés del fin de semana se
+ * perdería en el corte entre un tramo y el siguiente.
  */
-function recorrer(eventos, desde, hasta, saldoInicial, cfg) {
+function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0) {
   const acc = {
     saldo: Number(saldoInicial) || 0,
+    pendiente: Number(pendienteInicial) || 0,
     rendimiento: 0, bruto: 0, isr: 0,
     movimientos: 0, ajustes: 0, residuo: 0,
     ultimo: null,
   };
   let cursor = desde;
 
+  // `cursor` es el CIERRE del día ya resuelto, así que el primer día que este
+  // tramo devenga es el siguiente — de ahí el +1 en la fecha que se le pasa a
+  // `componer`. Pasarle `cursor` a secas corría el calendario un día entero.
   const avanzar = fin => {
-    const paso = componer(acc.saldo, diasEntre(cursor, fin), cfg);
+    const paso = componer(acc.saldo, diasEntre(cursor, fin), cfg, sumarDias(cursor, 1), acc.pendiente);
     acc.rendimiento += paso.rendimiento;
     acc.bruto       += paso.bruto;
     acc.isr         += paso.isr;
     acc.saldo        = paso.saldoFinal;
+    acc.pendiente    = paso.pendiente;
     if (paso.ultimo) acc.ultimo = paso.ultimo;
     cursor = fin;
   };
@@ -525,14 +775,15 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg) {
   // criterio que el resto del cálculo — se abona a la madrugada siguiente).
   const unDia = () => {
     if (cursor >= hasta) return;
-    const { bruto, isr } = pasoDiario(acc.saldo, cfg);
-    const neto = bruto - isr;
-    acc.bruto       += bruto;
-    acc.isr         += isr;
-    acc.rendimiento += neto;
-    acc.ultimo       = { bruto, isr, neto };
-    acc.saldo        = Math.max(0, acc.saldo + neto);
-    cursor = sumarDias(cursor, 1);
+    const dia = sumarDias(cursor, 1);
+    const p = pasoCalendario(acc.saldo, acc.pendiente, cfg, dia);
+    acc.bruto       += p.bruto;
+    acc.isr         += p.isr;
+    acc.rendimiento += p.neto;
+    acc.ultimo       = { bruto: p.bruto, isr: p.isr, neto: p.neto, abonado: p.abonado };
+    acc.saldo        = p.saldo;
+    acc.pendiente    = p.pendiente;
+    cursor = dia;
   };
 
   for (const e of eventos) {
@@ -581,11 +832,10 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg) {
  * usuario que no son necesariamente una captura, y ahí no se verificó si
  * aplica la misma corrección.
  */
-function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg) {
-  const { bruto, isr } = pasoDiario(saldoCapturado, cfg);
-  const neto           = bruto - isr;
-  const saldoTrasSuDia = Math.max(0, saldoCapturado + neto);
-  const resto          = recorrer(eventos, desde, hasta, saldoTrasSuDia, cfg);
+function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg, pendienteInicial = 0) {
+  const p     = pasoCalendario(saldoCapturado, Number(pendienteInicial) || 0, cfg, desde);
+  const resto = recorrer(eventos, desde, hasta, p.saldo, cfg, p.pendiente);
+  const { bruto, isr, neto } = p;
   return {
     ...resto,
     bruto:        resto.bruto + bruto,
@@ -595,12 +845,16 @@ function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg) {
     dias:         diasEntre(desde, hasta),
     // Si nada compuso después (ej. `desde === hasta`), el propio día de la
     // captura ES el último — igual que el primer renglón de historialDiario.
-    ultimo:       resto.ultimo || { bruto, isr, neto },
+    ultimo:       resto.ultimo || { bruto, isr, neto, abonado: p.abonado },
   };
 }
 
-/** Saldo proyectado al cierre de una fecha; `null` si es anterior a la primera ancla. */
-export function saldoEnFecha(eventos, fecha, cfg) {
+/**
+ * Saldo acreditado y devengo pendiente de abono al cierre de una fecha.
+ * `null` si es anterior a la primera ancla.
+ * @returns {{saldo:number, pendiente:number}|null}
+ */
+export function estadoEnFecha(eventos, fecha, cfg) {
   const evs = ordenarEventos(eventos);
   const dia = isoDay(fecha);
   let ancla = null;
@@ -609,7 +863,13 @@ export function saldoEnFecha(eventos, fecha, cfg) {
     if (e.fecha <= dia) ancla = e; else break;
   }
   if (!ancla) return null;
-  return recorrer(evs, ancla.fecha, dia, ancla.monto, cfg).saldo;
+  const t = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg);
+  return { saldo: t.saldo, pendiente: t.pendiente };
+}
+
+/** Saldo proyectado al cierre de una fecha; `null` si es anterior a la primera ancla. */
+export function saldoEnFecha(eventos, fecha, cfg) {
+  return estadoEnFecha(eventos, fecha, cfg)?.saldo ?? null;
 }
 
 /**
@@ -638,15 +898,16 @@ export function rendimientoEntre(eventos, fInicio, fFin, cfg) {
   if (!ini || !fin || diasEntre(ini, fin) < 0) return null;
   if (diasEntre(primera, fin) < 0) return null; // todo el rango es previo al primer dato
 
-  const desde = ini < primera ? primera : ini;
-  const saldoInicial = saldoEnFecha(evs, desde, cfg);
-  if (saldoInicial == null) return null;
+  const desde  = ini < primera ? primera : ini;
+  const estado = estadoEnFecha(evs, desde, cfg);
+  if (estado == null) return null;
+  const saldoInicial = estado.saldo;
 
-  const t = recorrer(evs, desde, fin, saldoInicial, cfg);
+  const t = recorrer(evs, desde, fin, saldoInicial, cfg, estado.pendiente);
 
   return {
     rendimiento: t.rendimiento, bruto: t.bruto, isr: t.isr,
-    saldoInicial, saldoFinal: t.saldo,
+    saldoInicial, saldoFinal: t.saldo, pendiente: t.pendiente,
     aportaciones: t.movimientos + t.residuo,
     movimientos: t.movimientos, ajustes: t.ajustes, residuo: t.residuo,
     desde, hasta: fin, dias: diasEntre(desde, fin), recortado: desde !== ini,
@@ -745,8 +1006,12 @@ export function conTransferencia(movimientos, pata) {
  * captura no se compara consigo misma, y si ya había uno ese día es porque se
  * está corrigiendo.
  *
+ * El saldo esperado NO incluye lo devengado y todavía sin abonar (`pendiente`):
+ * la institución tampoco lo tiene en el saldo, así que sumarlo generaría un
+ * residuo negativo cada fin de semana en las cuentas con calendario hábil.
+ *
  * @returns {{desde, hasta, dias, saldoAnterior, rendimientoProyectado, movimientos,
- *            ajustes, saldoEsperado, saldoReal, residuo, derivaAnual, cuadra}|null}
+ *            ajustes, saldoEsperado, saldoReal, residuo, pendiente, derivaAnual, cuadra}|null}
  */
 export function conciliar(cuenta, saldoReal, fecha = hoyISO(), cfg = configCuenta(cuenta)) {
   const dia  = isoDay(fecha);
@@ -776,6 +1041,7 @@ export function conciliar(cuenta, saldoReal, fecha = hoyISO(), cfg = configCuent
     saldoEsperado: t.saldo,
     saldoReal: real,
     residuo,
+    pendiente: t.pendiente,
     // Deriva anualizada — sirve para detectar config equivocada, no para cobrar
     derivaAnual: (dias > 0 && ancla.monto > 0)
       ? (residuo / ancla.monto) * (cfg.base / dias) * 100
@@ -854,13 +1120,27 @@ export function recalcularAjustes(cuenta, cfg = configCuenta(cuenta)) {
  * que ya muestra el resumen de la cuenta), sin ese renglón un movimiento o
  * ajuste registrado hoy mismo no aparecería en la tabla en absoluto.
  *
+ * En una cuenta con calendario de abono, `neto` sigue siendo lo que ese día
+ * DEVENGÓ, y `abonado` es lo que de verdad entró al saldo — cero en fin de
+ * semana, y el acumulado de todo el puente el día que abre. La bolsa se encadena
+ * de un renglón al siguiente (`cierrePendiente`): sin eso, cada tramo de un día
+ * arrancaría en cero y el interés del sábado se perdería en el corte.
+ *
+ * `saldoFinal` se encadena sumando `abonado` (y `pendiente`) ya redondeados a
+ * centavos, no el float exacto que produce el motor internamente — dinero real
+ * nunca tiene fracción de centavo, así que sumar lo que la tabla ya muestra
+ * (redondeado) debe dar exactamente el saldo que la tabla muestra. `bruto`,
+ * `isr` y `neto` sí quedan exactos: son la fórmula, útiles para el detalle
+ * auditable ("(exacto)" del reporte), no dinero que ya se movió.
+ *
  * @param {object} cuenta
  * @param {string} [hoy]
  * @param {number} [maxDias] - tope de renglones devueltos
- * @returns {Array<{fecha, saldoInicial, bruto, isr, neto, saldoFinal, movimiento, ajuste}>} ascendente
+ * @param {object} [cfg] - configuración ya resuelta, para no rehacerla en cada llamada
+ * @returns {Array<{fecha, saldoInicial, bruto, isr, neto, abonado, pendiente,
+ *                  saldoFinal, movimiento, ajuste}>} ascendente
  */
-export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
-  const cfg      = configCuenta(cuenta);
+export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400, cfg = configCuenta(cuenta)) {
   const eventos  = eventosCuenta(cuenta);
   const timeline = timelineCuenta(cuenta);
   const primero  = timeline[0];
@@ -879,9 +1159,15 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
   // atravesar tantas anclas intermedias como haga falta para llegar ahí de un
   // solo tirón.
   let cierreFecha = saltados > 0 ? sumarDias(primero.fecha, saltados) : primero.fecha;
-  let cierreSaldo = saltados > 0
-    ? recorrer(eventos, primero.fecha, cierreFecha, primero.monto, cfg).saldo
-    : primero.monto;
+  const arranque  = saltados > 0
+    ? recorrer(eventos, primero.fecha, cierreFecha, primero.monto, cfg)
+    : { saldo: primero.monto, pendiente: 0 };
+  // El saldo (dinero que ya se movió) arranca cents-precise, mismo motivo que
+  // el saldoFinal del bucle. La bolsa pendiente NO: todavía no es dinero
+  // acreditado, así que se redondea recién cuando se abona — redondearla en
+  // cada tramo compondría el error una vez por día en vez de una sola vez.
+  let cierreSaldo          = r2(arranque.saldo);
+  let cierrePendienteExacta = Number(arranque.pendiente) || 0;
 
   // Movimientos y ajustes dentro de la ventana mostrada, para las etiquetas de
   // cada renglón — las anclas no llevan etiqueta propia, ya se ven en el salto
@@ -894,7 +1180,7 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
 
   const out = [];
   for (let i = 0; i < n; i++) {
-    let fecha, bruto, isr, saldoFinal, movimiento = 0, ajuste = 0;
+    let fecha, bruto, isr, saldoFinal, pendiente, abonado, movimiento = 0, ajuste = 0;
 
     if (i === 0) {
       // El primer renglón mostrado —sea el día de la primerísima ancla, o el
@@ -903,12 +1189,24 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
       // vez de sumarle un día: si también le sumara uno, todo el recorte
       // quedaría corrido una fecha de más (el bug que esto reemplaza).
       fecha = cierreFecha;
-      ({ bruto, isr } = pasoDiario(cierreSaldo, cfg));
-      saldoFinal = Math.max(0, cierreSaldo + bruto - isr);
+      const p = pasoCalendario(cierreSaldo, cierrePendienteExacta, cfg, fecha);
+      bruto = p.bruto; isr = p.isr;
+      abonado = r2(p.abonado);
+      saldoFinal = r2(p.saldo);
+      pendiente = r2(p.pendiente);           // solo para mostrar
+      cierrePendienteExacta = p.pendiente;   // lo que se encadena, sin redondear
     } else {
       fecha = sumarDias(cierreFecha, 1);
-      const paso = recorrer(eventos, cierreFecha, fecha, cierreSaldo, cfg);
-      bruto = paso.bruto; isr = paso.isr; saldoFinal = paso.saldo;
+      const paso = recorrer(eventos, cierreFecha, fecha, cierreSaldo, cfg, cierrePendienteExacta);
+      bruto = paso.bruto; isr = paso.isr;
+      // `recorrer` ya sabe manejar ancla (resetea), movimiento y ajuste
+      // (suman) — no se reconstruye a mano; solo se redondea su resultado.
+      // Como `cierreSaldo` que recibió ya venía cents-precise, lo único que
+      // puede traer fracción de centavo es el interés del propio día.
+      abonado    = paso.ultimo ? r2(paso.ultimo.abonado) : 0;
+      saldoFinal = r2(paso.saldo);
+      pendiente  = r2(paso.pendiente);         // solo para mostrar
+      cierrePendienteExacta = paso.pendiente;  // lo que se encadena, sin redondear
       (porFecha.get(fecha) || []).forEach(e => {
         if (e.tipo === EVENTO_MOVIMIENTO) movimiento += e.monto;
         else                              ajuste     += e.monto;
@@ -920,13 +1218,65 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
     if (cierreSaldo > 0 || saldoFinal > 0 || movimiento || ajuste) {
       out.push({
         fecha, saldoInicial: cierreSaldo, bruto, isr, neto: bruto - isr,
-        saldoFinal, movimiento, ajuste,
+        abonado, pendiente, saldoFinal, movimiento, ajuste,
       });
     }
     cierreFecha = fecha;
     cierreSaldo = saldoFinal;
+    // cierrePendienteExacta ya se actualizó arriba, sin redondear
   }
   return out;
+}
+
+/**
+ * Pliega los días inhábiles de un `historialDiario` sobre el día que los abona.
+ *
+ * En una cuenta que solo mueve dinero en días hábiles, un sábado no tiene nada
+ * que contar: su saldo es el del viernes y su interés todavía no se acreditó.
+ * Como renglón propio solo estorba — parte el rendimiento del puente en tres
+ * cifras que además no se pueden corregir por separado, porque la institución
+ * reporta UN abono el lunes. Aquí desaparecen y su interés viaja al día que sí
+ * lo abona, junto con el detalle de qué días lo componen.
+ *
+ * Un día inhábil con un movimiento o un ajuste sí se conserva: eso no es
+ * interés y no se puede plegar en otro renglón sin perderlo de vista. Su
+ * interés, en cambio, viaja igual al día del abono, y por eso el renglón queda
+ * con `bruto`/`isr` en cero — que es exactamente lo que la institución movió
+ * ese día en concepto de rendimiento.
+ *
+ * Invariante: la suma de `abonado` sobre las filas devueltas más lo que quede
+ * en `pendientes` es igual al devengo total de la tabla original. No se pierde
+ * ni se duplica un centavo — está probado.
+ *
+ * @param {Array} filas - ascendentes, tal como las devuelve `historialDiario`
+ * @param {object} cfg  - de `configCuenta`; sin calendario devuelve las filas tal cual
+ * @returns {{filas:Array, pendientes:Array}} cada fila gana `acumulados` (los
+ *          días plegados en ella); `pendientes` son los devengados que al cierre
+ *          de la tabla todavía no tienen día de abono.
+ */
+export function plegarDiasInhabiles(filas, cfg) {
+  const src = Array.isArray(filas) ? filas : [];
+  if (!cfg?.abonaSoloHabil) return { filas: src, pendientes: [] };
+
+  const out = [];
+  let bolsa = [];   // inhábiles esperando el día que los acredite
+
+  src.forEach(f => {
+    if (esInhabil(f.fecha, cfg.inhabiles)) {
+      bolsa.push(f);
+      if (f.movimiento || f.ajuste) out.push({ ...f, bruto: 0, isr: 0, acumulados: [] });
+      return;
+    }
+    out.push({
+      ...f,
+      bruto:      bolsa.reduce((s, b) => s + b.bruto, f.bruto),
+      isr:        bolsa.reduce((s, b) => s + b.isr,   f.isr),
+      acumulados: bolsa,
+    });
+    bolsa = [];
+  });
+
+  return { filas: out, pendientes: bolsa };
 }
 
 // ── Resumen de una cuenta ─────────────────────────────────────────────────────
@@ -937,6 +1287,11 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400) {
  * El saldo actual se obtiene proyectando `montoInvertido` desde su
  * `fechaActualizacion` hasta hoy; los rendimientos diario / mensual / anual se
  * calculan sobre ese saldo ya actualizado y se reportan **netos** de ISR.
+ *
+ * `saldoActual` es lo ACREDITADO — sin lo que la cuenta ya devengó pero todavía
+ * no abona (`pendiente`), que es justo el criterio con el que la institución
+ * muestra el saldo. Las proyecciones arrancan en `hoy` para que el calendario de
+ * abono cuente: con `habilSolo`, el anual y el GAT bajan de verdad.
  *
  * @param {object} cuenta - documento de `inversiones`
  * @param {string} [hoy]  - fecha de corte 'YYYY-MM-DD'
@@ -970,20 +1325,30 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   // default de historialDiario (400 días) recortaría cuentas viejas y
   // dispararía el bug de recorte documentado en DOCUMENTACION.md — aquí no
   // hace falta el límite, que existe solo para no pintar una tabla gigante.
-  const filasHastaHoy = timeline.length ? historialDiario(cuenta, hoy, MAX_DIAS) : [];
+  const filasHastaHoy = timeline.length ? historialDiario(cuenta, hoy, MAX_DIAS, cfg) : [];
   const filaHoy        = filasHastaHoy[filasHastaHoy.length - 1] || null;
   const saldoActual    = filaHoy ? filaHoy.saldoFinal : capital;
+  const pendiente      = filaHoy ? (filaHoy.pendiente || 0) : 0;
   const brutoHastaHoy  = filasHastaHoy.reduce((s, f) => s + f.bruto, 0);
   const isrHastaHoy    = filasHastaHoy.reduce((s, f) => s + f.isr,   0);
-  const rendimientoDesdeBase = filasHastaHoy.reduce((s, f) => s + f.neto + (f.ajuste || 0), 0);
+  // Suma lo ABONADO (ya redondeado a centavos y encadenado), no el `neto`
+  // exacto: es el mismo criterio con el que se arma `saldoFinal` y con el que
+  // suma la tabla del historial — deben coincidir centavo a centavo.
+  const rendimientoDesdeBase = filasHastaHoy.reduce((s, f) => s + f.abonado + (f.ajuste || 0), 0);
 
-  const { bruto: diarioBruto, isr: isrDia } = pasoDiario(saldoActual, cfg);
-  const proyMensual = componer(saldoActual, 30,  cfg);
-  const proyAnual   = componer(saldoActual, 365, cfg);
+  // El devengo del día se calcula sobre el saldo acreditado, no sobre el saldo
+  // más lo pendiente: hasta que la institución no lo abona, no genera interés.
+  const { bruto: diarioBruto, isr: isrDia } = cfg.devengaInhabil || !esInhabil(hoy, cfg.inhabiles)
+    ? pasoDiario(saldoActual, cfg)
+    : { bruto: 0, isr: 0 };
+  // Las proyecciones arrancan mañana: `saldoActual` ya es el cierre de `hoy`.
+  const manana      = sumarDias(hoy, 1);
+  const proyMensual = componer(saldoActual, 30,  cfg, manana, pendiente);
+  const proyAnual   = componer(saldoActual, 365, cfg, manana, pendiente);
   // GAT Nominal: como lo publican las instituciones — ANTES de impuestos y con
   // tantas capitalizaciones como días tenga la base del producto, no 365 reales.
   // Revolut MX (base 360): 15% → 16.18%, 7% → 7.25%, 7.50% → 7.79%.
-  const proyBruta = componer(saldoActual, cfg.base, { ...cfg, isrAnual: 0 });
+  const proyBruta = componer(saldoActual, cfg.base, { ...cfg, isrAnual: 0 }, manana);
 
   // Acumulado desde el primer saldo observado, descontando aportaciones —
   // timeline[0] también es una captura, mismo motivo que fechaBase arriba.
@@ -992,18 +1357,26 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     : null;
 
   // Rendimiento obtenido: captura real del usuario (ej. estado de cuenta) +
-  // lo generado desde esa fecha hasta hoy. Sin captura, equivale exactamente
-  // a proyectar el capital (mismo resultado que antes de este campo).
+  // lo generado desde esa fecha hasta hoy. Sin captura, usa `rendimientoDesdeBase`
+  // (la misma tabla día-por-día del historial) tal cual.
   const rendimientoObtenido = Number(cuenta.rendimientoObtenido) || 0;
+  const tieneCaptura        = !!isoDay(cuenta.fechaActualizacionRendimiento);
   const fechaRendimiento    = isoDay(cuenta.fechaActualizacionRendimiento) || fechaBase;
   const diasRendimiento     = Math.max(0, diasEntre(fechaRendimiento, hoy));
   // También una captura: `fechaActualizacionRendimiento` es "la última cifra
   // real capturada" (ver docstring de rendimientoObtenido más abajo), así que
   // el saldo que la acompaña sale de saldoEnFecha (saldo al INICIO de esa
-  // fecha) y se le aplica la misma corrección de recorrerDesdeCaptura.
-  const saldoParaRendimiento = timeline.length ? saldoEnFecha(eventos, fechaRendimiento, cfg) : null;
-  const proyRendimiento      = saldoParaRendimiento != null
-    ? recorrerDesdeCaptura(eventos, fechaRendimiento, hoy, saldoParaRendimiento, cfg)
+  // fecha) y se le aplica la misma corrección de recorrerDesdeCaptura. Sin
+  // captura NO hay que pasar por aquí: `recorrerDesdeCaptura` recorre el
+  // periodo en un solo tramo con `recorrer()`, que da un resultado distinto
+  // de la cadena día-por-día de `historialDiario` en cuanto hay un movimiento
+  // de por medio (mismo motivo documentado arriba, en `filasHastaHoy`) — sin
+  // esta condición, toda cuenta con un aporte/retiro mostraba en la tarjeta
+  // un total distinto al de su propia tabla de historial.
+  const estadoRendimiento = tieneCaptura ? estadoEnFecha(eventos, fechaRendimiento, cfg) : null;
+  const proyRendimiento   = estadoRendimiento
+    ? recorrerDesdeCaptura(eventos, fechaRendimiento, hoy, estadoRendimiento.saldo, cfg,
+                           estadoRendimiento.pendiente)
     : null;
   const rendimientoHastaHoy = rendimientoObtenido + (proyRendimiento ? proyRendimiento.rendimiento : rendimientoDesdeBase);
 
@@ -1011,6 +1384,10 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     ...cfg, timeline, eventos, fechaBase, dias,
     capital,
     saldoActual,
+    // Devengado y todavía sin abonar, con la fecha en que la institución lo
+    // acredita. En una cuenta `natural` siempre es 0 y `proximoAbono` es mañana.
+    pendiente,
+    proximoAbono: fechaAbono(hoy, cfg),
     rendimientoObtenido, fechaRendimiento, diasRendimiento,
     rendimientoHastaHoy,
     brutoHastaHoy, isrHastaHoy,
@@ -1039,11 +1416,13 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
 export function totalizarResumenes(resumenes) {
   const t = {
     capital: 0, saldoActual: 0, rendimientoHastaHoy: 0, rendimientoHistorico: 0,
-    diario: 0, mensual: 0, anual: 0, isrHastaHoy: 0, cuentas: resumenes.length,
+    diario: 0, mensual: 0, anual: 0, isrHastaHoy: 0, pendiente: 0,
+    cuentas: resumenes.length,
   };
   resumenes.forEach(r => {
     t.capital              += r.capital;
     t.saldoActual          += r.saldoActual;
+    t.pendiente            += r.pendiente || 0;
     t.rendimientoHastaHoy  += r.rendimientoHastaHoy;
     t.rendimientoHistorico += r.rendimientoHistorico;
     t.diario               += r.diario;

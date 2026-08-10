@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T7`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T8`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -458,14 +458,18 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `fechaActualizacion` | string | Fecha (`YYYY-MM-DD`) en que ese monto era el saldo real |
 | `rendimientoObtenido` | number? | Último rendimiento **real observado** (ej. del estado de cuenta). `0`/ausente = no hay captura, se usa solo la proyección |
 | `fechaActualizacionRendimiento` | string? | Fecha (`YYYY-MM-DD`) en que ese rendimiento era el real. Ausente = se usa `fechaActualizacion` |
-| `tramos` | array | Límites de rendimiento (ver estructura abajo) |
-| `modoTramos` | string? | Cómo se aplican los tramos: `progresivo` (default) o `unico` |
-| `modoTasa` | string? | Cómo se interpreta la tasa publicada: `nominal` (default) o `efectiva` |
+| `tramos` | array | Límites de rendimiento de la vigencia **actual** (ver estructura abajo) |
+| `modoTramos` | string? | Cómo se aplican los tramos de la vigencia actual: `progresivo` (default) o `unico` |
+| `modoTasa` | string? | Cómo se interpreta la tasa publicada de la vigencia actual: `nominal` (default) o `efectiva` |
+| `tasaDesde` | string? | Fecha (`YYYY-MM-DD`) desde la que aplica la vigencia actual. Ausente = aplicó siempre — el valor de casi todas las cuentas, que nunca registraron un cambio de tasa |
+| `historialTasas` | array? | Vigencias de tasa superadas: `{ desde, tramos, modoTramos, modoTasa }`, sin límite de tamaño. Ver *Vigencias de tasa* |
 | `baseAnual` | number? | Días del año para el **interés**: `365` (default) o `360` |
 | `isrAnual` | number? | Retención en %. `0` o ausente = cálculo bruto. Su significado depende de `isrSobre` |
 | `isrSobre` | string? | Base de la retención: `capital` (default, tasa anual) o `interes` (% directo de lo ganado) |
 | `baseIsr` | number? | Días del año para la **retención**: `365` (default) o `360`. Solo aplica con `isrSobre: 'capital'` |
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
+| `redondeoDiario` | string? | Si el interés y el ISR de cada día se redondean a centavos antes de capitalizar: `continuo` (default) o `centavos` |
+| `calendarioAbono` | string? | Qué días abona la institución: `natural` (default, todos los días), `habilAcumula` (devenga siempre pero solo abona en día hábil) o `habilSolo` (los inhábiles no devengan). Ver *Calendario de abono* |
 | `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `historialRendimiento` | array? | Capturas anteriores de `rendimientoObtenido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `movimientos` | array? | Aportes, retiros y traspasos — no son rendimiento (ver estructura abajo) |
@@ -508,6 +512,17 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 > `montoInvertido` + `fechaActualizacion` son el punto observado más reciente; las capturas anteriores viven en `historial[]`. Entre dos puntos observados el saldo se proyecta; al llegar a un punto observado el saldo se reemplaza por el valor real y la diferencia se reporta como **aportación** (o retiro), nunca como rendimiento.
 
 > `rendimientoObtenido` + `fechaActualizacionRendimiento` funcionan igual que `montoInvertido` + `fechaActualizacion`, pero para el rendimiento: es la última cifra real capturada (ej. del estado de cuenta), y `"Hasta hoy"` se calcula como esa captura **más** lo generado desde esa fecha hasta hoy (proyectado con la tasa de la cuenta). Sin captura (`0`/ausente), el resultado es idéntico a proyectar únicamente el capital — no cambia el comportamiento de cuentas existentes hasta que se actualice el rendimiento.
+
+**Estructura de cada elemento en `historialTasas`:**
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `desde` | string\|null | Fecha (`YYYY-MM-DD`) desde la que aplicó esta vigencia. `null` = desde el origen de la cuenta — solo la vigencia más antigua puede tenerlo |
+| `tramos` | array | Los tramos de esta vigencia, misma estructura que el `tramos` de la raíz |
+| `modoTramos` | string? | `progresivo` o `unico`, como valían en esta vigencia |
+| `modoTasa` | string? | `nominal` o `efectiva`, como valía en esta vigencia |
+
+> `tramos`/`modoTramos`/`modoTasa`/`tasaDesde` en la raíz son la vigencia **actual** — mismo patrón que `montoInvertido`/`fechaActualizacion` para el saldo, pero para la tasa. Editar los tramos sin cambiar `tasaDesde` corrige la vigencia actual en su sitio (sin abrir una nueva); cambiar `tasaDesde` empuja los tramos que había a `historialTasas` tal como estaban, y de ahí en adelante cada día del historial usa la tasa que estaba vigente **ese día**, no la de hoy. Ver *Vigencias de tasa*.
 
 ### `eventos/{id}`
 
@@ -669,10 +684,16 @@ El aviso instantáneo de la misma cadena. La app se queda como PWA — no hay AP
   `navigator.serviceWorker.ready`; un registro nuevo dejaría la suscripción en un Service Worker
   distinto del que atiende los push. El token se refresca en cada inicio de sesión, porque FCM lo
   rota y uno viejo deja de recibir sin avisar.
-- **Envío:** `enviarPush()` en `docs/app-script.gs`, contra la API v1 de FCM, justo después de
-  crear la notificación. Va en su propio `try`: si el push falla, la notificación ya está
-  guardada y se ve al abrir la app — no debe provocar un reintento, que duplicaría el documento.
-  Los tokens muertos (404 / `UNREGISTERED`) se borran ahí mismo.
+- **Envío:** `enviarPush()` en `docs/app-script.gs`, contra la API v1 de FCM, **una sola vez al
+  final de cada corrida** de `procesarCompras` y no una por compra: un reproceso puede detectar
+  diez correos de golpe. Si fue una compra manda el detalle (`$1,372.23 — Amazon`); si fueron
+  varias, un resumen (`3 compras detectadas` / `Uber, Amazon y 1 más · $1,654.93 en total`).
+  Va en su propio `try`: si el push falla, las notificaciones ya están guardadas y se ven al abrir
+  la app — no debe provocar un reintento, que las duplicaría. Los tokens muertos
+  (404 / `UNREGISTERED`) se borran ahí mismo.
+- Para probar los dos formatos sin tocar la colección: `pruebaPushUna()` y `pruebaPushVarias()`,
+  que además imprimen el texto en el log (útil cuando el aviso no llega a verse porque el sistema
+  operativo lo tiene silenciado).
 - **Mensajes data-only**, sin bloque `notification`. Es lo que permite que el listener `push` de
   `sw.js` decida qué mostrar; con bloque `notification` Chrome pinta además la suya y saldrían
   dos avisos por compra. El `tag` es el id del documento, así que un reintento reemplaza en vez
@@ -744,7 +765,7 @@ Las tarjetas se centran cuando la última fila no se llena (`justify-content-cen
 | Rendimientos | **Diario · Mensual (30 d) · Anual (365 d)**, netos de ISR, en una fila con divisores |
 | Pie | Botón **Ver detalle** |
 
-- Acciones del encabezado: **Ajuste** (🔄 `bi-arrow-repeat`) — captura de saldo/rendimiento reales · **Movimientos** (⇄ `bi-arrow-left-right`) — aportes, retiros y traspasos · **⋮ Más acciones** — menú flotante con *Editar cuenta* y *Eliminar cuenta*. Editar/eliminar se usan poco y el borrado no debe quedar pegado a las acciones de captura diaria, así que viven aparte en el menú
+- Acciones del encabezado: **Ajuste** (🔄 `bi-arrow-repeat`) — captura de saldo/rendimiento reales · **Movimientos** (⇄ `bi-arrow-left-right`) — aportes, retiros y traspasos · **⋮ Más acciones** — menú flotante con *Editar cuenta*, *Historial de tasas* y *Eliminar cuenta*. Se usan poco y el borrado no debe quedar pegado a las acciones de captura diaria, así que viven aparte en el menú
 - La **ⓘ** de la tasa aparece **solo si más de un tramo tiene dinero**. Con un único tramo aportando, la tasa no es un promedio y no hay nada que desglosar, así que el botón se omite
 
 **Modal Detalle** — se abre desde la tarjeta, en tres secciones:
@@ -754,19 +775,23 @@ Las tarjetas se centran cuando la última fila no se llena (`justify-content-cen
 
 Al pie, botones para saltar al **Historial diario** o a **Editar**. Como los tres comparten `#modal-container`, el salto espera al evento `hidden.bs.modal` antes de abrir el siguiente.
 
-**Modal Historial diario** — un renglón por día desde la primera ancla de la cuenta hasta **hoy inclusive** (no solo desde la última captura: capturar un ajuste de tipo *saldo* mueve la ancla más reciente hacia adelante, y si la tabla solo mirara desde ahí, capturar un dato borraría de la vista todo el historial anterior — ver [Modelo de eventos](#modelo-de-eventos-anclas-movimientos-y-ajustes)), del más reciente al más antiguo, con el más reciente marcado como *hoy*. Columnas: día, **Saldo** (el saldo al *cierre* de ese día, ya con su rendimiento aplicado — no el saldo con el que arrancó), bruto e ISR (solo si hay retención) y rendimiento. El rendimiento de un día con un ajuste tipo `diario` se muestra en **naranja** y ya incluye ese ajuste (neto + ajuste); un día con un ajuste tipo `saldo` capturado ahí lleva solo un pequeño indicador junto a la fecha, sin cambiar el color del rendimiento — ese tipo de ajuste corrige el acumulado, no el rendimiento puntual de ese día. Encabezado y totales fijos al hacer scroll.
-- Cada fila tiene un botón **corregir** (lápiz) que abre, en un modal aparte, la captura de un ajuste tipo `diario` para ese día: precarga el rendimiento ya calculado (redondeado a centavos, como se ve en la tabla), con botones **−¢ / +¢** para afinarlo, y guarda la diferencia contra lo calculado usando el mismo mecanismo de conciliación que el modal de Ajuste. Al guardar, vuelve a abrir el historial ya actualizado
+**Modal Historial diario** — un renglón por día desde la primera ancla de la cuenta hasta **hoy inclusive** (no solo desde la última captura: capturar un ajuste de tipo *saldo* mueve la ancla más reciente hacia adelante, y si la tabla solo mirara desde ahí, capturar un dato borraría de la vista todo el historial anterior — ver [Modelo de eventos](#modelo-de-eventos-anclas-movimientos-y-ajustes)), del más reciente al más antiguo, con el más reciente marcado como *hoy*. Columnas: día, **Saldo** (el saldo al *cierre* de ese día, ya con su rendimiento aplicado — no el saldo con el que arrancó), bruto e ISR (solo si hay retención) y rendimiento.
+
+En una cuenta con **calendario de abono**, los días inhábiles **no llevan renglón propio** (`plegarDiasInhabiles`): su saldo es el del día hábil anterior y su interés no se acreditó, así que como fila solo parten en tres cifras un rendimiento que la institución reporta como un solo abono. Se pliegan sobre el día que los paga, que muestra el acumulado, una etiqueta `+N días` y el desglose día por día en el tooltip. Excepción: un día inhábil con un **movimiento o un ajuste** sí se conserva —eso no es interés y no se puede plegar sin perderlo de vista— y aparece con $0 de rendimiento, porque su interés viajó igual al día del abono. Lo devengado que al cierre de la tabla todavía no tiene día de abono se dice en una nota bajo la tabla, no en una fila. El día exacto en que entra en vigor una vigencia de tasa distinta lleva su propia etiqueta con el resumen de la tasa nueva (tooltip con la anterior). El rendimiento de un día con un ajuste tipo `diario` se muestra en **naranja** y ya incluye ese ajuste (neto + ajuste); un día con un ajuste tipo `saldo` capturado ahí lleva solo un pequeño indicador junto a la fecha, sin cambiar el color del rendimiento — ese tipo de ajuste corrige el acumulado, no el rendimiento puntual de ese día. Encabezado y totales fijos al hacer scroll.
+- Cada fila tiene un botón **corregir** (lápiz) que abre, en un modal aparte, la captura de un ajuste tipo `diario` para ese día: precarga **exactamente la cifra del renglón** —redondeada a centavos, con los ajustes que ya tuviera y, con calendario, el puente completo— con botones **−¢ / +¢** para afinarla, y guarda la diferencia contra ella usando el mismo mecanismo de conciliación que el modal de Ajuste. Precarga lo mostrado y no el interés "puro" del día a propósito: es lo único contra lo que se puede comparar (el banco reporta un abono, no el desglose), y evita volver a sumar un ajuste que ya existía. Al guardar, vuelve a abrir el historial ya actualizado
 - Bloque colegible **Cómo se calcula** — la misma fórmula y configuración que el modal Detalle, para no tener que saltar de modal para entender una cifra de la tabla
-- Botón **Generar reporte** — exporta la tabla a Excel (`XLSX`) con una columna adicional "(exacto)" sin redondear por cada importe (saldo, rendimiento, bruto, ISR, saldo inicial), más movimiento, ajuste de rendimiento y su motivo por día, y una segunda hoja con la fórmula y la configuración con la que se calculó todo — para que el archivo se explique solo sin volver a la app
+- Botón **Generar reporte** — exporta la tabla a Excel (`XLSX`) con una columna adicional "(exacto)" sin redondear por cada importe (saldo, rendimiento, bruto, ISR, saldo inicial), más movimiento, ajuste de rendimiento y su motivo por día, y una segunda hoja con la fórmula y la configuración con la que se calculó todo — para que el archivo se explique solo sin volver a la app. En cuentas con calendario de abono agrega *Abonado*, *Pendiente de abono* e *Inhábil* por día, y la regla de abono en la hoja de configuración
 
 **Modal Movimientos** — aportes, retiros y traspasos entre cuentas propias del módulo; el dinero que entra o sale **no es rendimiento**, así que se separa para no inflarlo. Lista de movimientos (más reciente primero) con opción de captura retroactiva — se aplica en su día y corrige el rendimiento del periodo — y de eliminar cada uno.
 - Un movimiento sin contraparte es un aporte o retiro suelto
 - Elegir una contraparte lo convierte en **traspaso**: se registran las dos patas (retiro en origen, aporte en destino) atómicamente vía `batchUpdate`, unidas por `transferenciaId`. Con una **fecha de llegada** distinta a la de salida, el dinero pasa esos días "en tránsito" sin generar interés en ninguna de las dos cuentas — para transferencias entre instituciones distintas que tardan en acreditarse
 - Eliminar cualquiera de las dos patas de un traspaso elimina la otra también, con confirmación
 
+**Modal Historial de tasas** (menú ⋮) — lista de solo lectura de las vigencias de tasa de la cuenta: periodo (`desde` – el día antes de que empiece la siguiente, o *hoy* para la vigente), aplicación e interpretación, y un resumen de la tasa (un solo % si es tasa única, o cada tasa separada por `/` si son varios tramos). Solo las vigencias pasadas tienen borrar — la actual se cambia editando la cuenta, que es lo que abre un periodo nuevo. Borrar un periodo mueve el rendimiento de los días que cubría, así que pasa por el mismo resguardo de `ajustesTrasEditar` que cualquier otro cambio a la raíz del cálculo. Con una sola vigencia (el caso normal), el modal lo dice explícitamente en vez de mostrar una tabla de un renglón.
+
 **Modal Ajuste** — reemplaza a los antiguos modales separados *Actualizar monto* y *Actualizar rendimiento*: comparten fecha y casi todo el flujo, así que capturar los dos en un solo paso evita desincronizarlos.
 - **Saldo**: muestra el saldo estimado a hoy con botón *Usar este valor*; al capturar un monto distinto, un panel de **conciliación** desglosa la diferencia (`conciliar()`) y pide clasificarla como *deriva del cálculo* (se guarda como ajuste tipo `saldo`, marcado `derivado: true` si absorbe el residuo completo) o *aportación/retiro que no se registró* (redirige a Movimientos). Guarda la captura anterior en `historial`
-- **Rendimiento obtenido**: mismo patrón, para `rendimientoObtenido` / `historialRendimiento`
+- **Rendimiento obtenido**: mismo patrón, para `rendimientoObtenido` / `historialRendimiento` — pero a diferencia del saldo, el campo viene precargado solo como referencia y **no se guarda** a menos que el usuario lo toque a propósito (o use *Usar este valor*). Guardar un ajuste de saldo solo no debe "capturar" de paso un rendimiento que nadie observó — antes lo hacía, y desincronizaba `Hasta hoy` de la tabla del historial en cuanto había un movimiento después de esa fecha. Con una captura ya registrada, un botón **Quitar la captura registrada** la borra y hace que `Hasta hoy` vuelva a salir siempre del historial
 - **Ajustes registrados** — lista filtrable (**Saldo · Diario · Todos**, abre siempre en *Saldo*) de todos los ajustes de la cuenta, con edición inline y borrado. Editar o eliminar un ajuste recalcula en cascada los demás ajustes derivados y pide confirmación si alguno cambia de importe (`ajustesTrasEditar`)
 - Si la nueva fecha de captura es anterior a datos ya existentes en `historial`, se ofrece descartarlos con confirmación explícita (`historialConsistente` / `capturasDescartadas`) — es una corrección deliberada del punto de partida, nunca algo silencioso
 
@@ -778,19 +803,21 @@ Al pie, botones para saltar al **Historial diario** o a **Editar**. Como los tre
 - El editor de tramos muestra el **Desde** derivado en tiempo real y el último tramo siempre es *En adelante*
 - Validación: todo tramo salvo el último requiere límite superior, y los límites deben ir en aumento
 - Al cambiar la fecha de actualización (monto o rendimiento), la captura anterior pasa automáticamente al `historial`/`historialRendimiento` correspondiente
+- Bajo el editor de tramos, **Vigente desde**: vacío si esta tasa aplicó siempre (el caso normal). Ponerle una fecha nueva registra un cambio de tasa — los tramos que había pasan al historial de tasas tal como estaban, y de ahí en adelante cada día del cálculo usa la que le corresponde por fecha, no la de hoy. Editar los tramos sin tocar esta fecha corrige la vigencia actual en su sitio, sin abrir una nueva. Con historial de tasas ya registrado, el campo es obligatorio (no puede haber dos vigencias "desde siempre")
 
 *Avanzado* agrupa lo que varía entre instituciones:
 
 | Bloque | Campos |
 |---|---|
 | Retención de ISR | Tasa · Se calcula sobre (capital / interés) |
-| Convenciones de cálculo | Base anual del interés · Base anual del ISR · Tasa ponderada (truncar / redondear) |
+| Convenciones de cálculo | Base anual del interés · Base anual del ISR · Tasa ponderada (truncar / redondear) · Redondeo diario (continuo / centavos) |
+| Calendario de abono | Cuándo se acredita el interés: todos los días · solo hábiles acumulando · solo hábiles sin devengo |
 
-La etiqueta de la tasa de retención cambia según `isrSobre`, y *Base anual — ISR* se oculta cuando la retención es sobre el interés (ahí no se anualiza).
+La etiqueta de la tasa de retención cambia según `isrSobre`, y *Base anual — ISR* se oculta cuando la retención es sobre el interés (ahí no se anualiza). Al elegir un calendario hábil, una nota bajo el select avisa si no hay festivos cargados en **Días Festivos** — el cálculo sigue siendo correcto para los fines de semana, pero un puente se le escaparía. La sección *Avanzado* se abre desplegada cuando alguno de sus campos está fuera del default, el calendario incluido.
 
 ### Ayuda contextual
 
-Ningún campo lleva texto de ayuda inline: cada uno tiene un botón **ⓘ** que abre un modal breve con el concepto y un apartado *Cómo afecta al cálculo*, casi siempre con un ejemplo numérico. Hay diez, uno por campo, y viven en el diccionario `AYUDA` de `rendimientos.js`.
+Ningún campo lleva texto de ayuda inline: cada uno tiene un botón **ⓘ** que abre un modal breve con el concepto y un apartado *Cómo afecta al cálculo*, casi siempre con un ejemplo numérico. Hay trece, uno por campo, y viven en el diccionario `AYUDA` de `rendimientos.js`.
 
 > Los ejemplos usan cifras inventadas a propósito. La ayuda explica el concepto, no la configuración de ninguna institución en particular.
 
@@ -1303,6 +1330,56 @@ saldoFinal = saldoInicial + rendimiento + movimientos + ajustes
 
 `rendimientoObtenido` + `fechaActualizacionRendimiento` siguen el mismo patrón que el saldo pero para el rendimiento: es la última cifra real capturada, y `rendimientoHastaHoy` se calcula como `rendimientoObtenido + rendimientoEntre(eventos, fechaActualizacionRendimiento, hoy, cfg).rendimiento`. Sin captura, `fechaActualizacionRendimiento` cae de vuelta en `fechaActualizacion`, y el resultado es matemáticamente idéntico a `componer(montoInvertido, dias, cfg).rendimiento` — el comportamiento previo a este campo.
 
+### Calendario de abono
+
+Devengar y abonar no son lo mismo, aunque en la mayoría de las cuentas coincidan. El dinero **trabaja** todos los días naturales; lo que cambia entre instituciones es cuándo el interés ganado se **acredita** al saldo — y hasta que no se acredita, no compone. Lo controla `calendarioAbono` en el documento de la cuenta:
+
+| Valor | Devenga | Abona | Quién opera así |
+|---|---|---|---|
+| `natural` (default) | todos los días | el mismo día | Fintech (Revolut, Nu, Mercado Pago). Idéntico, peso a peso, al comportamiento previo a este campo |
+| `habilAcumula` | todos los días | el acumulado, el siguiente día hábil | Bancos y pagarés que no mueven dinero en fin de semana ni festivo |
+| `habilSolo` | solo días hábiles | ese día | Fondos de inversión, que solo tienen precio los días que abre el mercado |
+
+La regla que lo ordena todo es una sola:
+
+```
+fecha de abono del devengo del día D = siguiente día hábil desde D
+```
+
+Va sobre el propio día `D`, no sobre `D+1`, porque así presenta la app el dato en todos lados: el renglón de `historialDiario` de un día es lo que la institución movió **ese** día (de ahí el corte de las 7am de `hoyISO`, que espera a que la madrugada haya abonado antes de contar el día como propio). Bajo esa convención un sábado muestra `$0` de abono y el lunes el acumulado del puente — literalmente lo que se ve en la app del banco.
+
+Lo devengado y todavía sin acreditar vive en **`pendiente`**, fuera del saldo, que es exactamente donde lo tiene la institución. Es lo que arregla el residuo espurio de fin de semana: antes, conciliar un domingo comparaba el saldo real (congelado desde el viernes) contra un saldo proyectado que ya había compuesto sábado y domingo, y la diferencia se reportaba como deriva del cálculo. Ahora `saldoEsperado` excluye lo pendiente y `conciliar` lo devuelve por separado.
+
+Distinguir `habilAcumula` de `habilSolo` importa porque el costo de confundirlas es de órdenes distintos: la primera solo retrasa la composición un par de días (centavos al año, verificado en las pruebas), la segunda quita ~104 días de devengo — cerca de **28% menos** de rendimiento anual.
+
+**De dónde salen los días inhábiles.** Los fines de semana son gratis (se derivan de la fecha) y los festivos vienen de la colección `festivosMX`, la misma que ya usa el ciclo de las tarjetas. Como son una propiedad del país y no de la cuenta, y llegan de Firestore de forma asíncrona mientras que las entradas del motor (`resumenCuenta`, `historialDiario`) son síncronas, viven en un **registro de módulo**: la vista los carga una vez con `registrarInhabiles(festivosMX)` antes de calcular nada, y `configCuenta` los fotografía dentro de la `cfg` para que el cálculo en sí siga dependiendo solo de sus argumentos. Los llaman `js/modules/rendimientos.js` y `js/modules/dashboard.js`. Sin festivos registrados el cálculo degrada a solo fines de semana, que es la mayor parte del efecto — el formulario avisa cuando ese es el caso.
+
+**En la tabla no hay renglones inhábiles.** El motor sí devuelve un renglón por día natural —lo necesita para componer—, pero `plegarDiasInhabiles` los quita antes de pintar: un sábado no aporta nada que mirar (mismo saldo que el viernes, interés sin acreditar) y como fila propia parte en tres cifras un rendimiento que la institución reporta como **un solo abono**, que además es la única cantidad contra la que se puede corregir. El día del abono se queda con el acumulado y con el detalle en el tooltip. El botón *corregir* opera sobre esa cifra única.
+
+**Encadenar la bolsa.** `recorrer()` y `componer()` aceptan un `pendienteInicial` y lo devuelven al cerrar. No es opcional para quien avanza de a un día: `historialDiario` llama `recorrer()` con tramos de un solo día, y si cada tramo arrancara la bolsa en cero, el interés del sábado se perdería en el corte entre un renglón y el siguiente.
+
+**El saldo de la tabla es siempre cents-precise.** `bruto`, `isr` y `neto` son la fórmula tal cual la calcula el motor — exactos, sin redondear, útiles para las columnas "(exacto)" del reporte. Pero `abonado`, `pendiente` y `saldoFinal` representan dinero que ya se movió (o que ya se sabe cuánto vale, esperando abonarse), y el dinero real nunca tiene fracción de centavo: `historialDiario` los redondea a centavos antes de encadenarlos al siguiente renglón (`const r2 = n => Math.round(n * 100) / 100`, independiente del `redondeoDiario` de la cuenta, que sigue gobernando solo la composición interna de `interesDiario`/`isrDiario`). El resultado es un invariante fuerte: sumar lo que la tabla **muestra** (capital + cada `abonado` + cada `movimiento` + cada `ajuste`) da exactamente el `saldoFinal` que la tabla **muestra** en el último renglón — no una cifra un centavo distinta por haber compuesto internamente con precisión de punto flotante y redondeado solo al final.
+
+Un detalle que importa para no reintroducir deriva: la bolsa `pendiente` NO se redondea mientras sigue pendiente — solo cuando se convierte en `abonado` al acreditarse. Redondearla en cada día que queda en el limbo (un puente largo) compone el error de redondeo una vez por día en vez de una sola vez, y ese fue exactamente el bug que motivó esta nota (una cuenta con capital + ajuste + varios días de interés mostraba el `saldoFinal` un par de centavos corrido de lo que daba sumar a mano las cifras de la tabla). `historialDiario` mantiene por eso dos variables por separado: `cierreSaldo` (encadenado ya redondeado, porque es dinero que se movió) y `cierrePendienteExacta` (encadenado sin redondear, porque todavía no es dinero acreditado — el campo `pendiente` que se *devuelve* en cada fila sí va redondeado, solo para mostrar).
+
+`componer()` (usado por `mensual`/`anual`/`gat`/`proyBruta`, que proyectan hacia adelante desde un `saldoActual` ya congelado) no cambió: sigue exacto o redondeado según `cfg.redondeo`, sin este ajuste — por eso `historialDiario(...).saldoFinal` y `componer(capital, dias, cfg).saldoFinal` ya no son exactamente iguales para una cuenta `continuo` (divergen por un par de centavos sobre periodos largos, un ruido acotado que no crece linealmente — verificado hasta 2 años de simulación). Es la diferencia correcta: uno es "lo que ya pasó, en centavos reales"; el otro, "una proyección matemática hacia un periodo que todavía no ocurrió".
+
+### Vigencias de tasa
+
+Las instituciones cambian la tasa que publican de vez en cuando. El saldo que ya estaba invertido siguió ganando la tasa **vieja** hasta el día del cambio — recalcular todo el historial con la tasa nueva falsearía lo ganado antes. Por eso una cuenta no tiene una sola tasa: tiene una línea de tiempo de **vigencias**, cada una con sus propios tramos, `modoTramos` y `modoTasa` (ver [`inversiones/{id}`](#inversionesid)).
+
+`tramos`/`modoTramos`/`modoTasa` en la raíz de la cuenta son la vigencia **actual** — mismo patrón que `montoInvertido`/`fechaActualizacion` para el saldo, pero para la tasa — y `tasaDesde` es desde cuándo aplica. Las vigencias superadas viven en `historialTasas`, cada una con su propio `desde`. `desde: null` significa "vigente desde el origen de la cuenta": así se comportan todas las cuentas que nunca registraron un cambio de tasa (la inmensa mayoría), y así queda la vigencia más antigua de cualquier cuenta que sí los registra.
+
+`vigenciasTasa(cuenta)` arma la línea de tiempo completa (pasadas + actual, ascendente) y `configCuenta` la fotografía en `cfg.vigencias` — igual que hace con `cfg.inhabiles` para el calendario de abono, para que el cálculo en sí siga dependiendo solo de su `cfg`. `cfg.tramos`/`cfg.modo`/`cfg.modoTasa` siguen siendo la vigencia actual (lo que usa toda la UI que no depende de una fecha: la tarjeta, el desglose de "hoy", el GAT); solo el compuesto diario consulta `cfg.vigencias`.
+
+**Dónde entra al cálculo.** `pasoCalendario(saldo, pendiente, cfg, fecha)` —el mismo choke point que ya resolvía el calendario de abono— resuelve con `vigenciaEnFecha(cfg.vigencias, fecha)` cuál vigencia le toca a **ese día en particular** antes de llamar a `pasoDiario`. Con una sola vigencia (el caso normal) esto es un no-op: `cfg.vigencias.length > 1` es falso y se usa `cfg` tal cual, cero costo extra. Con varias, cada día del historial, cada tramo de `recorrer()` (movimientos, ajustes, `rendimientoEntre`, `conciliar`) y cada renglón de `historialDiario` usa la tasa correcta para su propia fecha — el cambio se refleja automáticamente en "Calcular periodo" y en el historial diario sin ningún camino aparte.
+
+Sin `fecha` (las proyecciones abstractas de `componer()` cuando se les omite `desde`) se usa siempre `cfg.tramos`, la vigencia actual — correcto, porque una proyección hacia adelante nunca puede caer en un periodo ya superado.
+
+**Editar una vigencia vs. abrir una nueva.** Igual que con `montoInvertido`: si `tasaDesde` no cambia, editar los tramos corrige la vigencia actual en su sitio (una captura mal tecleada, no un cambio real). Si `tasaDesde` cambia, los tramos que había pasan a `historialTasas` tal como estaban (`pushHistorialTasa`, en `js/modules/rendimientos.js`) y los nuevos se vuelven la vigencia actual. Si la nueva `tasaDesde` es anterior a vigencias que ya había en el historial, esas quedan "en el futuro" respecto a ella y se descartan con confirmación explícita (`historialTasasTrasCorregirRaiz`) — mismo resguardo que `historialTrasCorregirRaiz` para el saldo.
+
+**Consultar y corregir el historial.** El modal **Historial de tasas** (menú ⋮ de la cuenta) lista todas las vigencias —periodo, aplicación/interpretación y tasa— con borrado para las que ya quedaron atrás; la actual no se borra ahí, se cambia editando la cuenta. Borrar un periodo mueve el rendimiento de los días que cubría, así que pasa por el mismo resguardo de `ajustesTrasEditar` que cualquier otro cambio a la raíz del cálculo.
+
 ### API pública de `rendimiento.js`
 
 ```javascript
@@ -1311,6 +1388,14 @@ isoDay(dateOStringISO) → 'YYYY-MM-DD'
 hoyISO()               → 'YYYY-MM-DD'   // hora CDMX (UTC-6 fijo); el día rueda a las 7am, no a medianoche
 diasEntre(inicio, fin) → number     // días calendario completos, negativo si fin < inicio
 sumarDias(iso, n)      → 'YYYY-MM-DD'
+
+// Días inhábiles — ver Calendario de abono arriba. Registro de módulo: la vista
+// lo llena una vez y configCuenta lo fotografía en la cfg.
+registrarInhabiles(festivosMX)   → Set   // acepta docs {fecha} o ISO sueltos
+inhabilesRegistrados()           → Set
+esInhabil(fecha, inhabiles?)     → boolean   // fin de semana o festivo registrado
+siguienteHabil(fecha, inhabiles?)→ 'YYYY-MM-DD'   // el primer hábil en o después de `fecha`
+fechaAbono(fecha, cfg)           → 'YYYY-MM-DD'   // cuándo se acredita lo devengado ese día
 
 // Tramos — deriva el `desde` de cada tramo, ordena, elimina solapes
 // y garantiza un tramo abierto final
@@ -1322,6 +1407,7 @@ MODO_PROGRESIVO 'progresivo' · MODO_UNICO 'unico'
 ISR_CAPITAL     'capital'    · ISR_INTERES 'interes'
 TASA_NOMINAL    'nominal'    · TASA_EFECTIVA 'efectiva'
 REDONDEO_CONTINUO 'continuo' · REDONDEO_CENTAVOS 'centavos'
+ABONO_NATURAL 'natural' · ABONO_HABIL_ACUMULA 'habilAcumula' · ABONO_HABIL_SOLO 'habilSolo'
 
 // Tipo de evento y dirección de un movimiento — ver Modelo de eventos arriba
 EVENTO_ANCLA 'ancla' · EVENTO_MOVIMIENTO 'movimiento' · EVENTO_AJUSTE 'ajuste'
@@ -1332,18 +1418,30 @@ BASE_ANUAL_DEFAULT  365          // base del interés y del ISR
 TRAMOS_DEFAULT      [{ hasta: 25000, tasa: 15 }, { hasta: 100000, tasa: 7 }, { hasta: null, tasa: 5 }]
                                  // precargados al crear una cuenta nueva
 
+// Vigencias de tasa — ver Vigencias de tasa arriba
+vigenciasTasa(cuenta) → [{ desde, tramos, modo, modoTasa }]   // ascendente; desde:null = origen
+vigenciaEnFecha(vigencias, fecha) → { desde, tramos, modo, modoTasa }   // la que aplica ese día
+
 // Configuración de cálculo — todas las funciones la reciben en lugar de una
 // lista larga de parámetros posicionales. Normaliza y aplica defaults.
-configCuenta(cuenta) → { tramos, modo, modoTasa, base, isrAnual, isrSobre, baseIsr }
+// tramos/modo/modoTasa son la vigencia ACTUAL; `vigencias` es la línea de
+// tiempo completa, y solo la consulta el compuesto diario (pasoCalendario).
+configCuenta(cuenta, inhabiles?) → { tramos, modo, modoTasa, vigencias, base, isrAnual, isrSobre,
+                                     baseIsr, redondeo, abono, devengaInhabil, abonaSoloHabil, inhabiles }
+                                  // `inhabiles` default: el registro de módulo
 
 // Composición
 tasaDiaria(tasaAnual, cfg)                → number   // según cfg.modoTasa
 interesDiario(saldo, cfg)                 → number   // bruto, según cfg.modo
 isrDiario(saldo, cfg, interesBruto?)      → number   // según cfg.isrSobre; el 3er arg
                                                      // solo se usa en modo 'interes'
-componer(saldoInicial, dias, cfg)
-  → { saldoFinal, rendimiento, bruto, isr, dias, ultimo }   // rendimiento = bruto − isr
-                                                            // ultimo = { bruto, isr, neto } del último día
+componer(saldoInicial, dias, cfg, desde?, pendienteInicial?)
+  → { saldoFinal, rendimiento, bruto, isr, dias, pendiente, ultimo }
+                            // rendimiento = lo DEVENGADO (incluye lo pendiente de abono);
+                            // saldoFinal  = lo acreditado, que es lo que muestra la institución
+                            // `desde` solo hace falta con calendario de abono; sin ella compone
+                            // como `natural`, que es lo que quieren las proyecciones abstractas
+                            // ultimo = { bruto, isr, neto, abonado } del último día
 tasaNominal(saldo, cfg)            → number   // % anual ponderado, sobre las tasas configuradas
 
 // Reparto del saldo entre los tramos — la suma de `aporte` es interesDiario()
@@ -1360,8 +1458,9 @@ historialConsistente(historial, nuevaFecha) → historial[]   // solo lo estrict
 // Modelo de eventos — ver descripción arriba
 eventosCuenta(cuenta) → [{ fecha, tipo, monto, nota?, motivo? }]   // ordenado, retiros con signo
 saldoEnFecha(eventos, fecha, cfg)             → number | null     // saldo al INICIO de `fecha`
+estadoEnFecha(eventos, fecha, cfg)            → { saldo, pendiente } | null   // ídem + la bolsa
 rendimientoEntre(eventos, fIni, fFin, cfg)
-  → { rendimiento, bruto, isr, saldoInicial, saldoFinal, aportaciones, desde, hasta, dias, recortado } | null
+  → { rendimiento, bruto, isr, saldoInicial, saldoFinal, pendiente, aportaciones, desde, hasta, dias, recortado } | null
 
 // Transferencias entre cuentas propias — ver Modelo de eventos arriba
 validarTransferencia({ origenId, destinoId, monto, fecha, fechaDestino }) → string | null   // motivo de error, o null si es válida
@@ -1373,21 +1472,37 @@ conTransferencia(movimientos, pata)            → movimientos[]  // inserta, re
 // Conciliación y recálculo en cascada — ver Modelo de eventos arriba
 conciliar(cuenta, saldoReal, fecha?, cfg?)
   → { desde, hasta, dias, saldoAnterior, rendimientoProyectado, movimientos, ajustes,
-      saldoEsperado, saldoReal, residuo, derivaAnual, cuadra } | null
+      saldoEsperado, saldoReal, residuo, pendiente, derivaAnual, cuadra } | null
+                            // saldoEsperado NO incluye `pendiente`: la institución tampoco lo
+                            // tiene en el saldo, y sumarlo dejaría un residuo negativo cada finde
 recalcularAjustes(cuenta, cfg?) → [{ fecha, monto, motivo, derivado, cambio }]   // cambio = nuevo − anterior
 
 // Rendimiento día por día desde la PRIMERA ancla de la cuenta hasta hoy inclusive
 // (no solo desde la más reciente — ver el modal Historial diario). Cada entrada
 // es el día que GENERÓ el interés; se abona a la madrugada siguiente. El último
 // renglón es el de hoy mismo, aunque sea una proyección todavía no "cobrada".
-historialDiario(cuenta, hoy?, maxDias = 400)
-  → [{ fecha, saldoInicial, bruto, isr, neto, saldoFinal, movimiento, ajuste }]   // ascendente
+// Con calendario de abono, `neto` sigue siendo lo que ese día DEVENGÓ y `abonado`
+// lo que de verdad entró al saldo: 0 en inhábil, el acumulado del puente el día
+// que abre. La bolsa se encadena de un renglón al siguiente, sin redondear
+// mientras sigue pendiente — solo `abonado`/`saldoFinal` (dinero que ya se
+// movió) se redondean a centavos antes de encadenarse; `bruto`/`isr`/`neto`
+// quedan exactos, para el detalle auditable. Ver Calendario de abono arriba.
+historialDiario(cuenta, hoy?, maxDias = 400, cfg?)
+  → [{ fecha, saldoInicial, bruto, isr, neto, abonado, pendiente,
+       saldoFinal, movimiento, ajuste }]   // ascendente — saldoFinal cents-precise
+
+// Vista de tabla: quita los días inhábiles y pliega su interés (y su bruto/ISR)
+// sobre el día que los abona. Sin calendario devuelve las filas tal cual.
+// Un inhábil con movimiento o ajuste se conserva, con bruto/isr en cero.
+plegarDiasInhabiles(filas, cfg)
+  → { filas: [{ ...fila, acumulados: [] }], pendientes: [] }   // sin abono todavía
 
 // Resumen completo de una cuenta a una fecha de corte
 resumenCuenta(cuenta, hoy?) → {
-  ...configCuenta(cuenta),      // tramos, modo, modoTasa, base, isrAnual, isrSobre, baseIsr
+  ...configCuenta(cuenta),      // tramos, modo, modoTasa, base, isrAnual, isrSobre, baseIsr, abono…
   timeline, fechaBase, dias,
-  capital, saldoActual,
+  capital, saldoActual,         // saldoActual = lo ACREDITADO, sin lo pendiente
+  pendiente, proximoAbono,      // devengado sin abonar + la fecha en que se acredita
   rendimientoObtenido, fechaRendimiento, diasRendimiento,  // última captura real + proyección
   rendimientoHastaHoy,          // = rendimientoObtenido + lo generado desde fechaRendimiento
   brutoHastaHoy, isrHastaHoy,
@@ -1405,7 +1520,7 @@ resumenCuenta(cuenta, hoy?) → {
 // Acumulado de varias cuentas para el encabezado del módulo y del dashboard
 totalizarResumenes(resumenes) → { capital, saldoActual, rendimientoHastaHoy,
                                   rendimientoHistorico, diario, mensual, anual,
-                                  isrHastaHoy, gat, cuentas }
+                                  isrHastaHoy, pendiente, gat, cuentas }
 ```
 
 **Orden del cálculo** (el punto clave del módulo): primero se actualiza el monto invertido desde su última fecha de actualización hasta hoy —recorriendo movimientos y ajustes posteriores como cualquier otro tramo del calendario— y **sobre ese saldo ya actualizado** se calculan los rendimientos diario, mensual y anual.

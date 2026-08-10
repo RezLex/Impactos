@@ -3,13 +3,16 @@ import { currency, fmtDate, r2, textoLegibleSobre, rgbLegibleSobre } from '../ut
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import {
   resumenCuenta, totalizarResumenes, rendimientoEntre, eventosCuenta,
-  historialDiario, timelineCuenta, configCuenta, hoyISO, isoDay, diasEntre,
+  historialDiario, timelineCuenta, configCuenta, hoyISO, isoDay, diasEntre, sumarDias,
   conciliar, recalcularAjustes, capturasDescartadas, historialConsistente,
   movimientosTransferencia, validarTransferencia, esTransferencia,
-  conTransferencia, sinTransferencia,
+  conTransferencia, sinTransferencia, plegarDiasInhabiles,
+  registrarInhabiles, inhabilesRegistrados, esInhabil,
+  vigenciasTasa, normalizarTramos,
   TRAMOS_DEFAULT, BASE_ANUAL_DEFAULT,
   MODO_PROGRESIVO, MODO_UNICO, ISR_CAPITAL, ISR_INTERES,
   TASA_NOMINAL, TASA_EFECTIVA, REDONDEO_CONTINUO, REDONDEO_CENTAVOS,
+  ABONO_NATURAL, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
   MOV_APORTE, MOV_RETIRO,
 } from '../utils/rendimiento.js';
 
@@ -38,6 +41,12 @@ const pct = n => (Number(n) || 0).toFixed(2) + '%';
  * El GAT sí va redondeado (16.1798% → 16.18%), por eso usa `pct`.
  */
 const pctTrunc = n => (Math.floor((Number(n) || 0) * 100) / 100).toFixed(2) + '%';
+
+/** Etiqueta corta del calendario de abono, para el detalle y el reporte. */
+const etiquetaCalendario = abono =>
+  abono === ABONO_HABIL_ACUMULA ? 'Días hábiles — acumula'
+: abono === ABONO_HABIL_SOLO    ? 'Días hábiles — sin devengo'
+: 'Todos los días';
 
 /** Alias capturado de la cuenta — opcional, puede venir vacío. */
 const alias = c => (c.nombre || '').trim();
@@ -121,6 +130,55 @@ function historialTrasCorregirRaiz(historial, nuevaFecha, etiqueta) {
     : null;
 }
 
+/** Agrega una vigencia de tasa al historial, sin duplicar `desde` y ordenada. */
+function pushHistorialTasa(historialTasas, entry) {
+  const clave = v => v.desde == null ? '' : isoDay(v.desde);
+  const map = new Map();
+  (Array.isArray(historialTasas) ? historialTasas : []).forEach(h => {
+    if (!h) return;
+    map.set(clave(h), { desde: h.desde ?? null, tramos: h.tramos, modoTramos: h.modoTramos, modoTasa: h.modoTasa });
+  });
+  map.set(clave(entry), entry);
+  return [...map.values()].sort((a, b) => (a.desde ?? '').localeCompare(b.desde ?? ''));
+}
+
+/**
+ * Igual que `historialTrasCorregirRaiz`, pero para el historial de tasas: si la
+ * nueva vigencia actual arranca antes que vigencias pasadas ya registradas, esas
+ * quedan "en el futuro" y hay que descartarlas, con la misma confirmación
+ * explícita — mover la fecha hacia atrás es una corrección deliberada del punto
+ * de partida de la tasa, no algo que deba pasar en silencio.
+ */
+function historialTasasTrasCorregirRaiz(historialTasas, nuevaDesde) {
+  const corte = isoDay(nuevaDesde);
+  const lista = Array.isArray(historialTasas) ? historialTasas : [];
+  if (!corte) return undefined; // sin fecha no hay corte que aplicar
+  const descartadas = lista.filter(h => {
+    const d = h?.desde == null ? null : isoDay(h.desde);
+    return d == null || d >= corte;
+  });
+  if (!descartadas.length) return undefined;
+
+  const detalle = descartadas
+    .map(h => `  · ${h.desde ? fmtDate(h.desde) : 'vigente desde el origen'}: ${resumenTramos(h.tramos)}`)
+    .join('\n');
+  const plural = descartadas.length > 1 ? 's' : '';
+  return window.confirm(
+    `La nueva vigencia (${fmtDate(corte)}) es anterior a ${descartadas.length} ` +
+    `periodo${plural} de tasa ya registrado${plural}:\n\n${detalle}\n\n` +
+    `Se van a descartar del historial de tasas. ¿Continuar?`)
+    ? lista.filter(h => !descartadas.includes(h))
+    : null;
+}
+
+/** Resumen corto de una configuración de tramos, para listarla en una tabla. */
+function resumenTramos(tramos) {
+  const normalizados = normalizarTramos(tramos);
+  return normalizados.length === 1
+    ? pct(normalizados[0].tasa)
+    : normalizados.map(t => pct(t.tasa)).join(' / ');
+}
+
 // ── Ayuda contextual de los campos de configuración ───────────────────────────
 
 /**
@@ -179,6 +237,20 @@ const AYUDA = {
       <p class="inv-ayuda-ej">Una tasa de 12% sobre $10,000 durante un año:<br>
          · nominal → tasa diaria 12%÷365, y al final <strong>$1,274</strong> (GAT 12.75%)<br>
          · efectiva → tasa diaria (1.12)^(1/365)−1, y al final <strong>$1,200</strong> (GAT 12%)</p>`,
+  },
+  tasaDesde: {
+    titulo: 'Vigente desde',
+    cuerpo: `
+      <p>Las instituciones cambian la tasa que publican de vez en cuando. Si acabas de capturar una
+         tasa nueva porque la tuya cambió, pon aquí desde qué día aplica — los tramos y la tasa que
+         tenías capturados hasta ahora pasan al <strong>historial de tasas</strong> tal como estaban,
+         y siguen usándose para todo lo anterior a esa fecha.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Cada día del historial usa la tasa que estaba vigente <strong>ese</strong> día, no la de hoy:
+         lo ya ganado con la tasa vieja no se recalcula con la nueva. "Calcular periodo" y el
+         historial diario reflejan el cambio automáticamente el mismo día en que empieza a aplicar.</p>
+      <p>Déjalo vacío si esta es la única tasa que ha tenido la cuenta — es lo normal, y es como se
+         comportaba antes de que existiera este campo.</p>`,
   },
   isr: {
     titulo: 'Retención de ISR',
@@ -258,6 +330,32 @@ const AYUDA = {
          muestra <strong>$2.28</strong><br>
          · centavos → bruto <strong>$2.50</strong>, retención <strong>$0.23</strong>, neto
          <strong>$2.27</strong> — igual que en el estado de cuenta</p>`,
+  },
+  calendarioAbono: {
+    titulo: 'Calendario de abono',
+    cuerpo: `
+      <p>Ganar interés y cobrarlo no siempre pasan el mismo día. El dinero trabaja todos los
+         días, pero hay instituciones que solo mueven dinero en días hábiles.</p>
+      <p><strong>Todos los días</strong> — devenga y abona a diario, fin de semana incluido.
+         Es lo normal en fintech (Revolut, Nu, Mercado Pago).</p>
+      <p><strong>Solo días hábiles, el acumulado se paga el siguiente</strong> — sábados,
+         domingos y festivos sí generan interés, pero no se abona hasta el siguiente día
+         hábil, y hasta entonces no genera interés sobre sí mismo.</p>
+      <p><strong>Solo días hábiles, los inhábiles no generan interés</strong> — el fin de
+         semana no cuenta en absoluto. Es como operan los fondos de inversión, que solo
+         tienen precio los días que abre el mercado.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Con la segunda opción el saldo de sábado y domingo se queda quieto y el lunes sube
+         de golpe con los tres días juntos — igual que en la app del banco. Lo devengado
+         y todavía sin abonar se muestra aparte como <strong>Por abonar</strong>, y deja
+         de inflar el saldo proyectado: sin esto, conciliar un domingo dejaba un residuo
+         falso cada fin de semana.</p>
+      <p>La diferencia entre las dos primeras es de centavos al año (solo retrasa la
+         composición). La tercera es otra cosa: quita unos 104 días de devengo, cerca de un
+         <strong>28% menos</strong> de rendimiento anual. No las confundas.</p>
+      <p class="inv-ayuda-ej">Los días inhábiles son los fines de semana más lo que tengas
+         cargado en <strong>Días Festivos</strong>. Sin festivos registrados solo se toman
+         en cuenta los fines de semana.</p>`,
   },
   rendimientoObtenido: {
     titulo: 'Rendimiento obtenido',
@@ -405,10 +503,16 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [cuentas, instituciones] = await Promise.all([
+    const [cuentas, instituciones, festivosMX] = await Promise.all([
       getAll(COL),
       getAll('instituciones'),
+      getAll('festivosMX'),
     ]);
+
+    // Antes de cualquier cálculo: las cuentas que solo abonan en días hábiles
+    // necesitan el calendario para saber qué días no mueven dinero. Sin
+    // festivos registrados degrada a solo fines de semana.
+    registrarInhabiles(festivosMX);
 
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const hoy     = hoyISO();
@@ -513,6 +617,10 @@ async function renderView(container) {
           {
             icono: 'pencil', texto: 'Editar cuenta',
             accion: () => showCuentaModal(container, instituciones, c),
+          },
+          {
+            icono: 'clock-history', texto: 'Historial de tasas',
+            accion: () => showHistorialTasasModal(container, c, nombreCuenta(c, instNombre(c))),
           },
           {
             icono: 'trash3', texto: 'Eliminar cuenta', peligro: true,
@@ -917,6 +1025,13 @@ function showDetalleModal(container, cuenta, inst, refrescar) {
                    : '', 'isr')}
           ${fila('Tasa ponderada', fmtTasa(r.tasaNominal), '', 'redondeoTasa')}
           ${fila('GAT', pct(r.gat), r.modoTasa === TASA_EFECTIVA ? 'igual a la publicada' : 'antes de impuestos')}
+          ${fila('Calendario de abono', etiquetaCalendario(r.abono),
+                 r.abono === ABONO_NATURAL ? '' : 'no abona en fines de semana ni festivos',
+                 'calendarioAbono')}
+          ${r.pendiente > 0
+            ? fila('Por abonar', currency(r.pendiente),
+                   `devengado, se acredita el ${fmtDate(r.proximoAbono)}`, 'calendarioAbono')
+            : ''}
         </div>
       </div>`,
     footer: `
@@ -1039,10 +1154,18 @@ function generarReporteHistorial(cuenta, etiqueta, filas, r) {
     motivosPorFecha.set(f, [...(motivosPorFecha.get(f) || []), a.motivo || 'Sin motivo']);
   });
 
+  const conCal = r.abono !== ABONO_NATURAL;
+
   const filasReporte = filas.map(f => ({
     Fecha: f.fecha,
     Saldo: r2v(f.saldoFinal), 'Saldo (exacto)': f.saldoFinal,
     'Rendimiento del día': r2v(f.neto), 'Rendimiento del día (exacto)': f.neto,
+    // Solo con calendario: sin él, abonado siempre es igual al rendimiento
+    ...(conCal ? {
+      Abonado: r2v(f.abonado), 'Abonado (exacto)': f.abonado,
+      'Pendiente de abono': r2v(f.pendiente),
+      Inhábil: esInhabil(f.fecha) ? 'Sí' : '',
+    } : {}),
     Bruto: r2v(f.bruto), 'Bruto (exacto)': f.bruto,
     ISR: r2v(f.isr), 'ISR (exacto)': f.isr,
     'Saldo inicial': r2v(f.saldoInicial), 'Saldo inicial (exacto)': f.saldoInicial,
@@ -1064,6 +1187,10 @@ function generarReporteHistorial(cuenta, etiqueta, filas, r) {
         : 'Sin retención' },
     { Campo: 'Redondeo diario', Valor: r.redondeo === REDONDEO_CENTAVOS
         ? 'A centavos, antes de sumarse al saldo' : 'Continuo (sin redondear)' },
+    { Campo: 'Calendario de abono', Valor: etiquetaCalendario(r.abono) },
+    ...(conCal ? [{ Campo: 'Regla de abono', Valor: 'Los días inhábiles (fines de semana y festivos ' +
+        'registrados) no acreditan interés' + (r.abono === ABONO_HABIL_SOLO ? ' ni lo devengan' : '') +
+        '. Lo acumulado se abona completo el siguiente día hábil, y hasta entonces no compone.' }] : []),
     { Campo: 'Regla de movimientos', Valor: 'Un aporte o retiro rinde su día de llegada sobre el saldo ' +
         'anterior; el saldo nuevo empieza a componer recién desde el día siguiente.' },
     { Campo: 'Generado', Valor: new Date().toLocaleString('es-MX') },
@@ -1082,11 +1209,23 @@ function showHistorialModal(container, cuenta, etiqueta) {
 
   /** Reconstruye `filas`/`r` desde la cuenta actual y repinta el cuerpo del modal. */
   function pintarHistorial() {
-    r     = resumenCuenta(cuenta, hoyISO());
-    filas = historialDiario(cuenta, hoyISO()).reverse(); // más reciente primero
-    const conIsr  = filas.some(f => f.isr > 0.0000001);
-    const totNeto = filas.reduce((s, f) => s + f.neto + (f.ajuste || 0), 0);
-    const totIsr  = filas.reduce((s, f) => s + f.isr, 0);
+    r = resumenCuenta(cuenta, hoyISO());
+    const conCal = r.abono !== ABONO_NATURAL;
+
+    const asc = historialDiario(cuenta, hoyISO());
+    filas = [...asc].reverse();  // completo y más reciente primero — es lo que va al reporte
+
+    // La tabla, en cambio, pliega los inhábiles sobre el día que los abona
+    const plegado  = plegarDiasInhabiles(asc, configCuenta(cuenta));
+    const visibles = [...plegado.filas].reverse();
+    const pendiente = plegado.pendientes.reduce((s, f) => s + f.neto, 0);
+
+    const conIsr  = visibles.some(f => f.isr > 0.0000001);
+    // Lo que muestra cada renglón es lo ABONADO ese día (que en una cuenta sin
+    // calendario es su propio devengo) más el ajuste que se le haya registrado.
+    const montoFila = f => (f.abonado || 0) + (f.ajuste || 0);
+    const totNeto = visibles.reduce((s, f) => s + montoFila(f), 0);
+    const totIsr  = visibles.reduce((s, f) => s + f.isr, 0);
     const cols    = conIsr ? 5 : 3;
 
     // Ajustes agrupados por fecha, para distinguir en cada renglón si lo que cayó
@@ -1105,6 +1244,14 @@ function showHistorialModal(container, cuenta, etiqueta) {
     const timeline = timelineCuenta(cuenta);
     const ultimo   = timeline[timeline.length - 1];
 
+    // Días en los que empezó a regir una vigencia de tasa distinta, para
+    // marcarlos en la tabla igual que un movimiento o un ajuste.
+    const cambiosTasa = new Map();
+    (r.vigencias || []).forEach((v, idx) => {
+      if (!v.desde) return;
+      cambiosTasa.set(v.desde, { actual: v, anterior: r.vigencias[idx - 1] });
+    });
+
     const seccionFormula = `
       <div class="mt-2 mb-3">
         <a class="small text-decoration-none" data-bs-toggle="collapse" href="#inv-hist-formula" role="button">
@@ -1115,18 +1262,34 @@ function showHistorialModal(container, cuenta, etiqueta) {
         </div>
       </div>`;
 
-    document.querySelector('#app-modal .modal-body').innerHTML = filas.length === 0
+    // Lo devengado que todavía no tiene día de abono no cabe en ningún renglón:
+    // se dice aparte para que no parezca que se perdió.
+    const notaPendiente = pendiente > 0.005
+      ? `<p class="text-muted mt-2 mb-0" style="font-size:0.78rem">
+           <i class="bi bi-hourglass-split me-1"></i>${currency(pendiente)} generados desde el
+           ${fmtDate(plegado.pendientes[0].fecha)} se abonan el ${fmtDate(r.proximoAbono)}.
+         </p>`
+      : '';
+
+    document.querySelector('#app-modal .modal-body').innerHTML = visibles.length === 0
       ? `<div class="empty-state" style="padding:28px 0">
            <i class="bi bi-clock-history"></i>
-           <p>Aún no hay días transcurridos desde la última captura
-              (${ultimo ? fmtDate(ultimo.fecha) : '—'}).<br>
-              El primer rendimiento aparecerá mañana.</p>
+           <p>${pendiente > 0.005
+                ? `Todavía no hay ningún abono: lo generado desde la última captura
+                   (${ultimo ? fmtDate(ultimo.fecha) : '—'}) se acredita el
+                   ${fmtDate(r.proximoAbono)}.`
+                : `Aún no hay días transcurridos desde la última captura
+                   (${ultimo ? fmtDate(ultimo.fecha) : '—'}).<br>
+                   El primer rendimiento aparecerá mañana.`}</p>
          </div>
          ${seccionFormula}`
       : `<p class="text-muted mb-2" style="font-size:0.78rem">
            Cada renglón es el día que <strong>generó</strong> el interés; las instituciones lo abonan
            a la madrugada siguiente. Calculado desde ${currency(ultimo?.monto)}
            capturados el ${ultimo ? fmtDate(ultimo.fecha) : '—'}.
+           ${conCal ? 'Esta cuenta solo abona en días hábiles: los inhábiles no llevan renglón ' +
+                      'propio y su interés entra en el día que lo acredita — pasa el cursor por ' +
+                      'el importe para ver el desglose.' : ''}
          </p>
          <div class="table-wrapper inv-hist-tabla">
            <table class="table table-sm mb-0">
@@ -1137,7 +1300,7 @@ function showHistorialModal(container, cuenta, etiqueta) {
                <th class="text-end">Rendimiento</th>
              </tr></thead>
              <tbody>
-               ${filas.map((f, i) => {
+               ${visibles.map((f, i) => {
                  // Un ajuste "diario" corrige justo el interés de este renglón — se
                  // resalta en naranja. Uno de "saldo" viene de conciliar el total
                  // capturado contra otra fecha; puede caer el mismo día por
@@ -1149,14 +1312,31 @@ function showHistorialModal(container, cuenta, etiqueta) {
                  const hayDiario  = diarios.length > 0;
                  const montoDiario = diarios.reduce((s, a) => s + (Number(a.monto) || 0), 0);
                  const montoSaldo  = saldos.reduce((s, a) => s + (Number(a.monto) || 0), 0);
-                 // El renglón que se ve es lo calculado MÁS el ajuste — no tiene
-                 // sentido mostrar solo el interés y esconder la corrección en la
-                 // etiqueta chiquita de al lado
-                 const rendimientoDelDia = f.neto + (f.ajuste || 0);
+                 // El renglón que se ve es lo ABONADO ese día MÁS el ajuste — no
+                 // tiene sentido mostrar solo el interés y esconder la corrección
+                 // en la etiqueta chiquita de al lado, ni partir en dos columnas
+                 // una cifra que el banco reporta como un solo movimiento.
+                 const rendimientoDelDia = montoFila(f);
+                 // Un día inhábil solo sobrevive si trae movimiento o ajuste; su
+                 // interés ya viajó al día que lo abona, de ahí el $0.
+                 const inhabil = conCal && esInhabil(f.fecha);
+                 const cambioTasa = cambiosTasa.get(f.fecha);
+                 // Los días que se plegaron en este abono, para el tooltip
+                 const acum = f.acumulados || [];
+                 const detalle = acum.length
+                   ? `${acum.length + 1} días acumulados:&#10;${
+                        [...acum, f].map(d => `${fmtDate(d.fecha)}   ${currency(d.neto)}`).join('&#10;')}`
+                   : '';
                  return `
                  <tr class="${i === 0 ? 'inv-hist-ayer' : ''}">
                    <td>
                      ${fmtDate(f.fecha)}${i === 0 ? '<span class="inv-tr-marg">último</span>' : ''}
+                     ${inhabil ? '<span class="inv-tr-marg" title="Día inhábil: la institución no movió dinero">inhábil</span>' : ''}
+                     ${cambioTasa ? `<span class="inv-tr-marg" title="Cambio de tasa: ${
+                          cambioTasa.anterior ? resumenTramos(cambioTasa.anterior.tramos) : '—'} → ${
+                          resumenTramos(cambioTasa.actual.tramos)}, vigente desde este día">
+                          <i class="bi bi-graph-up-arrow"></i> ${resumenTramos(cambioTasa.actual.tramos)}</span>` : ''}
+                     ${detalle ? `<span class="inv-tr-marg" title="${detalle}">+${acum.length} días</span>` : ''}
                      ${Math.abs(f.movimiento || 0) >= 0.01
                        ? `<span class="inv-tr-marg" title="Movimiento aplicado ese día">${
                             f.movimiento > 0 ? '+' : '−'}${currency(Math.abs(f.movimiento))}</span>` : ''}
@@ -1171,10 +1351,12 @@ function showHistorialModal(container, cuenta, etiqueta) {
                    ${conIsr ? `<td class="text-end text-muted">${currency(f.bruto)}</td>
                                <td class="text-end text-danger">−${currency(f.isr)}</td>` : ''}
                    <td class="text-end fw-semibold ${hayDiario ? 'text-warning' : 'text-success'}"
-                       ${hayDiario ? 'title="Incluye el ajuste diario registrado ese día"' : ''}>
+                       title="${[detalle, hayDiario ? 'Incluye el ajuste diario registrado ese día' : '']
+                                 .filter(Boolean).join('&#10;')}">
                      ${currency(rendimientoDelDia)}
                      <button type="button" class="btn btn-link btn-sm p-0 ms-1 inv-hist-corregir"
-                             data-fecha="${f.fecha}" data-neto="${f.neto}"
+                             data-fecha="${f.fecha}" data-monto="${rendimientoDelDia}"
+                             data-dias="${acum.length + 1}"
                              title="Corregir este día" style="line-height:1;vertical-align:-1px">
                        <i class="bi bi-pencil-square"></i>
                      </button>
@@ -1189,11 +1371,12 @@ function showHistorialModal(container, cuenta, etiqueta) {
              </tr></tfoot>
            </table>
          </div>
+         ${notaPendiente}
          ${seccionFormula}`;
 
     document.querySelectorAll('.inv-hist-corregir').forEach(b =>
       b.addEventListener('click', () =>
-        mostrarCorreccionDia(b.dataset.fecha, Number(b.dataset.neto))));
+        mostrarCorreccionDia(b.dataset.fecha, Number(b.dataset.monto), Number(b.dataset.dias))));
 
     const btnReporte = document.getElementById('inv-hist-reporte');
     if (btnReporte) btnReporte.classList.toggle('d-none', filas.length === 0);
@@ -1250,8 +1433,16 @@ function showHistorialModal(container, cuenta, etiqueta) {
    * los botones ± lo mueven de centavo en centavo para no tener que escribir
    * el número completo por una diferencia mínima.
    */
-  function mostrarCorreccionDia(fecha, netoCalculado) {
-    const inicial = r2(netoCalculado);
+  /**
+   * `montoMostrado` es exactamente la cifra del renglón, no el interés "puro"
+   * del día: ya trae los ajustes que haya y, en una cuenta con calendario, el
+   * puente completo. Es lo único contra lo que el usuario puede comparar —
+   * el banco reporta un abono, no el desglose— y así la diferencia que se
+   * registra es la que se ve, sin volver a sumar un ajuste que ya existía.
+   */
+  function mostrarCorreccionDia(fecha, montoMostrado, dias = 1) {
+    const inicial = r2(montoMostrado);
+    const bundle  = dias > 1;
 
     trasCerrar(() => {
       openModal({
@@ -1259,11 +1450,12 @@ function showHistorialModal(container, cuenta, etiqueta) {
         body: `
           <div class="inv-op mb-3">
             <div class="inv-op-row inv-op-base">
-              <span class="inv-op-formula">Esta app calculó ese día</span>
+              <span class="inv-op-formula">El historial muestra ese día${
+                bundle ? ` <small>(${dias} días acumulados)</small>` : ''}</span>
               <span>${currency(inicial)}</span>
             </div>
           </div>
-          <label class="form-label">Rendimiento real reportado por el banco</label>
+          <label class="form-label">${bundle ? 'Abono' : 'Rendimiento'} real reportado por el banco</label>
           <div class="input-group">
             <button type="button" class="btn btn-outline-secondary" id="corr-menos" title="Restar un centavo">
               <i class="bi bi-dash-lg"></i>
@@ -1567,6 +1759,8 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
   const refrescar = () => onSaved ? onSaved() : renderView(container);
   const isEdit = !!cuenta;
   const hoy    = hoyISO();
+  // El calendario ya lo cargó `renderView`; aquí solo se avisa si viene vacío
+  const hayFestivos = inhabilesRegistrados().size > 0;
   const tramos = isEdit && Array.isArray(cuenta.tramos) && cuenta.tramos.length
     ? cuenta.tramos.map(t => ({ hasta: t.hasta ?? null, tasa: Number(t.tasa) || 0 }))
     : TRAMOS_DEFAULT.map(t => ({ ...t }));
@@ -1655,6 +1849,18 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
         </div>
         <div id="inv-tramos"></div>
 
+        <div class="row g-2 mt-1">
+          <div class="col-12">
+            <label class="form-label form-label-sm">Vigente desde${btnAyuda('tasaDesde')}</label>
+            <input type="date" class="form-control form-control-sm" name="tasaDesde" max="${hoy}"
+                   value="${isoDay(cuenta?.tasaDesde) || ''}"
+                   ${(cuenta?.historialTasas || []).length ? 'required' : ''}>
+            <div class="form-text">${(cuenta?.historialTasas || []).length
+              ? `Con historial de tasas (${cuenta.historialTasas.length} periodo${cuenta.historialTasas.length > 1 ? 's' : ''} previo${cuenta.historialTasas.length > 1 ? 's' : ''}), la vigencia actual necesita fecha. Consulta o borra periodos desde el menú ⋮ de la cuenta.`
+              : 'Vacío = esta tasa aplicó siempre. Ponle fecha solo si cambió desde otra anterior — los tramos que tenías capturados pasan al historial de tasas.'}</div>
+          </div>
+        </div>
+
         <div class="mt-3">
           <a class="small text-decoration-none" data-bs-toggle="collapse" href="#inv-adv" role="button">
             <i class="bi bi-sliders me-1"></i>Avanzado
@@ -1662,6 +1868,7 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
           <div class="collapse ${cuenta?.isrAnual
             || cuenta?.isrSobre === ISR_INTERES || cuenta?.redondeoTasa === 'redondear'
             || cuenta?.redondeoDiario === REDONDEO_CENTAVOS
+            || (cuenta?.calendarioAbono && cuenta.calendarioAbono !== ABONO_NATURAL)
             || (cuenta?.baseAnual && cuenta.baseAnual !== BASE_ANUAL_DEFAULT)
             || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT) ? 'show' : ''}" id="inv-adv">
             <div class="row g-2 mt-1">
@@ -1710,6 +1917,17 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
                   <option value="${REDONDEO_CONTINUO}" ${cuenta?.redondeoDiario !== REDONDEO_CENTAVOS ? 'selected' : ''}>Continuo</option>
                   <option value="${REDONDEO_CENTAVOS}" ${cuenta?.redondeoDiario === REDONDEO_CENTAVOS ? 'selected' : ''}>A centavos</option>
                 </select>
+              </div>
+
+              <div class="col-12"><div class="inv-adv-sep">Calendario de abono</div></div>
+              <div class="col-12">
+                <label class="form-label">Cuándo se acredita el interés${btnAyuda('calendarioAbono')}</label>
+                <select class="form-select" name="calendarioAbono" id="inv-calendario">
+                  <option value="${ABONO_NATURAL}" ${cuenta?.calendarioAbono !== ABONO_HABIL_ACUMULA && cuenta?.calendarioAbono !== ABONO_HABIL_SOLO ? 'selected' : ''}>Todos los días — también fines de semana y festivos</option>
+                  <option value="${ABONO_HABIL_ACUMULA}" ${cuenta?.calendarioAbono === ABONO_HABIL_ACUMULA ? 'selected' : ''}>Solo días hábiles — el acumulado se paga el siguiente</option>
+                  <option value="${ABONO_HABIL_SOLO}" ${cuenta?.calendarioAbono === ABONO_HABIL_SOLO ? 'selected' : ''}>Solo días hábiles — los inhábiles no generan interés</option>
+                </select>
+                <div class="form-text" id="inv-calendario-nota"></div>
               </div>
 
             </div>
@@ -1793,6 +2011,23 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
   selSobre.addEventListener('change', sincronizarIsr);
   sincronizarIsr();
 
+  // ── Calendario de abono ───────────────────────────────────────────────────
+  const selCal  = document.getElementById('inv-calendario');
+  const notaCal = document.getElementById('inv-calendario-nota');
+
+  const sincronizarCalendario = () => {
+    if (selCal.value === ABONO_NATURAL) { notaCal.textContent = ''; return; }
+    // Sin festivos cargados el cálculo sigue siendo correcto para los fines de
+    // semana (que son la mayor parte del efecto), pero un puente se le escapa.
+    notaCal.innerHTML = hayFestivos
+      ? 'Los fines de semana y los festivos registrados no abonan.'
+      : '<i class="bi bi-exclamation-triangle me-1"></i>No hay festivos registrados: ' +
+        'solo se tomarán en cuenta los fines de semana. Cárgalos en Días Festivos.';
+  };
+
+  selCal.addEventListener('change', sincronizarCalendario);
+  sincronizarCalendario();
+
   document.getElementById('inv-add-tramo').addEventListener('click', () => {
     const actual = leerTramos();
     const ultimo = actual[actual.length - 1];
@@ -1834,6 +2069,9 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
       baseIsr:            Number(raw.baseIsr)   || BASE_ANUAL_DEFAULT,
       redondeoTasa:       raw.redondeoTasa === 'redondear' ? 'redondear' : 'truncar',
       redondeoDiario:     raw.redondeoDiario === REDONDEO_CENTAVOS ? REDONDEO_CENTAVOS : REDONDEO_CONTINUO,
+      calendarioAbono:    [ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO].includes(raw.calendarioAbono)
+                            ? raw.calendarioAbono : ABONO_NATURAL,
+      tasaDesde:          raw.tasaDesde || null,
     };
 
     // Si la fecha de actualización cambió, la captura anterior pasa al historial
@@ -1863,6 +2101,26 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
         data.fechaActualizacionRendimiento, 'rendimiento obtenido');
       if (histRCorregido === null) return;
       if (histRCorregido !== undefined) data.historialRendimiento = histRCorregido;
+
+      // Si "vigente desde" cambió, la vigencia anterior (tramos, aplicación e
+      // interpretación tal como estaban) pasa al historial de tasas — mismo
+      // patrón que el monto invertido, pero para la tasa. Editar los tramos sin
+      // tocar la fecha corrige la vigencia actual en su sitio, sin abrir una
+      // nueva — igual que corregir el monto sin cambiar su fecha.
+      const prevTD = isoDay(cuenta.tasaDesde);
+      if (prevTD !== data.tasaDesde) {
+        if (!data.tasaDesde && (cuenta.historialTasas || []).length) {
+          toast('Con historial de tasas, la vigencia actual necesita fecha', 'warning'); return;
+        }
+        data.historialTasas = pushHistorialTasa(cuenta.historialTasas, {
+          desde: prevTD, tramos: cuenta.tramos,
+          modoTramos: cuenta.modoTramos, modoTasa: cuenta.modoTasa,
+        });
+      }
+      const histTCorregido = historialTasasTrasCorregirRaiz(
+        data.historialTasas || cuenta.historialTasas, data.tasaDesde);
+      if (histTCorregido === null) return;
+      if (histTCorregido !== undefined) data.historialTasas = histTCorregido;
     }
 
     // Cambiar tasa, tramos o la captura raíz mueve los residuos que explicaban
@@ -1881,6 +2139,105 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
       refrescar();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
+}
+
+// ── Modal: historial de tasas ──────────────────────────────────────────────────
+
+/**
+ * Lista de solo lectura de las vigencias de tasa de la cuenta —cuándo aplicó
+ * cada una y con qué tramos— con borrado para las que ya quedaron atrás. La
+ * vigencia actual no se borra aquí: se cambia editando la cuenta, que es lo que
+ * abre un periodo nuevo.
+ */
+function showHistorialTasasModal(container, cuenta, etiqueta) {
+  let cambiado = false;
+
+  function pintar() {
+    const vig = vigenciasTasa(cuenta);
+
+    const filas = vig.map((v, i) => {
+      const esActual = i === vig.length - 1;
+      // El "hasta" de un periodo es un día antes de que empiece el siguiente
+      const hasta = esActual ? null : sumarDias(vig[i + 1].desde, -1);
+      return `
+        <tr class="${esActual ? 'inv-hist-ayer' : ''}">
+          <td>
+            ${v.desde ? fmtDate(v.desde) : 'Origen de la cuenta'}
+            –
+            ${esActual ? '<strong>hoy</strong>' : fmtDate(hasta)}
+            ${esActual ? '<span class="inv-tr-marg">vigente</span>' : ''}
+          </td>
+          <td>${v.modo === MODO_UNICO ? 'Tasa única' : 'Progresivo'} ·
+              ${v.modoTasa === TASA_EFECTIVA ? 'Efectiva' : 'Nominal'}</td>
+          <td class="text-end fw-semibold">${resumenTramos(v.tramos)}</td>
+          <td class="text-end">
+            ${esActual ? '' : `
+            <button class="btn-icon danger tasa-del" data-i="${i}" title="Borrar este periodo">
+              <i class="bi bi-trash3"></i>
+            </button>`}
+          </td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('tasas-body').innerHTML = `
+      <div class="table-wrapper inv-hist-tabla">
+        <table class="table table-sm mb-0">
+          <thead><tr>
+            <th>Periodo</th><th>Configuración</th><th class="text-end">Tasa</th><th></th>
+          </tr></thead>
+          <tbody>${filas}</tbody>
+        </table>
+      </div>
+      ${vig.length === 1 ? `
+      <p class="text-muted mt-2 mb-0" style="font-size:0.78rem">
+        Esta cuenta nunca registró un cambio de tasa — toda su historia usa la vigente.
+        Para registrar uno, edita la cuenta y ponle fecha a "Vigente desde".
+      </p>` : ''}`;
+
+    document.querySelectorAll('.tasa-del').forEach(b =>
+      b.addEventListener('click', async () => {
+        const v = vig[Number(b.dataset.i)];
+        if (!window.confirm(
+          `¿Borrar el periodo ${v.desde ? fmtDate(v.desde) : 'del origen'} (${resumenTramos(v.tramos)})?\n\n` +
+          `Esos días pasan a calcularse con el periodo que quede vigente en su lugar.`)) return;
+
+        const historialTasas = (cuenta.historialTasas || [])
+          .filter(h => (h?.desde == null ? null : isoDay(h.desde)) !== v.desde);
+
+        // Borrar un periodo mueve el rendimiento de los días que cubría —
+        // mismo resguardo que cualquier otro cambio a la raíz del cálculo
+        const ajustes = ajustesTrasEditar({ ...cuenta, historialTasas }, etiqueta);
+        if (!ajustes) return;
+        const data = { historialTasas };
+        if (ajustes.length || (cuenta.ajustes || []).length) data.ajustes = ajustes;
+
+        try {
+          await update(COL, cuenta.id, data);
+          Object.assign(cuenta, data);
+          cambiado = true;
+          toast('Periodo eliminado');
+          pintar();
+        } catch (e) { toast('Error: ' + e.message, 'danger'); }
+      }));
+  }
+
+  openModal({
+    size: 'lg',
+    title: `Historial de tasas — ${esc(etiqueta)}`,
+    body: `
+      <p class="text-muted mb-2" style="font-size:0.78rem">
+        Cada periodo usa sus propios tramos: lo ya ganado con una tasa vieja no se recalcula
+        cuando la institución publica una nueva.
+      </p>
+      <div id="tasas-body"></div>`,
+    footer: `<button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>`
+  });
+
+  pintar();
+
+  document.getElementById('app-modal')?.addEventListener('hidden.bs.modal', () => {
+    if (cambiado) renderView(container);
+  }, { once: true });
 }
 
 // ── Modal: actualizar monto invertido ─────────────────────────────────────────
@@ -1924,10 +2281,15 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
   const estimadoMonto = r2(r.saldoActual);
   const estimadoRend  = r2(r.rendimientoHastaHoy);
   const cfg           = configCuenta(cuenta);
+  const tieneCaptura  = !!isoDay(cuenta.fechaActualizacionRendimiento);
 
   let conc = null;              // última conciliación calculada
   let montoTocado = false;      // si el usuario ya ajustó el importe a clasificar
   let tipoTocado  = false;
+  // Solo si el usuario de verdad tocó este campo se guarda como captura real —
+  // si no, el formulario lo precarga con el estimado y guardar el saldo por su
+  // cuenta terminaba también "capturando" un rendimiento que nadie observó.
+  let rendTocado  = false;
 
   let cambiado = false; // si se editó/borró algún ajuste, la tarjeta necesita refrescar al cerrar
 
@@ -2022,9 +2384,16 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
               <input type="number" class="form-control" name="rendimientoObtenido" required step="0.01"
                      value="${estimadoRend}">
             </div>
+            <div class="form-text">Vacío de captura: se precarga con el estimado solo como
+              referencia — no se guarda como dato real a menos que lo cambies o toques
+              <em>Usar este valor</em>.</div>
           </div>
         </div>
         <div id="rend-upd-delta" class="inv-upd-delta"></div>
+        ${tieneCaptura ? `
+        <button type="button" class="btn btn-link btn-sm px-0 mt-1 text-danger" id="rend-quitar-captura">
+          <i class="bi bi-x-circle me-1"></i>Quitar la captura registrada (usar solo lo calculado)
+        </button>` : ''}
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
@@ -2104,7 +2473,7 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
   form.fecha.addEventListener('change', pintarMonto);
   selTipo.addEventListener('change', () => { tipoTocado = true; pintarNota(); });
   inpMonto.addEventListener('input', () => { montoTocado = true; pintarNota(); });
-  inputRend.addEventListener('input', pintarRend);
+  inputRend.addEventListener('input', () => { rendTocado = true; pintarRend(); });
 
   document.getElementById('inv-usar-est').addEventListener('click', () => {
     inputMonto.value = estimadoMonto;
@@ -2113,7 +2482,19 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
   });
   document.getElementById('rend-usar-est').addEventListener('click', () => {
     inputRend.value = estimadoRend;
+    rendTocado = true;
     pintarRend();
+  });
+  document.getElementById('rend-quitar-captura')?.addEventListener('click', async () => {
+    if (!window.confirm(
+      'Se va a borrar el rendimiento capturado — de ahí en adelante "Hasta hoy" vuelve a salir ' +
+      'siempre de la tabla del historial, en vez de proyectar desde esta captura.')) return;
+    try {
+      await update(COL, cuenta.id, { rendimientoObtenido: 0, fechaActualizacionRendimiento: null });
+      cambiado = true;
+      toast('Captura de rendimiento eliminada');
+      closeModal();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 
   pintarMonto();
@@ -2260,9 +2641,15 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
     const data = {
       montoInvertido:                Number(form.montoInvertido.value),
       fechaActualizacion:            nuevaFecha,
-      rendimientoObtenido:           Number(form.rendimientoObtenido.value),
-      fechaActualizacionRendimiento: nuevaFecha,
     };
+    // El campo viene precargado con el estimado como referencia; solo cuenta
+    // como captura real si el usuario lo tocó a propósito — de lo contrario,
+    // guardar solo el saldo terminaba "capturando" un rendimiento que nadie
+    // observó, y la tarjeta dejaba de coincidir con la tabla del historial.
+    if (rendTocado) {
+      data.rendimientoObtenido           = Number(form.rendimientoObtenido.value);
+      data.fechaActualizacionRendimiento = nuevaFecha;
+    }
 
     // Saldo: la captura anterior pasa al historial (misma fecha ⇒ corrección)
     const prevF = isoDay(cuenta.fechaActualizacion);
@@ -2276,17 +2663,19 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
     if (histCorregido === null) return;
     if (histCorregido !== undefined) data.historial = histCorregido;
 
-    // Rendimiento: mismo criterio, misma fecha
-    const prevFR = isoDay(cuenta.fechaActualizacionRendimiento);
-    if (prevFR && prevFR !== nuevaFecha) {
-      data.historialRendimiento = pushHistorial(cuenta.historialRendimiento, {
-        fecha: prevFR, monto: Number(cuenta.rendimientoObtenido) || 0,
-      });
+    // Rendimiento: mismo criterio, misma fecha — solo si de verdad hay captura nueva
+    if (rendTocado) {
+      const prevFR = isoDay(cuenta.fechaActualizacionRendimiento);
+      if (prevFR && prevFR !== nuevaFecha) {
+        data.historialRendimiento = pushHistorial(cuenta.historialRendimiento, {
+          fecha: prevFR, monto: Number(cuenta.rendimientoObtenido) || 0,
+        });
+      }
+      const histRCorregido = historialTrasCorregirRaiz(
+        data.historialRendimiento || cuenta.historialRendimiento, nuevaFecha, 'rendimiento obtenido');
+      if (histRCorregido === null) return;
+      if (histRCorregido !== undefined) data.historialRendimiento = histRCorregido;
     }
-    const histRCorregido = historialTrasCorregirRaiz(
-      data.historialRendimiento || cuenta.historialRendimiento, nuevaFecha, 'rendimiento obtenido');
-    if (histRCorregido === null) return;
-    if (histRCorregido !== undefined) data.historialRendimiento = histRCorregido;
 
     // Clasificación del residuo del saldo — el importe puede cubrirlo entero o solo una parte
     const tipo    = selTipo.value;

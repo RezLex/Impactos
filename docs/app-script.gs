@@ -7,7 +7,10 @@
  * Campos:  desc, total, fecha, hora, tarjeta, asunto, msgId [, meses, mensualidad]
  *
  * Triggers:
- *   procesarCompras()   — cada 15 minutos. Escribe una notificación por compra.
+ *   procesarCompras()   — cada 15 minutos. Escribe una notificación por compra
+ *                         y manda UN push por corrida: el detalle si fue una,
+ *                         un resumen si fueron varias. De 0:00 a 6:00 (CDMX)
+ *                         sale de inmediato sin hacer nada.
  *   resumenPendientes() — una vez al día. Manda UN correo con las pendientes y
  *                         borra las ya procesadas/descartadas que caducaron.
  *
@@ -52,6 +55,25 @@ const TARJETA_NA  = 'NA';   // cuando el correo no revela la tarjeta
 // Días que sobreviven en Firestore las notificaciones ya procesadas o
 // descartadas. Las pendientes nunca se borran solas.
 const RETENCION_DIAS = 30;
+
+/**
+ * Horario silencioso: dentro de este rango `procesarCompras` sale de inmediato,
+ * sin leer correo ni escribir nada. Solo esa función — el correo diario de
+ * `resumenPendientes` no se ve afectado.
+ *
+ * Cortar al inicio es seguro justamente porque no toca nada: los correos de la
+ * madrugada **no se marcan como vistos**, así que la primera corrida después de
+ * SILENCIO_HASTA los detecta todos. Y como el push es uno por corrida, llegan
+ * en un único aviso de resumen en vez de una ráfaga. No se pierde nada, se
+ * difiere.
+ *
+ * La zona va explícita y no se usa `Session.getScriptTimeZone()`: la del
+ * proyecto se puede cambiar sin querer desde la configuración, y entonces el
+ * silencio se correría de hora sin que nadie lo note.
+ */
+const ZONA_HORARIA   = 'America/Mexico_City';
+const SILENCIO_DESDE = 0;   // inclusive
+const SILENCIO_HASTA = 6;   // exclusive: a las 6:00 en punto ya procesa
 
 /**
  * Diccionario de descripciones.
@@ -129,10 +151,28 @@ const FUENTES = [
 
 // ---------- Trigger A: cada 15 minutos ----------
 
+/** ¿Estamos dentro del horario silencioso? Soporta rangos que cruzan medianoche. */
+function enSilencio(ahora) {
+  const h = Number(Utilities.formatDate(ahora || new Date(), ZONA_HORARIA, 'H'));
+  return SILENCIO_DESDE <= SILENCIO_HASTA
+    ? (h >= SILENCIO_DESDE && h < SILENCIO_HASTA)          // 0 → 6
+    : (h >= SILENCIO_DESDE || h < SILENCIO_HASTA);         // 22 → 6, por si se cambia
+}
+
 function procesarCompras() {
-  const vistos = cargarVistos();
-  const fallos = [];
-  let nuevos = 0;
+  if (enSilencio()) {
+    console.log('Horario silencioso (' + SILENCIO_DESDE + ':00–' + SILENCIO_HASTA + ':00 ' +
+                ZONA_HORARIA + ') — sin procesar. Lo que llegue ahora se detecta en la ' +
+                'primera corrida después de las ' + SILENCIO_HASTA + ':00.');
+    return;
+  }
+
+  const vistos  = cargarVistos();
+  const fallos  = [];
+  // Las creadas en ESTA corrida, para mandar un solo push al final en vez de
+  // uno por compra. Un reproceso puede detectar diez correos de golpe y eso
+  // eran diez vibraciones seguidas.
+  const creadas = [];
 
   FUENTES.forEach(function (fuente) {
     GmailApp.search(fuente.query + ' newer_than:' + VENTANA).forEach(function (hilo) {
@@ -152,8 +192,7 @@ function procesarCompras() {
             // notificaciones lo muestra junto al comercio para dar contexto
             // cuando el diccionario no reconoció la tienda.
             datos.asunto = msg.getSubject();
-            crearNotificacion(datos);
-            nuevos++;
+            creadas.push(crearNotificacion(datos));
           }
           // Marcar visto solo si no hubo excepción. Un fallo de escritura en
           // Firestore antes perdía nada más un aviso; ahora perdería la compra
@@ -170,6 +209,18 @@ function procesarCompras() {
 
   guardarVistos(vistos);
 
+  // Un solo push por corrida, con las notificaciones ya escritas. Va al final y
+  // en su propio try: si falla, los documentos ya están en Firestore y se ven
+  // al abrir la app — no debe tumbar la detección ni provocar un reintento,
+  // que duplicaría todo.
+  if (creadas.length) {
+    try {
+      enviarPush(creadas);
+    } catch (e) {
+      console.log('PUSH — ' + e.message);
+    }
+  }
+
   if (fallos.length) {
     MailApp.sendEmail(DESTINO,
       'Gastos: ' + fallos.length + ' correo(s) sin parsear',
@@ -179,7 +230,7 @@ function procesarCompras() {
     fallos.forEach(function (f) { console.log('FALLO — ' + f); });
   }
 
-  console.log('Nuevos: ' + nuevos + ' | Fallos: ' + fallos.length);
+  console.log('Nuevos: ' + creadas.length + ' | Fallos: ' + fallos.length);
 }
 
 // ---------- Trigger B: una vez al día ----------
@@ -406,16 +457,9 @@ function crearNotificacion(datos) {
     }
   });
 
-  // El push es un extra: si falla, la notificación ya quedó guardada y se ve al
-  // abrir la app. No debe tumbar la detección ni provocar un reintento, que
-  // duplicaría el documento.
-  try {
-    enviarPush(d, idDeRuta(doc.name));
-  } catch (e) {
-    console.log('PUSH — ' + e.message);
-  }
-
-  return doc.name;   // ruta completa del documento
+  // No manda el push: eso lo hace `procesarCompras` una sola vez al final de la
+  // corrida, con todas las creadas juntas.
+  return { nombre: doc.name, notifId: idDeRuta(doc.name), datos: d };
 }
 
 /** Todas las notificaciones, ya decodificadas, con `_nombre` para poder borrarlas. */
@@ -506,25 +550,64 @@ function fsMapa(fields) {
 
 // ---------- Web Push (FCM) ----------
 
+/** "$1,372.23" — el importe llega como number, y `'$' + 195.7` daría "$195.7". */
+function pesos(v) {
+  const partes = (Number(v) || 0).toFixed(2).split('.');
+  return '$' + partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + partes[1];
+}
+
+/** Texto de una compra sola: el detalle completo, que es lo útil cuando es una. */
+function textoCompra(c) {
+  const d = c.datos;
+  const aPlazos = d.meses != null && d.meses !== '';
+  return {
+    titulo: pesos(d.total) + ' — ' + d.desc + (aPlazos ? ' (' + d.meses + ' MSI)' : ''),
+    // Con match, la terminación basta de contexto. Sin match, el comercio del
+    // título no dice nada y el asunto crudo es lo único que orienta.
+    cuerpo: !d.match && d.asunto
+      ? d.asunto
+      : (d.tarjeta && d.tarjeta !== TARJETA_NA ? '···' + d.tarjeta + ' — ' : '') +
+        'toca para registrarla',
+    tag: String(c.notifId)
+  };
+}
+
 /**
- * Manda la compra detectada a todos los dispositivos registrados.
+ * Texto de varias: cuántas, de dónde y por cuánto. El detalle de cada una no
+ * cabe y tampoco hace falta — el aviso lleva a la lista, que sí lo tiene.
+ */
+function textoResumen(compras) {
+  const total = compras.reduce(function (s, c) { return s + (Number(c.datos.total) || 0); }, 0);
+  const nombres = compras.map(function (c) { return c.datos.desc; });
+  const resto = nombres.length - 2;
+
+  return {
+    titulo: compras.length + ' compras detectadas',
+    cuerpo: nombres.slice(0, 2).join(', ') + (resto > 0 ? ' y ' + resto + ' más' : '') +
+            ' · ' + pesos(total) + ' en total',
+    // Único por corrida: dos resúmenes seguidos son avisos distintos y el
+    // segundo no debe tapar al primero.
+    tag: 'resumen-' + Date.now()
+  };
+}
+
+/**
+ * Manda **un solo** aviso por corrida a todos los dispositivos registrados: el
+ * detalle si fue una compra, el resumen si fueron varias.
  *
  * **Data-only, sin bloque `notification`**: así el `push` de `sw.js` decide qué
  * mostrar. Con bloque `notification`, Chrome pinta además la suya y saldrían
- * dos avisos por compra. FCM exige que todos los valores de `data` sean string.
+ * dos avisos. FCM exige que todos los valores de `data` sean string.
+ *
+ * @param {Array<{notifId: string, datos: object}>} compras
  */
-function enviarPush(d, notifId) {
+function enviarPush(compras) {
+  if (!compras || !compras.length) return 0;
+
   const tokens = listarTokens();
   if (!tokens.length) return 0;
 
-  const aPlazos = d.meses != null && d.meses !== '';
-  const titulo  = '$' + d.total + ' — ' + d.desc + (aPlazos ? ' (' + d.meses + ' MSI)' : '');
-  // Con match, la terminación basta de contexto. Sin match, el comercio del
-  // título no dice nada y el asunto crudo es lo único que orienta.
-  const cuerpo  = !d.match && d.asunto
-    ? d.asunto
-    : (d.tarjeta && d.tarjeta !== TARJETA_NA ? '···' + d.tarjeta + ' — ' : '') +
-      'toca para registrarla';
+  const msg = compras.length === 1 ? textoCompra(compras[0]) : textoResumen(compras);
 
   var enviados = 0;
 
@@ -537,7 +620,7 @@ function enviarPush(d, notifId) {
       payload: JSON.stringify({
         message: {
           token: t.token,
-          data: { titulo: titulo, cuerpo: cuerpo, notifId: String(notifId) },
+          data: { titulo: msg.titulo, cuerpo: msg.cuerpo, notifId: msg.tag },
           webpush: { headers: { Urgency: 'high', TTL: '86400' } }
         }
       })
@@ -720,33 +803,49 @@ function verTexto(indiceFuente) {
  * Correrlo antes de activar el trigger.
  */
 function pruebaFirestore() {
-  const nombre = crearNotificacion({
+  const creada = crearNotificacion({
     desc: 'PRUEBA — borrar', total: '1.23', fecha: '2026-01-01', hora: '00:00',
     tarjeta: TARJETA_NA, msgId: 'prueba', asunto: 'Prueba de conexión', match: false
   });
-  console.log('creado: ' + nombre);
+  console.log('creado: ' + creada.nombre);
 
-  const leido = listarNotificaciones().filter(function (n) { return n._nombre === nombre; })[0];
+  const leido = listarNotificaciones().filter(function (n) { return n._nombre === creada.nombre; })[0];
   console.log('leído: ' + JSON.stringify(leido));
 
-  fsFetch(FS_API + nombre, 'delete');
+  fsFetch(FS_API + creada.nombre, 'delete');
   console.log('borrado ok');
 }
 
-/**
- * Manda un push de mentira a todos los dispositivos registrados, sin tocar la
- * colección de notificaciones. Valida el scope de FCM, los tokens y el render
- * del Service Worker de una sola vez.
- */
-function pruebaPush() {
+// Compras de mentira para las pruebas de push. No tocan Firestore.
+const PRUEBA_COMPRAS = [
+  { notifId: 'prueba-1', datos: { total: 195.7,   desc: 'Uber',   tarjeta: '2167', match: true } },
+  { notifId: 'prueba-2', datos: { total: 1372.23, desc: 'Amazon', tarjeta: '4321', match: true,
+                                  meses: 6, mensualidad: 228.71 } },
+  { notifId: 'prueba-3', datos: { total: 87,      desc: 'Oxxo',   tarjeta: '2167', match: true } }
+];
+
+/** Push de UNA compra: el formato con detalle. No toca la colección. */
+function pruebaPushUna() {
+  _probarPush(PRUEBA_COMPRAS.slice(0, 1));
+}
+
+/** Push de VARIAS: el formato de resumen. No toca la colección. */
+function pruebaPushVarias() {
+  _probarPush(PRUEBA_COMPRAS);
+}
+
+function _probarPush(compras) {
   const tokens = listarTokens();
   console.log('dispositivos registrados: ' + tokens.length);
-  if (!tokens.length) return console.log('Ninguno — activa el permiso en la app primero');
+  if (!tokens.length) return console.log('Ninguno — activa las notificaciones en la app primero');
 
-  const enviados = enviarPush({
-    total: '123.45', desc: 'PRUEBA', tarjeta: '0000', match: true
-  }, 'prueba');
-  console.log('enviados: ' + enviados + '/' + tokens.length);
+  // Se imprime el texto además de mandarlo: así se revisa el formato aunque el
+  // aviso no llegue a verse (Windows silenciado, teléfono en No molestar…)
+  const msg = compras.length === 1 ? textoCompra(compras[0]) : textoResumen(compras);
+  console.log('título: ' + msg.titulo);
+  console.log('cuerpo: ' + msg.cuerpo);
+
+  console.log('enviados: ' + enviarPush(compras) + '/' + tokens.length);
 }
 
 /** Borra la memoria de procesados. Úsalo solo para reprobar desde cero. */

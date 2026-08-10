@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v25';
+const CACHE = 'impactos-v26';
 
 const SHELL = [
   './',
@@ -111,8 +111,28 @@ self.addEventListener('notificationclick', e => {
   })());
 });
 
+/**
+ * Guarda una respuesta en el caché sin que un fallo se propague.
+ *
+ * La Cache API rechaza más cosas de las que parece: respuestas parciales (206,
+ * típicas de un <video> o de una descarga con Range) y cualquier esquema que no
+ * sea http(s). Como el `put` es asíncrono y su promesa no la espera nadie —a
+ * propósito: cachear no debe demorar la respuesta al usuario— un rechazo salía
+ * a la consola como "Uncaught (in promise)" sin que nada estuviera realmente
+ * roto. Se filtra lo que no se puede guardar y se traga el resto.
+ */
+function guardarEnCache(request, respuesta) {
+  if (!respuesta.ok || respuesta.status === 206) return;
+  caches.open(CACHE).then(c => c.put(request, respuesta)).catch(() => {});
+}
+
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
+
+  // Solo http(s). Las extensiones del navegador (chrome-extension://) disparan
+  // peticiones que pasan por aquí sin que la app las haya pedido, y ni se
+  // pueden cachear ni son asunto nuestro: que las resuelva el navegador.
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
   // Firebase/Google APIs → siempre red, sin interceptar
   if (FIREBASE_HOSTS.some(h => url.hostname.includes(h))) return;
@@ -134,8 +154,7 @@ self.addEventListener('fetch', e => {
           // y para cuando resolviera, el body de `res` ya podía estar consumido
           // (quien recibe la respuesta de `respondWith` la lee de inmediato),
           // lanzando "Response body is already used" en el clone tardío.
-          const copia = res.clone();
-          if (res.ok) caches.open(CACHE).then(c => c.put(e.request, copia));
+          guardarEnCache(e.request, res.clone());
           return res;
         });
         return cached || fresh;
@@ -147,8 +166,7 @@ self.addEventListener('fetch', e => {
   // Archivos locales → network first, caché solo si hay error de red (offline)
   e.respondWith(
     fetch(e.request).then(res => {
-      const copia = res.clone(); // mismo motivo que arriba: clonar antes de devolver
-      if (res.ok) caches.open(CACHE).then(c => c.put(e.request, copia));
+      guardarEnCache(e.request, res.clone()); // clonar ya, mismo motivo que arriba
       return res;
     }).catch(() => caches.match(e.request))
   );

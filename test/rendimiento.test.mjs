@@ -12,8 +12,10 @@ import {
   movimientosTransferencia, validarTransferencia, esTransferencia,
   conTransferencia, sinTransferencia,
   capturasDescartadas, historialConsistente, resumenCuenta,
+  registrarInhabiles, esInhabil, siguienteHabil, plegarDiasInhabiles,
+  vigenciasTasa, vigenciaEnFecha,
   EVENTO_ANCLA, EVENTO_MOVIMIENTO, EVENTO_AJUSTE, MOV_APORTE, MOV_RETIRO,
-  TASA_EFECTIVA, MODO_UNICO,
+  TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
 } from '../js/utils/rendimiento.js';
 
 let pasadas = 0, fallidas = 0;
@@ -26,6 +28,12 @@ const grupo = n => console.log(`\n── ${n} ${'─'.repeat(Math.max(0, 60 - n.
 /** Compara importes a centavo cerrado. */
 const cerca = (a, b, msg, tol = 0.005) =>
   assert.ok(Math.abs(a - b) < tol, `${msg}: ${a} ≉ ${b}`);
+
+/** Redondea a centavos — mismo criterio que usa el motor internamente. */
+const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Suma un campo de una lista de filas de `historialDiario`. */
+const suma = (filas, campo) => filas.reduce((s, f) => s + (f[campo] || 0), 0);
 
 /** Cuenta base — tasa plana para que las cifras se puedan verificar a mano. */
 const cuentaPlana = (extra = {}) => ({
@@ -556,8 +564,20 @@ test('sin eventos se comporta igual que antes', () => {
   const filas = historialDiario(cuenta, '2026-01-31');
   assert.equal(filas.length, 31, 'del 1 al 31 de enero, ambos incluidos');
   cerca(filas[0].saldoInicial, 10000, 'arranca en el capital');
-  cerca(filas[filas.length - 1].saldoFinal, componer(10000, 31, cfg).saldoFinal, 'saldo final');
+  // Ya no es igualdad exacta contra componer(): historialDiario encadena el
+  // saldo con cada día ya redondeado a centavos (ver 'el saldo se reconstruye
+  // exactamente...' más abajo), mientras que componer() sigue exacto — se
+  // permite hasta un par de centavos de diferencia sobre un mes.
+  cerca(filas[filas.length - 1].saldoFinal, componer(10000, 31, cfg).saldoFinal, 'saldo final', 0.02);
   assert.equal(filas[0].movimiento, 0);
+});
+
+test('el saldo se reconstruye exactamente sumando lo abonado, sin arrastrar el redondeo', () => {
+  const filas = historialDiario(cuentaPlana(), '2026-06-30');
+  const reconstruido = 10000 + suma(filas, 'abonado') + suma(filas, 'movimiento') + suma(filas, 'ajuste');
+  assert.equal(filas[filas.length - 1].saldoFinal, r2(reconstruido),
+    'sumar lo que la tabla muestra da exactamente el saldo que la tabla muestra');
+  filas.forEach(f => assert.equal(r2(f.abonado), f.abonado, `abonado del ${f.fecha} ya es cents-precise`));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -609,6 +629,22 @@ test('resumenCuenta deriva capital y fechaBase del timeline, no del campo crudo'
   assert.equal(r.fechaBase, '2026-08-05', 'fechaBase es la más reciente del timeline completo');
   cerca(r.capital, 25478.75, 'capital sale del timeline, no del campo montoInvertido');
   assert.ok(r.saldoActual > 25478.75, 'compone desde el capital correcto, no desde 0');
+});
+
+test('sin captura, rendimientoHastaHoy coincide con la suma de la tabla aunque haya un aporte de por medio', () => {
+  // Bug real: sin `fechaActualizacionRendimiento`, resumenCuenta igual pasaba
+  // por el camino de `recorrerDesdeCaptura` (un solo tramo de `recorrer()`),
+  // que diverge del historial día-por-día en cuanto hay un movimiento entre
+  // medio — la tarjeta mostraba un total distinto al de su propia tabla.
+  const cuenta = cuentaPlana({
+    movimientos: [{ fecha: '2026-03-10', tipo: MOV_APORTE, monto: 7500 }],
+  });
+  const hoy = '2026-08-07';
+  const r = resumenCuenta(cuenta, hoy);
+  const filas = historialDiario(cuenta, hoy);
+  const totalTabla = filas.reduce((s, f) => s + (f.abonado || 0) + (f.ajuste || 0), 0);
+  assert.equal(r.rendimientoHastaHoy, totalTabla,
+    'sin captura debe ser exactamente lo que suma la tabla, no una proyección aparte');
 });
 
 test('historialDiario atraviesa una ancla intermedia, no arranca directo en ella', () => {
@@ -679,6 +715,315 @@ test('con ISR el bruto supera al neto y el timeline no cambia', () => {
   const r = rendimientoEntre(eventosCuenta(cuenta), '2026-01-01', '2026-01-31', cfg);
   assert.ok(r.isr > 0 && r.bruto > r.rendimiento, 'la retención se reporta aparte');
   assert.equal(timelineCuenta(cuenta).length, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('Calendario de abono');
+
+// Enero de 2026 cae perfecto para probarlo: jue 1, vie 2, sáb 3, dom 4, lun 5.
+
+test('sin calendario, el fin de semana abona como cualquier otro día', () => {
+  const filas = historialDiario(cuentaPlana(), '2026-01-05');
+  assert.equal(filas.length, 5);
+  filas.forEach(f => {
+    cerca(f.abonado, f.neto, `abonado del ${f.fecha}`);
+    assert.equal(f.pendiente, 0, `sin pendientes el ${f.fecha}`);
+  });
+});
+
+test('el sábado devenga pero no abona, y el saldo se queda quieto', () => {
+  const filas = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-05');
+  const [jue, vie, sab, dom, lun] = filas;
+
+  assert.ok(sab.neto > 0, 'el sábado sí genera interés');
+  assert.equal(sab.abonado, 0, 'pero no lo abona');
+  assert.equal(dom.abonado, 0, 'el domingo tampoco');
+  cerca(sab.saldoFinal, vie.saldoFinal, 'el saldo del sábado es el del viernes');
+  cerca(dom.saldoFinal, vie.saldoFinal, 'y el del domingo también');
+  cerca(dom.pendiente, sab.neto + dom.neto, 'la bolsa acumula los dos días');
+  cerca(jue.abonado, jue.neto, 'entre semana abona normal');
+});
+
+test('el lunes abona el acumulado del puente, incluido lo suyo', () => {
+  const filas = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-05');
+  const [, vie, sab, dom, lun] = filas;
+  cerca(lun.abonado, sab.neto + dom.neto + lun.neto, 'tres días juntos');
+  assert.equal(lun.pendiente, 0, 'la bolsa queda vacía');
+  cerca(lun.saldoFinal, vie.saldoFinal + lun.abonado, 'y todo entra al saldo de golpe');
+});
+
+test('no se pierde ni un centavo: lo devengado es lo abonado más lo pendiente', () => {
+  const filas = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-03-15');
+  cerca(suma(filas, 'neto'),
+        suma(filas, 'abonado') + filas[filas.length - 1].pendiente,
+        'devengo = abonos + bolsa');
+});
+
+test('retrasar la composición rinde un poco menos, pero solo un poco', () => {
+  const nat = historialDiario(cuentaPlana(), '2026-12-31');
+  const hab = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-12-31');
+  const devNat = suma(nat, 'neto'), devHab = suma(hab, 'neto');
+  assert.ok(devHab < devNat, 'compone más tarde, así que devenga menos');
+  assert.ok((devNat - devHab) / devNat < 0.001, `la diferencia es marginal: ${devNat - devHab}`);
+});
+
+test('un festivo alarga el puente hasta el siguiente día hábil', () => {
+  registrarInhabiles([{ fecha: '2026-01-05' }]);   // lunes festivo
+  try {
+    const filas = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-06');
+    const [, vie, sab, dom, lun, mar] = filas;
+    assert.equal(lun.abonado, 0, 'el lunes festivo no abona');
+    cerca(lun.saldoFinal, vie.saldoFinal, 'el saldo sigue congelado');
+    cerca(mar.abonado, sab.neto + dom.neto + lun.neto + mar.neto, 'el martes abona los cuatro días');
+  } finally {
+    registrarInhabiles([]);
+  }
+});
+
+test('habilSolo ni siquiera devenga en fin de semana', () => {
+  const filas = historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_SOLO }), '2026-01-05');
+  const [, vie, sab, dom, lun] = filas;
+  assert.equal(sab.neto, 0, 'el sábado no genera nada');
+  assert.equal(dom.neto, 0, 'el domingo tampoco');
+  cerca(lun.abonado, lun.neto, 'el lunes abona solo lo suyo');
+  cerca(lun.saldoFinal, vie.saldoFinal + lun.neto, 'y el fin de semana no dejó bolsa');
+});
+
+test('habilSolo rinde bastante menos al año — no es un detalle cosmético', () => {
+  const nat = suma(historialDiario(cuentaPlana(), '2026-12-31'), 'neto');
+  const sol = suma(historialDiario(cuentaPlana({ calendarioAbono: ABONO_HABIL_SOLO }), '2026-12-31'), 'neto');
+  const recorte = 1 - sol / nat;
+  assert.ok(recorte > 0.25 && recorte < 0.32, `pierde ~104/365 días: ${(recorte * 100).toFixed(1)}%`);
+});
+
+/**
+ * El saldo del viernes es el último que la institución acreditó antes del fin de
+ * semana: es lo que el usuario ve en la app si consulta el domingo. Sale de
+ * `saldoEnFecha` y no de `historialDiario` porque `conciliar` usa ese mismo
+ * marco (el ancla es el CIERRE de su día, no el inicio).
+ */
+const saldoDelViernes = cuenta =>
+  saldoEnFecha(eventosCuenta(cuenta), '2026-01-02', configCuenta(cuenta));
+
+test('conciliar un domingo cuadra: lo pendiente no está en el saldo', () => {
+  const cuenta = cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA });
+  const c = conciliar(cuenta, saldoDelViernes(cuenta), '2026-01-04');
+
+  cerca(c.residuo, 0, 'sin residuo espurio');
+  assert.ok(c.cuadra, 'cuadra');
+  // Sábado y domingo devengaron sobre el saldo congelado del viernes
+  cerca(c.pendiente, 2 * saldoDelViernes(cuenta) * 0.12 / 365,
+        'lo devengado del finde se reporta aparte', 0.01);
+});
+
+test('sin el calendario, ese mismo domingo dejaría un residuo de dos días', () => {
+  const cuenta = cuentaPlana();
+  const c = conciliar(cuenta, saldoDelViernes(cuenta), '2026-01-04');
+  assert.ok(!c.cuadra, 'el modelo sin calendario se adelanta');
+  cerca(c.residuo, -2 * saldoDelViernes(cuenta) * 0.12 / 365,
+        'y arrastra dos días de más', 0.01);
+});
+
+test('resumenCuenta reporta la bolsa y cuándo se acredita', () => {
+  const r = resumenCuenta(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-04');
+  assert.ok(r.pendiente > 0, 'hay devengo sin abonar');
+  assert.equal(r.proximoAbono, '2026-01-05', 'se acredita el lunes');
+  assert.equal(resumenCuenta(cuentaPlana(), '2026-01-04').pendiente, 0, 'natural nunca acumula');
+});
+
+test('un movimiento en fin de semana no despierta el abono', () => {
+  const cuenta = cuentaPlana({
+    calendarioAbono: ABONO_HABIL_ACUMULA,
+    movimientos: [{ fecha: '2026-01-03', tipo: MOV_APORTE, monto: 5000 }],
+  });
+  const filas = historialDiario(cuenta, '2026-01-05');
+  const [, vie, sab, dom, lun] = filas;
+  assert.equal(sab.abonado, 0, 'el aporte no es un abono de interés');
+  cerca(sab.saldoFinal, vie.saldoFinal + 5000, 'pero sí entra al saldo');
+  cerca(lun.abonado, sab.neto + dom.neto + lun.neto, 'la bolsa sigue su curso');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('Plegado de días inhábiles para la tabla');
+
+/** `historialDiario` + `plegarDiasInhabiles`, que es como lo consume el modal. */
+const plegar = (cuenta, hasta) =>
+  plegarDiasInhabiles(historialDiario(cuenta, hasta), configCuenta(cuenta));
+
+test('sin calendario no pliega nada: la tabla queda igual', () => {
+  const cuenta = cuentaPlana();
+  const { filas, pendientes } = plegar(cuenta, '2026-01-05');
+  assert.equal(filas.length, 5);
+  assert.equal(pendientes.length, 0);
+});
+
+test('el fin de semana desaparece y su interés viaja al lunes', () => {
+  const { filas } = plegar(cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-05');
+  assert.deepEqual(filas.map(f => f.fecha),
+    ['2026-01-01', '2026-01-02', '2026-01-05'], 'sábado y domingo no llevan renglón');
+
+  const lun = filas[2];
+  assert.equal(lun.acumulados.length, 2, 'el lunes sabe qué días arrastró');
+  assert.deepEqual(lun.acumulados.map(d => d.fecha), ['2026-01-03', '2026-01-04']);
+  cerca(lun.abonado, lun.acumulados.reduce((s, d) => s + d.neto, 0) + lun.neto,
+        'y su abono es la suma de los tres');
+});
+
+test('el bruto y el ISR del puente también se pliegan', () => {
+  const cuenta = cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA, isrAnual: 0.9 });
+  const asc = historialDiario(cuenta, '2026-01-05');
+  const { filas } = plegarDiasInhabiles(asc, configCuenta(cuenta));
+  const lun = filas[2];
+  cerca(lun.bruto, asc.slice(2).reduce((s, f) => s + f.bruto, 0), 'bruto del puente completo');
+  cerca(lun.isr,   asc.slice(2).reduce((s, f) => s + f.isr,   0), 'ISR del puente completo');
+});
+
+test('no se pierde ni se duplica un centavo al plegar', () => {
+  const cuenta = cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA, isrAnual: 0.9 });
+  const asc = historialDiario(cuenta, '2026-06-30');
+  const { filas, pendientes } = plegarDiasInhabiles(asc, configCuenta(cuenta));
+
+  // Plegar solo reagrupa para mostrar — no recalcula `abonado`/`bruto`, así que
+  // la suma debe quedar exactamente igual a la de la tabla sin plegar, sin
+  // tolerancia: no hay redondeo nuevo de por medio en este paso.
+  assert.equal(suma(filas, 'abonado'), suma(asc, 'abonado'), 'abonado total no cambia al plegar');
+  // bruto sigue exacto (sin redondear) — la comparación tolera el ruido de
+  // punto flotante propio de sumar en distinto orden, no un redondeo real
+  cerca(suma(filas, 'bruto'), suma(asc, 'bruto'), 'el bruto total no cambia');
+
+  // Lo que sí compone en centavos es el propio saldo: capital + lo abonado
+  // reconstruye exactamente el saldo con el que terminó la tabla sin plegar.
+  const capital = 10000;
+  assert.equal(asc[asc.length - 1].saldoFinal, r2(capital + suma(asc, 'abonado')),
+    'saldo final = capital + abonado, cents-precise');
+
+  // Y lo que quedó sin abonar en la bolsa es justo lo que el propio motor ya
+  // reporta como `pendiente` en el último renglón de la tabla sin plegar
+  cerca(pendientes.reduce((s, f) => s + f.neto, 0), asc[asc.length - 1].pendiente,
+        'la bolsa plegada coincide con lo pendiente del motor', 0.02);
+});
+
+test('un sábado con movimiento sobrevive, pero sin rendimiento propio', () => {
+  const cuenta = cuentaPlana({
+    calendarioAbono: ABONO_HABIL_ACUMULA,
+    movimientos: [{ fecha: '2026-01-03', tipo: MOV_APORTE, monto: 5000 }],
+  });
+  const { filas } = plegar(cuenta, '2026-01-05');
+  const sab = filas.find(f => f.fecha === '2026-01-03');
+
+  assert.ok(sab, 'el renglón del aporte no se pliega: se perdería de vista');
+  cerca(sab.movimiento, 5000, 'muestra el movimiento');
+  assert.equal(sab.abonado, 0, 'pero no abonó nada');
+  assert.equal(sab.bruto, 0, 'y su interés ya viajó al lunes');
+
+  const lun = filas.find(f => f.fecha === '2026-01-05');
+  assert.deepEqual(lun.acumulados.map(d => d.fecha), ['2026-01-03', '2026-01-04'],
+                   'el lunes lo sigue contando');
+});
+
+test('lo que no alcanzó a abonarse queda en `pendientes`, no en una fila', () => {
+  // Sábado: el devengo del propio sábado todavía no tiene día de abono
+  const { filas, pendientes } = plegar(
+    cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA }), '2026-01-03');
+  assert.equal(filas[filas.length - 1].fecha, '2026-01-02', 'la tabla cierra el viernes');
+  assert.deepEqual(pendientes.map(f => f.fecha), ['2026-01-03']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('Vigencias de tasa');
+
+/** Cuenta con dos vigencias: 12% hasta el 1 mar, 13% desde el 2 mar. */
+const cuentaDosTasas = (extra = {}) => cuentaPlana({
+  tramos: [{ hasta: null, tasa: 13 }],
+  tasaDesde: '2026-03-02',
+  historialTasas: [{ desde: null, tramos: [{ hasta: null, tasa: 12 }], modoTramos: 'progresivo', modoTasa: 'nominal' }],
+  ...extra,
+});
+
+test('sin historialTasas, vigenciasTasa da una sola con desde: null', () => {
+  const vig = vigenciasTasa(cuentaPlana());
+  assert.equal(vig.length, 1);
+  assert.equal(vig[0].desde, null);
+  cerca(vig[0].tramos[0].tasa, 12, 'tasa de cuentaPlana');
+});
+
+test('con historial, vigenciasTasa queda ascendente con la actual al final', () => {
+  const vig = vigenciasTasa(cuentaDosTasas());
+  assert.equal(vig.length, 2);
+  assert.equal(vig[0].desde, null);
+  cerca(vig[0].tramos[0].tasa, 12);
+  assert.equal(vig[1].desde, '2026-03-02');
+  cerca(vig[1].tramos[0].tasa, 13);
+});
+
+test('vigenciaEnFecha resuelve el borde exacto — el propio día del cambio ya es la nueva', () => {
+  const vig = vigenciasTasa(cuentaDosTasas());
+  cerca(vigenciaEnFecha(vig, '2026-03-01').tramos[0].tasa, 12, 'un día antes: la vieja');
+  cerca(vigenciaEnFecha(vig, '2026-03-02').tramos[0].tasa, 13, 'el propio día: la nueva');
+  cerca(vigenciaEnFecha(vig, '2027-01-01').tramos[0].tasa, 13, 'mucho después: sigue la nueva');
+  cerca(vigenciaEnFecha(vig, '2020-01-01').tramos[0].tasa, 12, 'mucho antes: la de desde:null');
+});
+
+test('el compuesto diario usa la tasa vieja hasta el cambio y la nueva desde ahí', () => {
+  const filas = historialDiario(cuentaDosTasas(), '2026-03-03');
+  const antes  = filas.find(f => f.fecha === '2026-03-01');
+  const cambio = filas.find(f => f.fecha === '2026-03-02');
+  const despues = filas.find(f => f.fecha === '2026-03-03');
+
+  const esperado12 = antes.saldoInicial * 0.12 / 365;
+  const esperado13 = cambio.saldoInicial * 0.13 / 365;
+  cerca(antes.neto, esperado12, 'el 1 de marzo todavía rinde al 12%');
+  cerca(cambio.neto, esperado13, 'el 2 de marzo ya rinde al 13% — el propio día del cambio');
+  cerca(despues.neto, despues.saldoInicial * 0.13 / 365, 'y sigue al 13% después');
+  assert.ok(cambio.neto > antes.neto, 'el salto de tasa se nota en el interés diario');
+});
+
+test('rendimientoEntre calcula cada tramo del rango con su propia tasa', () => {
+  const cuenta = cuentaDosTasas();
+  const cfg = configCuenta(cuenta);
+  const evs = eventosCuenta(cuenta);
+
+  const antesDelCambio = rendimientoEntre(evs, '2026-01-01', '2026-03-01', cfg);
+  const anualizado12 = (antesDelCambio.rendimiento / antesDelCambio.saldoInicial) * (365 / antesDelCambio.dias) * 100;
+  cerca(anualizado12, 12, 'el periodo previo anualiza cerca del 12%', 0.2);
+
+  const despuesDelCambio = rendimientoEntre(evs, '2026-03-02', '2026-03-12', cfg);
+  const anualizado13 = (despuesDelCambio.rendimiento / despuesDelCambio.saldoInicial) * (365 / despuesDelCambio.dias) * 100;
+  cerca(anualizado13, 13, 'el periodo posterior anualiza cerca del 13%', 0.05);
+
+  // Un rango que ATRAVIESA el cambio queda entre las dos tasas, ni en 12 ni en 13
+  const cruzado = rendimientoEntre(evs, '2026-02-01', '2026-04-01', cfg);
+  const anualizadoCruzado = (cruzado.rendimiento / cruzado.saldoInicial) * (365 / cruzado.dias) * 100;
+  assert.ok(anualizadoCruzado > 12 && anualizadoCruzado < 13, `mezclado entre 12 y 13: ${anualizadoCruzado}`);
+});
+
+test('conciliar también respeta la vigencia de cada día', () => {
+  const cuenta = cuentaDosTasas();
+  const proyectado = saldoEnFecha(eventosCuenta(cuenta), '2026-03-05', configCuenta(cuenta));
+  const c = conciliar(cuenta, proyectado, '2026-03-05');
+  assert.ok(c.cuadra, 'conciliar usa la misma resolución de tasa que el resto del motor');
+});
+
+test('una cuenta sin cambios de tasa se comporta exactamente igual que antes', () => {
+  const plana = historialDiario(cuentaPlana(), '2026-06-30');
+  const conVigenciaUnica = historialDiario(
+    cuentaPlana({ tasaDesde: null, historialTasas: [] }), '2026-06-30');
+  assert.deepEqual(plana, conVigenciaUnica);
+});
+
+test('un cambio de interpretación de tasa (nominal → efectiva) también respeta la fecha', () => {
+  const cuenta = cuentaPlana({
+    tramos: [{ hasta: null, tasa: 12 }], modoTasa: 'efectiva',
+    tasaDesde: '2026-02-01',
+    historialTasas: [{ desde: null, tramos: [{ hasta: null, tasa: 12 }], modoTramos: 'progresivo', modoTasa: 'nominal' }],
+  });
+  const filas = historialDiario(cuenta, '2026-02-02');
+  const antes  = filas.find(f => f.fecha === '2026-01-31');
+  const despues = filas.find(f => f.fecha === '2026-02-01');
+  // Misma tasa publicada (12%), pero nominal compone más rápido que efectiva
+  // sobre el mismo saldo — el cambio de interpretación se nota en el interés
+  assert.ok(despues.neto / despues.saldoInicial < antes.neto / antes.saldoInicial,
+    'la interpretación efectiva rinde menos que la nominal a igual tasa publicada');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
