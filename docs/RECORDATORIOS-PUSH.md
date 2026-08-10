@@ -196,9 +196,22 @@ Script antes de crear el trigger de producción.
   la forma de `datos`/`ultimoAviso` por tipo) cuando se implemente.
 
 ## Verificación (al implementar)
-- Apps Script no tiene test runner: usar `pruebaRecordatorios()` desde el
-  editor (log en consola, sin escribir) antes de activar el trigger nuevo,
-  siguiendo la convención ya usada en `app-script.gs`.
+- Apps Script no tiene test runner: correr desde el editor, en este orden,
+  antes de activar el trigger nuevo (mismo patrón que `app-script.gs`):
+  1. `diagnosticoColecciones()` — cuenta documentos reales por colección, sin
+     escribir nada; confirma que el `UID` y los scopes leen bien.
+  2. `pruebaFirestoreRecordatorios()` — round-trip de escritura/lectura/
+     borrado contra Firestore para los tres tipos nuevos (`corte`,
+     `gastoFijo`, `rendimiento`), sin dejar residuo.
+  3. `pruebaRevisarCortes()`, `pruebaRevisarGastosFijos()`,
+     `pruebaRevisarCierreMes()` — cada rutina en modo lectura contra datos
+     reales (sin escribir ni mandar push); o `pruebaRecordatorios()` para
+     correr las tres juntas y ver además el texto del push que se mandaría.
+  4. `pruebaPushCorteFaltaImpacto()` / `pruebaPushCorteSinConfirmar()` /
+     `pruebaPushCorteSinCerrar()` / `pruebaPushGastoFijo()` /
+     `pruebaPushRendimiento()` / `pruebaPushRecordatoriosVarios()` — mandan
+     push real con datos de mentira a los dispositivos ya registrados, uno
+     por subtipo y uno de resumen mezclado; no tocan Firestore.
 - Cliente: `node --check` sobre `js/modules/notificaciones.js`. Por instrucción
   de `docs/CLAUDE.md`, no se levanta Playwright salvo pedido explícito — queda
   pendiente de confirmar visualmente en el teléfono real antes de un deploy

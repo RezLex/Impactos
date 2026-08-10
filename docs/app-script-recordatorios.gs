@@ -490,32 +490,154 @@ function _nextMonthStr(yyyymm) {
 }
 
 // ---------- Funciones de prueba ----------
+//
+// Tres frentes, mismo patrón que `app-script.gs` (`pruebaFirestore`,
+// `diagnostico`, `pruebaPushUna`/`Varias`), todos corribles a mano desde el
+// editor antes de activar el trigger:
+//   1. Consulta a las colecciones reales (`diagnosticoColecciones`).
+//   2. Procesamiento de cada rutina contra datos reales, en modo lectura —
+//      no escriben ni mandan push (`pruebaRevisarCortes`/`GastosFijos`/
+//      `CierreMes`, y `pruebaRecordatorios` que corre las tres juntas).
+//   3. Envío de push — ida y vuelta contra Firestore (`pruebaFirestoreRecordatorios`)
+//      y envío real a los dispositivos registrados con datos de mentira, uno
+//      por subtipo (`pruebaPush*`).
+
+/** Cuántos documentos hay en cada colección que este archivo lee. No escribe nada. */
+function diagnosticoColecciones() {
+  console.log('impacto: '     + listarColeccion(FS_IMPACTO).length     + ' doc(s)');
+  console.log('gastosFijos: ' + listarColeccion(FS_GASTOSFIJOS).length + ' doc(s)');
+  console.log('gastos: '      + listarColeccion(FS_GASTOS).length      + ' doc(s)');
+  console.log('festivosMX: '  + listarColeccion(FS_FESTIVOS).length    + ' doc(s)');
+  console.log('notificaciones pendientes (corte): ' +
+    listarNotificaciones().filter(function (n) { return n.tipo === 'corte' && n.estatus === 'pendiente'; }).length);
+}
+
+/** `revisarCortes` en modo lectura contra datos reales — no escribe ni manda push. */
+function pruebaRevisarCortes() {
+  const hoy = fmt(new Date(), 'yyyy-MM-dd');
+  const items = revisarCortes(hoy.slice(0, 7), hoy, true);
+  console.log('Cortes (' + items.length + '):');
+  items.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
+  return items;
+}
+
+/** `revisarGastosFijos` en modo lectura contra datos reales — no escribe ni manda push. */
+function pruebaRevisarGastosFijos() {
+  const hoy = fmt(new Date(), 'yyyy-MM-dd');
+  const items = revisarGastosFijos(hoy.slice(0, 7), hoy, true);
+  console.log('Gastos fijos (' + items.length + '):');
+  items.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
+  return items;
+}
+
+/** `revisarCierreMes` en modo lectura contra datos reales — no escribe ni manda push. */
+function pruebaRevisarCierreMes() {
+  const hoy = fmt(new Date(), 'yyyy-MM-dd');
+  const items = revisarCierreMes(hoy.slice(0, 7), hoy, true);
+  console.log('Cierre de mes (' + items.length + '):');
+  items.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
+  return items;
+}
 
 /**
  * Corre las tres rutinas en modo lectura/log, sin escribir nada en Firestore
- * ni mandar push — mismo patrón que `pruebaFirestore`/`diagnostico` en
- * `app-script.gs`. Correrlo desde el editor antes de activar el trigger.
+ * ni mandar push. Correrlo desde el editor antes de activar el trigger.
  */
 function pruebaRecordatorios() {
   const hoy       = fmt(new Date(), 'yyyy-MM-dd');
   const mesActual = hoy.slice(0, 7);
   console.log('Mes actual: ' + mesActual + ' | Hoy: ' + hoy);
 
-  const cortes = revisarCortes(mesActual, hoy, true);
-  console.log('Cortes (' + cortes.length + '):');
-  cortes.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
-
-  const gastos = revisarGastosFijos(mesActual, hoy, true);
-  console.log('Gastos fijos (' + gastos.length + '):');
-  gastos.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
-
-  const cierre = revisarCierreMes(mesActual, hoy, true);
-  console.log('Cierre de mes (' + cierre.length + '):');
-  cierre.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
-
-  const todos = cortes.concat(gastos, cierre);
+  const todos = pruebaRevisarCortes().concat(pruebaRevisarGastosFijos(), pruebaRevisarCierreMes());
   if (!todos.length) { console.log('Push que se mandaría → ninguno'); return; }
 
   const msg = todos.length === 1 ? _textoRecordatorioUno(todos[0], mesActual) : _textoRecordatorioVarios(todos);
   console.log('Push que se mandaría → título: ' + msg.titulo + ' | cuerpo: ' + msg.cuerpo);
+}
+
+/**
+ * Escribe un doc de mentira de cada tipo nuevo (`corte`, `gastoFijo`,
+ * `rendimiento`) y los borra — valida de una sola vez los scopes, el `UID` y
+ * el formato de valores tipados para las tres formas de `datos`, sin
+ * ensuciar la colección. Mismo patrón que `pruebaFirestore` en
+ * `app-script.gs`, extendido a los tipos nuevos. Correrlo antes de activar
+ * el trigger.
+ */
+function pruebaFirestoreRecordatorios() {
+  const ahora = new Date().toISOString();
+  const pruebas = [
+    {
+      id: 'prueba-corte', tipo: 'corte',
+      datos: { subtipo: 'sinConfirmar', tarjetaId: 'prueba', nombre: 'PRUEBA — borrar', mes: '2026-01', fechaCorte: '2026-01-01', monto: 1.23 },
+      extra: { ultimoAviso: { timestampValue: ahora } },
+    },
+    {
+      id: 'prueba-gastoFijo', tipo: 'gastoFijo',
+      datos: { gastaFijoId: 'prueba', nombre: 'PRUEBA — borrar', importe: 1.23, fechaPago: '2026-01-01' },
+    },
+    {
+      id: 'prueba-rendimiento', tipo: 'rendimiento',
+      datos: { mes: '2026-01' },
+    },
+  ];
+
+  pruebas.forEach(function (p) {
+    const fields = {
+      tipo: fsVal(p.tipo), estatus: fsVal('pendiente'),
+      datos: fsMap(p.datos), creado: { timestampValue: ahora },
+    };
+    Object.keys(p.extra || {}).forEach(function (k) { fields[k] = p.extra[k]; });
+
+    fsFetch(FS_NOTIS + '/' + p.id, 'patch', { fields: fields });
+    console.log(p.tipo + ' — creado: ' + p.id);
+
+    const leido = listarNotificaciones().filter(function (n) { return idDeRuta(n._nombre) === p.id; })[0];
+    console.log(p.tipo + ' — leído: ' + JSON.stringify(leido));
+
+    fsFetch(FS_NOTIS + '/' + p.id, 'delete');
+    console.log(p.tipo + ' — borrado ok');
+  });
+}
+
+// Recordatorios de mentira para las pruebas de push. No tocan Firestore.
+const PRUEBA_RECORDATORIOS = [
+  { notifId: 'prueba-corte-falta',     tipo: 'corte',       datos: { subtipo: 'faltaImpacto', mes: '2026-08' } },
+  { notifId: 'prueba-corte-sinconf',   tipo: 'corte',       datos: { subtipo: 'sinConfirmar', tarjetaId: 'prueba', nombre: 'Santander', mes: '2026-08', fechaCorte: '2026-08-05', monto: 1372.23 } },
+  { notifId: 'prueba-corte-sincerrar', tipo: 'corte',       datos: { subtipo: 'sinCerrar', mes: '2026-07' } },
+  { notifId: 'prueba-gastofijo',       tipo: 'gastoFijo',   datos: { gastaFijoId: 'prueba', nombre: 'Netflix', importe: 219, fechaPago: '2026-08-10' } },
+  { notifId: 'prueba-rendimiento',     tipo: 'rendimiento', datos: { mes: '2026-08' } },
+];
+
+/** Push de un recordatorio `faltaImpacto`: el formato con detalle. No toca la colección. */
+function pruebaPushCorteFaltaImpacto() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(0, 1)); }
+
+/** Push de un recordatorio `sinConfirmar`: el formato con detalle. No toca la colección. */
+function pruebaPushCorteSinConfirmar() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(1, 2)); }
+
+/** Push de un recordatorio `sinCerrar`: el formato con detalle. No toca la colección. */
+function pruebaPushCorteSinCerrar() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(2, 3)); }
+
+/** Push de gasto fijo por confirmar: el formato con detalle. No toca la colección. */
+function pruebaPushGastoFijo() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(3, 4)); }
+
+/** Push de cierre de mes: el formato con detalle. No toca la colección. */
+function pruebaPushRendimiento() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(4, 5)); }
+
+/** Push de VARIOS recordatorios mezclados: el formato de resumen. No toca la colección. */
+function pruebaPushRecordatoriosVarios() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS); }
+
+function _probarPushRecordatorios(items) {
+  const mesActual = fmt(new Date(), 'yyyy-MM-dd').slice(0, 7);
+
+  const tokens = listarTokens();
+  console.log('dispositivos registrados: ' + tokens.length);
+  if (!tokens.length) return console.log('Ninguno — activa las notificaciones en la app primero');
+
+  // Se imprime el texto además de mandarlo: así se revisa el formato aunque
+  // el aviso no llegue a verse (Windows silenciado, teléfono en No molestar…)
+  const msg = items.length === 1 ? _textoRecordatorioUno(items[0], mesActual) : _textoRecordatorioVarios(items);
+  console.log('título: ' + msg.titulo);
+  console.log('cuerpo: ' + msg.cuerpo);
+
+  console.log('enviados: ' + enviarPushRecordatorios(items, mesActual) + '/' + tokens.length);
 }
