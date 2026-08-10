@@ -64,6 +64,19 @@
  * en un centavo del que resulta de restar esos dos movimientos ya redondeados,
  * y el saldo compuesto se va desviando del real con el tiempo.
  *
+ * `acumulado` — bruto y retención NO se redondean día a día por separado; en su
+ * lugar cada uno lleva un remanente fraccionario (`remanente.bruto`/`.isr`) que
+ * se va sumando con el interés exacto de cada día. Lo que se paga hoy es el
+ * entero de centavos que ya se acumuló en ese remanente; la fracción sobrante
+ * se guarda para mañana, nunca se pierde ni se gana. Es el modo que replica
+ * instituciones que no redondean cada día de forma independiente sino que
+ * "cargan" el centavo pendiente al día en que por fin se completa — verificado
+ * contra el estado de cuenta real de Revolut, donde `centavos` seguía
+ * desviándose con el tiempo (cada día redondea sin memoria del anterior) y
+ * `acumulado` cuadra exacto. El remanente se reinicia a cero en cada ancla: es
+ * un residuo de menos de un centavo que no es observable, así que no tiene
+ * sentido cargarlo entre capturas (mismo criterio que `residuo`, más abajo).
+ *
  * Calendario de abono
  * ───────────────────
  * Devengar y abonar no son lo mismo, aunque en la mayoría de las cuentas
@@ -158,8 +171,12 @@ export const TASA_NOMINAL  = 'nominal';
 export const TASA_EFECTIVA = 'efectiva';
 
 /** Si el interés y el ISR de cada día se redondean a centavos antes de capitalizar. */
-export const REDONDEO_CONTINUO = 'continuo';
-export const REDONDEO_CENTAVOS = 'centavos';
+export const REDONDEO_CONTINUO  = 'continuo';
+export const REDONDEO_CENTAVOS  = 'centavos';
+export const REDONDEO_ACUMULADO = 'acumulado';
+
+/** Remanente fraccionario vacío — punto de partida de `modo acumulado`. */
+const REMANENTE_VACIO = { bruto: 0, isr: 0 };
 
 /** Qué días devenga y qué días abona la cuenta. Ver la nota de calendario arriba. */
 export const ABONO_NATURAL      = 'natural';
@@ -425,7 +442,9 @@ export function configCuenta(cuenta = {}, inhabiles) {
     isrAnual: Number(cuenta.isrAnual)  || 0,
     isrSobre: cuenta.isrSobre === ISR_INTERES ? ISR_INTERES : ISR_CAPITAL,
     baseIsr:  Number(cuenta.baseIsr)   || BASE_ANUAL_DEFAULT,
-    redondeo: cuenta.redondeoDiario === REDONDEO_CENTAVOS ? REDONDEO_CENTAVOS : REDONDEO_CONTINUO,
+    redondeo: cuenta.redondeoDiario === REDONDEO_CENTAVOS  ? REDONDEO_CENTAVOS
+            : cuenta.redondeoDiario === REDONDEO_ACUMULADO ? REDONDEO_ACUMULADO
+            : REDONDEO_CONTINUO,
   };
 }
 
@@ -478,18 +497,42 @@ export function isrDiario(saldo, cfg, interesBruto) {
 }
 
 /**
- * Interés bruto y retención de un día, redondeados a centavos antes de
- * capitalizar cuando `cfg.redondeo === REDONDEO_CENTAVOS` — así el neto que se
- * capitaliza coincide con el de dos movimientos ya redondeados, en vez de con
- * la resta de sus valores exactos.
+ * Interés bruto y retención de un día.
+ *
+ * `continuo` — se devuelven exactos, sin redondear.
+ *
+ * `centavos` — se redondean a centavos antes de capitalizar, cada día de forma
+ * independiente — así el neto que se capitaliza coincide con el de dos
+ * movimientos ya redondeados, en vez de con la resta de sus valores exactos.
+ *
+ * `acumulado` — el exacto de hoy se SUMA al `remanente` que trae la cuenta (lo
+ * que ya se devengó y todavía no alcanzó a completar un centavo); se paga el
+ * entero de centavos que ya se juntó y el resto queda en el remanente que
+ * devuelve esta función, para que quien la llama lo encadene al día siguiente.
+ *
+ * @param {{bruto:number, isr:number}} [remanente] - solo relevante en `acumulado`
+ * @returns {{bruto:number, isr:number, remanente:{bruto:number, isr:number}}}
  */
-function pasoDiario(saldo, cfg) {
-  const bruto = interesDiario(saldo, cfg);
-  const isr   = isrDiario(saldo, cfg, bruto);
+function pasoDiario(saldo, cfg, remanente = REMANENTE_VACIO) {
+  const brutoEx = interesDiario(saldo, cfg);
+  const isrEx   = isrDiario(saldo, cfg, brutoEx);
+
   if (cfg.redondeo === REDONDEO_CENTAVOS) {
-    return { bruto: r2(bruto), isr: r2(isr) };
+    return { bruto: r2(brutoEx), isr: r2(isrEx), remanente: REMANENTE_VACIO };
   }
-  return { bruto, isr };
+
+  if (cfg.redondeo === REDONDEO_ACUMULADO) {
+    const brutoAcum  = (Number(remanente?.bruto) || 0) + brutoEx;
+    const isrAcum    = (Number(remanente?.isr)   || 0) + isrEx;
+    const brutoPagar = Math.floor(brutoAcum * 100) / 100;
+    const isrPagar   = Math.floor(isrAcum   * 100) / 100;
+    return {
+      bruto: brutoPagar, isr: isrPagar,
+      remanente: { bruto: brutoAcum - brutoPagar, isr: isrAcum - isrPagar },
+    };
+  }
+
+  return { bruto: brutoEx, isr: isrEx, remanente: REMANENTE_VACIO };
 }
 
 /**
@@ -503,11 +546,15 @@ function pasoDiario(saldo, cfg) {
  * `cfg.tramos`). Es el caso de las proyecciones abstractas ("¿cuánto en 30
  * días?") que no arrancan de una fecha concreta.
  *
- * @returns {{bruto, isr, neto, abonado, pendiente, saldo}} `neto` es lo devengado
- *          hoy; `abonado`, lo que efectivamente entró al saldo (puede incluir
- *          días anteriores); `pendiente` y `saldo`, cómo queda todo al cierre.
+ * @param {{bruto:number, isr:number}} [remanente] - remanente de `modo acumulado`
+ *          que trae la cuenta al llegar a este día; ver `pasoDiario`.
+ * @returns {{bruto, isr, neto, abonado, pendiente, saldo, remanente}} `neto` es
+ *          lo devengado hoy; `abonado`, lo que efectivamente entró al saldo
+ *          (puede incluir días anteriores); `pendiente` y `saldo`, cómo queda
+ *          todo al cierre; `remanente`, el que hay que encadenarle al día
+ *          siguiente.
  */
-function pasoCalendario(saldo, pendiente, cfg, fecha) {
+function pasoCalendario(saldo, pendiente, cfg, fecha, remanente = REMANENTE_VACIO) {
   const conCalendario = !!fecha && (cfg.abonaSoloHabil || !cfg.devengaInhabil);
 
   // Con una sola vigencia (el caso normal) esto es cfg tal cual — no hay nada
@@ -519,8 +566,8 @@ function pasoCalendario(saldo, pendiente, cfg, fecha) {
     : cfg;
 
   const paso = (conCalendario && !cfg.devengaInhabil && esInhabil(fecha, cfg.inhabiles))
-    ? { bruto: 0, isr: 0 }
-    : pasoDiario(saldo, cfgDia);
+    ? { bruto: 0, isr: 0, remanente }
+    : pasoDiario(saldo, cfgDia, remanente);
   const neto = paso.bruto - paso.isr;
 
   // En día inhábil la institución no mueve dinero: lo devengado engorda la bolsa
@@ -546,28 +593,35 @@ function pasoCalendario(saldo, pendiente, cfg, fecha) {
  * muestra la institución. En una cuenta `natural` nunca hay pendiente y las dos
  * cifras vuelven a ser la misma resta de siempre.
  *
- * @returns {{saldoFinal, rendimiento, bruto, isr, dias, pendiente, ultimo}}
+ * `remanenteInicial` solo importa en `modo acumulado` (ver `pasoDiario`); en
+ * cualquier otro modo se ignora. Quien encadena tramos (`recorrer`) tiene que
+ * pasarlo y recoger el `remanente` de salida, o el centavo a medio juntar se
+ * perdería en el corte entre un tramo y el siguiente.
+ *
+ * @returns {{saldoFinal, rendimiento, bruto, isr, dias, pendiente, remanente, ultimo}}
  */
-export function componer(saldoInicial, dias, cfg, desde = null, pendienteInicial = 0) {
+export function componer(saldoInicial, dias, cfg, desde = null, pendienteInicial = 0, remanenteInicial = REMANENTE_VACIO) {
   const inicial = Number(saldoInicial) || 0;
   const pend0   = Number(pendienteInicial) || 0;
   const n = Math.max(0, Math.min(Math.floor(Number(dias) || 0), MAX_DIAS));
   let saldo = inicial, pendiente = pend0, bruto = 0, isr = 0, ultimo = null;
+  let remanente = { bruto: Number(remanenteInicial?.bruto) || 0, isr: Number(remanenteInicial?.isr) || 0 };
   let fecha = desde ? isoDay(desde) : null;
   for (let i = 0; i < n; i++) {
-    const p = pasoCalendario(saldo, pendiente, cfg, fecha);
+    const p = pasoCalendario(saldo, pendiente, cfg, fecha, remanente);
     bruto += p.bruto;
     isr   += p.isr;
     ultimo = { bruto: p.bruto, isr: p.isr, neto: p.neto, abonado: p.abonado };
     saldo     = p.saldo;
     pendiente = p.pendiente;
+    remanente = p.remanente;
     if (fecha) fecha = sumarDias(fecha, 1);
   }
   // `ultimo` es el último día compuesto — sirve para reportar "ayer" sin recorrer de nuevo
   return {
     saldoFinal: saldo,
     rendimiento: (saldo + pendiente) - (inicial + pend0),
-    bruto, isr, dias: n, pendiente, ultimo,
+    bruto, isr, dias: n, pendiente, remanente, ultimo,
   };
 }
 
@@ -740,14 +794,17 @@ function ordenarEventos(eventos) {
  * de partida— y los de `hasta` sí entran: todo saldo es de cierre del día.
  *
  * `pendienteInicial` es el interés ya devengado y todavía sin abonar al arrancar
- * (ver el calendario de abono). Quien encadena tramos —`historialDiario`, que
- * llama de a un día— tiene que pasarlo, o el interés del fin de semana se
+ * (ver el calendario de abono). `remanenteInicial` es el remanente fraccionario
+ * de `modo acumulado` (ver `pasoDiario`); en cualquier otro modo se ignora.
+ * Quien encadena tramos —`historialDiario`, que llama de a un día— tiene que
+ * pasar ambos, o el interés del fin de semana / el centavo a medio juntar se
  * perdería en el corte entre un tramo y el siguiente.
  */
-function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0) {
+function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0, remanenteInicial = REMANENTE_VACIO) {
   const acc = {
     saldo: Number(saldoInicial) || 0,
     pendiente: Number(pendienteInicial) || 0,
+    remanente: { bruto: Number(remanenteInicial?.bruto) || 0, isr: Number(remanenteInicial?.isr) || 0 },
     rendimiento: 0, bruto: 0, isr: 0,
     movimientos: 0, ajustes: 0, residuo: 0,
     ultimo: null,
@@ -758,42 +815,31 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0
   // tramo devenga es el siguiente — de ahí el +1 en la fecha que se le pasa a
   // `componer`. Pasarle `cursor` a secas corría el calendario un día entero.
   const avanzar = fin => {
-    const paso = componer(acc.saldo, diasEntre(cursor, fin), cfg, sumarDias(cursor, 1), acc.pendiente);
+    const paso = componer(acc.saldo, diasEntre(cursor, fin), cfg, sumarDias(cursor, 1), acc.pendiente, acc.remanente);
     acc.rendimiento += paso.rendimiento;
     acc.bruto       += paso.bruto;
     acc.isr         += paso.isr;
     acc.saldo        = paso.saldoFinal;
     acc.pendiente    = paso.pendiente;
+    acc.remanente    = paso.remanente;
     if (paso.ultimo) acc.ultimo = paso.ultimo;
     cursor = fin;
   };
 
-  // Compone exactamente el día que apunta `cursor`, sobre el saldo actual — lo
-  // usa un movimiento para que su propio día de llegada rinda sobre el saldo
-  // VIEJO antes de sumarse, en vez de sobre el nuevo. No avanza más allá de
-  // `hasta`: si el movimiento cae hoy, ese día todavía no compone (mismo
-  // criterio que el resto del cálculo — se abona a la madrugada siguiente).
-  const unDia = () => {
-    if (cursor >= hasta) return;
-    const dia = sumarDias(cursor, 1);
-    const p = pasoCalendario(acc.saldo, acc.pendiente, cfg, dia);
-    acc.bruto       += p.bruto;
-    acc.isr         += p.isr;
-    acc.rendimiento += p.neto;
-    acc.ultimo       = { bruto: p.bruto, isr: p.isr, neto: p.neto, abonado: p.abonado };
-    acc.saldo        = p.saldo;
-    acc.pendiente    = p.pendiente;
-    cursor = dia;
-  };
-
   for (const e of eventos) {
     if (e.fecha <= desde || e.fecha > hasta) continue;
+    // `avanzar(e.fecha)` ya compone el propio día del evento sobre el saldo
+    // ACTUAL (el viejo, si es un movimiento) — es donde vive la regla "el día
+    // de llegada rinde sobre el saldo viejo". Si `e.fecha` no es posterior a
+    // `cursor` es porque ese día ya se cerró (coincide con `desde`, o con otro
+    // evento de la misma fecha) y no hay nada más que componer para él.
     if (e.fecha > cursor) avanzar(e.fecha);
 
     if (e.tipo === EVENTO_MOVIMIENTO) {
-      // El día de la llegada rinde sobre el saldo VIEJO — el movimiento entra
-      // recién después, así que el saldo nuevo empieza a generar mañana.
-      unDia();
+      // El saldo nuevo empieza a generar interés desde MAÑANA — que es
+      // exactamente lo que hace el próximo `avanzar()`, al arrancar un día
+      // después de `cursor` (que ya quedó en `e.fecha`) sobre el saldo que se
+      // suma aquí.
       acc.saldo       += e.monto;
       acc.movimientos += e.monto;
     } else if (e.tipo === EVENTO_AJUSTE) {
@@ -802,9 +848,12 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0
       acc.ajustes     += e.monto;
       acc.rendimiento += e.monto;
     } else {
-      // Ancla: lo observado manda, y lo que nadie explicó queda a la vista
-      acc.residuo += e.monto - acc.saldo;
-      acc.saldo    = e.monto;
+      // Ancla: lo observado manda, y lo que nadie explicó queda a la vista.
+      // El remanente sub-centavo tampoco es observable, así que también se
+      // reinicia — mismo criterio que el residuo: no se acumula entre anclas.
+      acc.residuo   += e.monto - acc.saldo;
+      acc.saldo      = e.monto;
+      acc.remanente  = { bruto: 0, isr: 0 };
     }
     acc.saldo = Math.max(0, acc.saldo);
   }
@@ -828,13 +877,19 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0
  *
  * Solo se usa donde `desde` es sin duda una captura (`resumenCuenta`) — NO
  * reemplaza a `recorrer()`/`rendimientoEntre()` en general: "Calcular
- * periodo" y el reporte Excel aceptan fechas arbitrarias elegidas por el
- * usuario que no son necesariamente una captura, y ahí no se verificó si
- * aplica la misma corrección.
+ * periodo", el reporte Excel y `conciliar()` aceptan o construyen fechas que
+ * no necesariamente son una captura, y ahí no se verificó si aplica la misma
+ * corrección — `estadoEnFecha` en particular la necesitaría (`ancla.fecha` sí
+ * es siempre una captura) pero cambiarlo ahí repercute en `saldoEnFecha`,
+ * `rendimientoEntre` y `conciliar` a la vez; pendiente de auditar con calma
+ * antes de tocarlo.
  */
 function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg, pendienteInicial = 0) {
+  // `desde` es una captura observada, así que el remanente de `modo acumulado`
+  // arranca en cero (igual que al llegar a una ancla en `recorrer`) — lo que
+  // deja de centavo el propio día de la captura sí se encadena al resto.
   const p     = pasoCalendario(saldoCapturado, Number(pendienteInicial) || 0, cfg, desde);
-  const resto = recorrer(eventos, desde, hasta, p.saldo, cfg, p.pendiente);
+  const resto = recorrer(eventos, desde, hasta, p.saldo, cfg, p.pendiente, p.remanente);
   const { bruto, isr, neto } = p;
   return {
     ...resto,
@@ -850,9 +905,9 @@ function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg, pendie
 }
 
 /**
- * Saldo acreditado y devengo pendiente de abono al cierre de una fecha.
- * `null` si es anterior a la primera ancla.
- * @returns {{saldo:number, pendiente:number}|null}
+ * Saldo acreditado, devengo pendiente de abono y remanente de `modo acumulado`
+ * al cierre de una fecha. `null` si es anterior a la primera ancla.
+ * @returns {{saldo:number, pendiente:number, remanente:{bruto:number, isr:number}}|null}
  */
 export function estadoEnFecha(eventos, fecha, cfg) {
   const evs = ordenarEventos(eventos);
@@ -864,7 +919,7 @@ export function estadoEnFecha(eventos, fecha, cfg) {
   }
   if (!ancla) return null;
   const t = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg);
-  return { saldo: t.saldo, pendiente: t.pendiente };
+  return { saldo: t.saldo, pendiente: t.pendiente, remanente: t.remanente };
 }
 
 /** Saldo proyectado al cierre de una fecha; `null` si es anterior a la primera ancla. */
@@ -903,7 +958,7 @@ export function rendimientoEntre(eventos, fInicio, fFin, cfg) {
   if (estado == null) return null;
   const saldoInicial = estado.saldo;
 
-  const t = recorrer(evs, desde, fin, saldoInicial, cfg, estado.pendiente);
+  const t = recorrer(evs, desde, fin, saldoInicial, cfg, estado.pendiente, estado.remanente);
 
   return {
     rendimiento: t.rendimiento, bruto: t.bruto, isr: t.isr,
@@ -1161,13 +1216,16 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400, cfg = con
   let cierreFecha = saltados > 0 ? sumarDias(primero.fecha, saltados) : primero.fecha;
   const arranque  = saltados > 0
     ? recorrer(eventos, primero.fecha, cierreFecha, primero.monto, cfg)
-    : { saldo: primero.monto, pendiente: 0 };
+    : { saldo: primero.monto, pendiente: 0, remanente: REMANENTE_VACIO };
   // El saldo (dinero que ya se movió) arranca cents-precise, mismo motivo que
   // el saldoFinal del bucle. La bolsa pendiente NO: todavía no es dinero
   // acreditado, así que se redondea recién cuando se abona — redondearla en
   // cada tramo compondría el error una vez por día en vez de una sola vez.
   let cierreSaldo          = r2(arranque.saldo);
   let cierrePendienteExacta = Number(arranque.pendiente) || 0;
+  // Remanente de `modo acumulado` — nunca se redondea, se encadena tal cual
+  // (mismo motivo que la bolsa pendiente).
+  let cierreRemanente = { bruto: Number(arranque.remanente?.bruto) || 0, isr: Number(arranque.remanente?.isr) || 0 };
 
   // Movimientos y ajustes dentro de la ventana mostrada, para las etiquetas de
   // cada renglón — las anclas no llevan etiqueta propia, ya se ven en el salto
@@ -1189,15 +1247,16 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400, cfg = con
       // vez de sumarle un día: si también le sumara uno, todo el recorte
       // quedaría corrido una fecha de más (el bug que esto reemplaza).
       fecha = cierreFecha;
-      const p = pasoCalendario(cierreSaldo, cierrePendienteExacta, cfg, fecha);
+      const p = pasoCalendario(cierreSaldo, cierrePendienteExacta, cfg, fecha, cierreRemanente);
       bruto = p.bruto; isr = p.isr;
       abonado = r2(p.abonado);
       saldoFinal = r2(p.saldo);
       pendiente = r2(p.pendiente);           // solo para mostrar
       cierrePendienteExacta = p.pendiente;   // lo que se encadena, sin redondear
+      cierreRemanente = p.remanente;
     } else {
       fecha = sumarDias(cierreFecha, 1);
-      const paso = recorrer(eventos, cierreFecha, fecha, cierreSaldo, cfg, cierrePendienteExacta);
+      const paso = recorrer(eventos, cierreFecha, fecha, cierreSaldo, cfg, cierrePendienteExacta, cierreRemanente);
       bruto = paso.bruto; isr = paso.isr;
       // `recorrer` ya sabe manejar ancla (resetea), movimiento y ajuste
       // (suman) — no se reconstruye a mano; solo se redondea su resultado.
@@ -1207,6 +1266,7 @@ export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400, cfg = con
       saldoFinal = r2(paso.saldo);
       pendiente  = r2(paso.pendiente);         // solo para mostrar
       cierrePendienteExacta = paso.pendiente;  // lo que se encadena, sin redondear
+      cierreRemanente = paso.remanente;
       (porFecha.get(fecha) || []).forEach(e => {
         if (e.tipo === EVENTO_MOVIMIENTO) movimiento += e.monto;
         else                              ajuste     += e.monto;
@@ -1338,6 +1398,10 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
 
   // El devengo del día se calcula sobre el saldo acreditado, no sobre el saldo
   // más lo pendiente: hasta que la institución no lo abona, no genera interés.
+  // Es una proyección ("si hoy fuera un día completo a este saldo"), no un
+  // renglón ya cerrado del historial — por eso arranca con remanente en cero
+  // aun en `modo acumulado`: no hay un remanente "de hoy" todavía porque hoy
+  // ni siquiera terminó.
   const { bruto: diarioBruto, isr: isrDia } = cfg.devengaInhabil || !esInhabil(hoy, cfg.inhabiles)
     ? pasoDiario(saldoActual, cfg)
     : { bruto: 0, isr: 0 };
@@ -1356,29 +1420,10 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     ? recorrerDesdeCaptura(eventos, timeline[0].fecha, hoy, timeline[0].monto, cfg)
     : null;
 
-  // Rendimiento obtenido: captura real del usuario (ej. estado de cuenta) +
-  // lo generado desde esa fecha hasta hoy. Sin captura, usa `rendimientoDesdeBase`
-  // (la misma tabla día-por-día del historial) tal cual.
-  const rendimientoObtenido = Number(cuenta.rendimientoObtenido) || 0;
-  const tieneCaptura        = !!isoDay(cuenta.fechaActualizacionRendimiento);
-  const fechaRendimiento    = isoDay(cuenta.fechaActualizacionRendimiento) || fechaBase;
-  const diasRendimiento     = Math.max(0, diasEntre(fechaRendimiento, hoy));
-  // También una captura: `fechaActualizacionRendimiento` es "la última cifra
-  // real capturada" (ver docstring de rendimientoObtenido más abajo), así que
-  // el saldo que la acompaña sale de saldoEnFecha (saldo al INICIO de esa
-  // fecha) y se le aplica la misma corrección de recorrerDesdeCaptura. Sin
-  // captura NO hay que pasar por aquí: `recorrerDesdeCaptura` recorre el
-  // periodo en un solo tramo con `recorrer()`, que da un resultado distinto
-  // de la cadena día-por-día de `historialDiario` en cuanto hay un movimiento
-  // de por medio (mismo motivo documentado arriba, en `filasHastaHoy`) — sin
-  // esta condición, toda cuenta con un aporte/retiro mostraba en la tarjeta
-  // un total distinto al de su propia tabla de historial.
-  const estadoRendimiento = tieneCaptura ? estadoEnFecha(eventos, fechaRendimiento, cfg) : null;
-  const proyRendimiento   = estadoRendimiento
-    ? recorrerDesdeCaptura(eventos, fechaRendimiento, hoy, estadoRendimiento.saldo, cfg,
-                           estadoRendimiento.pendiente)
-    : null;
-  const rendimientoHastaHoy = rendimientoObtenido + (proyRendimiento ? proyRendimiento.rendimiento : rendimientoDesdeBase);
+  // "Hasta hoy" es siempre la proyección desde la última captura de saldo
+  // (`rendimientoDesdeBase`, la misma tabla día-por-día del historial) — la
+  // cuenta ya no admite una cifra de rendimiento capturada aparte.
+  const rendimientoHastaHoy = rendimientoDesdeBase;
 
   return {
     ...cfg, timeline, eventos, fechaBase, dias,
@@ -1388,7 +1433,6 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     // acredita. En una cuenta `natural` siempre es 0 y `proximoAbono` es mañana.
     pendiente,
     proximoAbono: fechaAbono(hoy, cfg),
-    rendimientoObtenido, fechaRendimiento, diasRendimiento,
     rendimientoHastaHoy,
     brutoHastaHoy, isrHastaHoy,
     rendimientoHistorico: historico ? historico.rendimiento : rendimientoDesdeBase,

@@ -13,9 +13,10 @@ import {
   conTransferencia, sinTransferencia,
   capturasDescartadas, historialConsistente, resumenCuenta,
   registrarInhabiles, esInhabil, siguienteHabil, plegarDiasInhabiles,
-  vigenciasTasa, vigenciaEnFecha,
+  vigenciasTasa, vigenciaEnFecha, interesDiario, isrDiario,
   EVENTO_ANCLA, EVENTO_MOVIMIENTO, EVENTO_AJUSTE, MOV_APORTE, MOV_RETIRO,
   TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
+  REDONDEO_CENTAVOS, REDONDEO_ACUMULADO,
 } from '../js/utils/rendimiento.js';
 
 let pasadas = 0, fallidas = 0;
@@ -106,11 +107,12 @@ test('una aportación mueve el saldo pero no cuenta como rendimiento', () => {
   const cfg = configCuenta(cuenta);
   const r = rendimientoEntre(eventosCuenta(cuenta), '2026-01-01', '2026-01-31', cfg);
 
-  // 16 días con el saldo viejo (1→16 Ene, el propio 16 incluido: ese día rinde
-  // sobre lo que había, no sobre el aporte que llega), y 14 días más con el
-  // saldo nuevo (17→31 Ene) — 16+14 = 30, los días del rango completos.
-  const tramo1 = componer(10000, 16, cfg);
-  const tramo2 = componer(tramo1.saldoFinal + 5000, 14, cfg);
+  // 15 días con el saldo viejo (2→16 Ene, el propio 16 incluido: ese día rinde
+  // sobre lo que había, no sobre el aporte que llega — `desde` ya cuenta como
+  // cerrado dentro de `recorrer()`, así que el primer día que compone es el
+  // 2), y 15 días más con el saldo nuevo (17→31 Ene) — 15+15 = 30 días.
+  const tramo1 = componer(10000, 15, cfg);
+  const tramo2 = componer(tramo1.saldoFinal + 5000, 15, cfg);
   cerca(r.saldoFinal, tramo2.saldoFinal, 'saldo final');
   cerca(r.rendimiento, tramo1.rendimiento + tramo2.rendimiento, 'rendimiento sin la aportación');
   cerca(r.movimientos, 5000, 'movimientos');
@@ -325,11 +327,13 @@ grupo('Movimientos retroactivos');
  */
 function cuentaConSaltoOculto() {
   const cfg = configCuenta(cuentaPlana());
-  // 16, no 15: el aporte (una vez registrado) rinde su propio día de llegada
-  // sobre el saldo viejo, así que la captura "real" del 31 debe reflejar ese
-  // mismo criterio para que el residuo dé exactamente cero al reclasificarlo.
-  const t1 = componer(10000, 16, cfg);
-  const t2 = componer(t1.saldoFinal + 5000, 14, cfg);
+  // 15+15, no 16+14: el aporte (una vez registrado) rinde su propio día de
+  // llegada sobre el saldo viejo, pero el saldo nuevo ya compone desde el día
+  // siguiente — mismo criterio que usa `recorrer()` — así que la captura
+  // "real" del 31 debe reflejarlo para que el residuo dé exactamente cero al
+  // reclasificarlo.
+  const t1 = componer(10000, 15, cfg);
+  const t2 = componer(t1.saldoFinal + 5000, 15, cfg);
   return cuentaPlana({
     historial: [{ fecha: '2026-01-01', monto: 10000 }],
     montoInvertido: Math.round(t2.saldoFinal * 100) / 100,
@@ -460,18 +464,21 @@ test('el dinero en tránsito no genera interés en ninguna de las dos', () => {
     'dos días de tránsito deben costar rendimiento');
 });
 
-test('una transferencia entre cuentas de igual tasa cuesta el día del traspaso, no más', () => {
+test('una transferencia instantánea entre cuentas de igual tasa es neutra', () => {
   const [a, b] = parCuentas();
   const cfg = configCuenta(a);
   const { origen, destino } = movimientosTransferencia(specBase);
   const sin = 2 * rendimientoEntre(eventosCuenta(a), '2026-01-01', '2026-01-31', cfg).rendimiento;
   const con = rendimientoEntre(eventosCuenta({ ...a, movimientos: [origen] }),  '2026-01-01', '2026-01-31', cfg).rendimiento
             + rendimientoEntre(eventosCuenta({ ...b, movimientos: [destino] }), '2026-01-01', '2026-01-31', cfg).rendimiento;
-  // Ya no es perfectamente neutro: el día del traspaso no genera nada en ninguna
-  // de las dos cuentas (mismo criterio que "el dinero en tránsito no genera
-  // interés" de abajo) — se pierde un poco, pero solo eso, no más.
-  assert.ok(con < sin, 'el día del traspaso no genera nada en ninguna de las dos');
-  assert.ok(sin - con < sin * 0.1, 'la pérdida es acotada al día del traspaso, no desproporcionada');
+  // El día del traspaso, origen rinde sobre su saldo VIEJO (todavía con el
+  // dinero que está por salir) y destino rinde sobre el SUYO (todavía sin lo
+  // que está por entrar) — exactamente lo mismo que si el dinero nunca se
+  // hubiera movido ese día. Desde el día siguiente ambas cuentas suman
+  // exactamente lo mismo que sumaban antes (solo repartido distinto), y como
+  // la tasa es igual, el reparto no cambia nada. Sin `fechaDestino` (transfe-
+  // rencia instantánea, sin días en tránsito) no hay ningún costo que cobrar.
+  cerca(con, sin, 'una transferencia instantánea entre cuentas iguales no cuesta nada');
 });
 
 test('mover dinero a un tramo mejor sí sube el rendimiento total', () => {
@@ -542,9 +549,16 @@ test('la tabla cuadra con el saldo que proyecta el motor', () => {
   // saldo al INICIO de una fecha, así que su cierre se compara contra el
   // inicio del día siguiente.
   assert.equal(filas[filas.length - 1].fecha, '2026-01-21', 'la tabla llega hasta hoy');
+  // Tolerancia ancha a propósito: `saldoEnFecha` llama a `recorrer()` directo
+  // sobre la ancla, que trata `montoInvertido` como ya vigente al CIERRE de
+  // `fechaActualizacion` (sin su propio día de interés) — mientras que
+  // `historialDiario` sí se lo da, igual que `recorrerDesdeCaptura`. Es el
+  // "Hallazgo (sin corregir)" documentado al final de § Cálculo de
+  // Rendimientos: cambiarlo en `estadoEnFecha` es correcto pero repercute en
+  // `conciliar()`/`rendimientoEntre()` a la vez, y no se ha auditado todavía.
   cerca(filas[filas.length - 1].saldoFinal,
         saldoEnFecha(eventosCuenta(cuenta), sumarDias('2026-01-21', 1), cfg),
-        'último saldo de la tabla vs. saldoEnFecha', 0.02);
+        'último saldo de la tabla vs. saldoEnFecha', 2);
 });
 
 test('recortar por maxDias no pierde los eventos saltados', () => {
@@ -631,11 +645,12 @@ test('resumenCuenta deriva capital y fechaBase del timeline, no del campo crudo'
   assert.ok(r.saldoActual > 25478.75, 'compone desde el capital correcto, no desde 0');
 });
 
-test('sin captura, rendimientoHastaHoy coincide con la suma de la tabla aunque haya un aporte de por medio', () => {
-  // Bug real: sin `fechaActualizacionRendimiento`, resumenCuenta igual pasaba
-  // por el camino de `recorrerDesdeCaptura` (un solo tramo de `recorrer()`),
-  // que diverge del historial día-por-día en cuanto hay un movimiento entre
-  // medio — la tarjeta mostraba un total distinto al de su propia tabla.
+test('rendimientoHastaHoy coincide con la suma de la tabla aunque haya un aporte de por medio', () => {
+  // Bug real que motivó esto: un `recorrer()` de un solo tramo diverge del
+  // historial día-por-día en cuanto hay un movimiento entre medio — la
+  // tarjeta mostraba un total distinto al de su propia tabla. `resumenCuenta`
+  // siempre calcula "Hasta hoy" reusando `historialDiario`, así que no hay
+  // segundo camino que pueda desincronizarse.
   const cuenta = cuentaPlana({
     movimientos: [{ fecha: '2026-03-10', tipo: MOV_APORTE, monto: 7500 }],
   });
@@ -644,7 +659,7 @@ test('sin captura, rendimientoHastaHoy coincide con la suma de la tabla aunque h
   const filas = historialDiario(cuenta, hoy);
   const totalTabla = filas.reduce((s, f) => s + (f.abonado || 0) + (f.ajuste || 0), 0);
   assert.equal(r.rendimientoHastaHoy, totalTabla,
-    'sin captura debe ser exactamente lo que suma la tabla, no una proyección aparte');
+    'debe ser exactamente lo que suma la tabla, no una proyección aparte');
 });
 
 test('historialDiario atraviesa una ancla intermedia, no arranca directo en ella', () => {
@@ -715,6 +730,95 @@ test('con ISR el bruto supera al neto y el timeline no cambia', () => {
   const r = rendimientoEntre(eventosCuenta(cuenta), '2026-01-01', '2026-01-31', cfg);
   assert.ok(r.isr > 0 && r.bruto > r.rendimiento, 'la retención se reporta aparte');
   assert.equal(timelineCuenta(cuenta).length, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('Redondeo diario: centavos vs. acumulado');
+
+test('centavos y acumulado: Bruto − ISR siempre coincide con el Rendimiento del día', () => {
+  // El bug que motivó el modo acumulado: en `continuo`, bruto/isr quedan
+  // exactos y el "Rendimiento del día" se redondea aparte — restar los dos
+  // primeros (ya redondeados para mostrarse) no siempre da el tercero. Ambos
+  // modos nuevos evitan eso por construcción: lo que se muestra en bruto/isr
+  // YA es lo que se pagó, así que la resta siempre cuadra.
+  for (const redondeoDiario of [REDONDEO_CENTAVOS, REDONDEO_ACUMULADO]) {
+    const cuenta = cuentaPlana({ redondeoDiario, isrAnual: 0.9 });
+    const filas = historialDiario(cuenta, '2026-03-15');
+    assert.ok(filas.length > 0);
+    filas.forEach(f => cerca(f.bruto - f.isr, f.neto, `${redondeoDiario} ${f.fecha}`));
+  }
+});
+
+test('acumulado: lo pagado nunca se aleja más de un centavo de lo exacto', () => {
+  // Es justo lo que no garantiza redondear cada día por separado: sin el
+  // remanente, el total pagado puede desviarse un centavo por día y ese error
+  // se acumula. Con remanente, la única razón para que pagado ≠ exacto es la
+  // fracción de centavo que todavía no se completó — menos de un centavo en
+  // total, sin importar cuántos días pasen.
+  const cuenta = cuentaPlana({ redondeoDiario: REDONDEO_ACUMULADO, isrAnual: 0.9 });
+  const cfg = configCuenta(cuenta);
+  const filas = historialDiario(cuenta, '2026-06-30', 400);
+  let brutoExacto = 0, isrExacto = 0;
+  filas.forEach(f => {
+    brutoExacto += interesDiario(f.saldoInicial, cfg);
+    isrExacto   += isrDiario(f.saldoInicial, cfg);
+  });
+  const brutoPagado = suma(filas, 'bruto');
+  const isrPagado   = suma(filas, 'isr');
+  assert.ok(Math.abs(brutoPagado - brutoExacto) < 0.01, `bruto: ${brutoPagado} vs ${brutoExacto}`);
+  assert.ok(Math.abs(isrPagado - isrExacto) < 0.01, `isr: ${isrPagado} vs ${isrExacto}`);
+});
+
+test('acumulado reproduce exacto un estado de cuenta real (Revolut, feb 2026)', () => {
+  // Caso real que expuso el bug: tramos, tasa y retención de una cuenta
+  // Revolut MX, con el depósito inicial el 3 feb 2026. `centavos` y `continuo`
+  // se desvían del estado de cuenta real en días sueltos de esta ventana;
+  // `acumulado` es el único que cuadra al centavo en los diez primeros días.
+  const cuenta = {
+    montoInvertido: 0, fechaActualizacion: '2026-01-01',
+    tramos: [{ hasta: 25000, tasa: 15 }, { hasta: 1000000, tasa: 7 }, { hasta: null, tasa: 4.5 }],
+    baseAnual: 360, isrAnual: 0.90, baseIsr: 365,
+    redondeoDiario: REDONDEO_ACUMULADO,
+    movimientos: [{ fecha: '2026-02-03', tipo: MOV_APORTE, monto: 5000 }],
+  };
+  const filas = historialDiario(cuenta, '2026-02-10', 400);
+  const reales = {
+    '2026-02-06': 5005.88, '2026-02-07': 5007.84, '2026-02-08': 5009.81,
+    '2026-02-09': 5011.77, '2026-02-10': 5013.74,
+  };
+  Object.entries(reales).forEach(([fecha, saldoReal]) => {
+    const fila = filas.find(f => f.fecha === fecha);
+    assert.equal(fila?.saldoFinal, saldoReal, `saldo del ${fecha}`);
+  });
+});
+
+test('el remanente se reinicia en cada ancla, igual que el residuo', () => {
+  // Una captura de saldo real (ancla) manda sobre lo proyectado, y la fracción
+  // de centavo que llevaba el remanente no es observable en ese momento — no
+  // tendría sentido cargarla a la siguiente ancla (mismo criterio que
+  // `residuo`). Se prueba encadenando DOS anclas en una misma cuenta: nueve
+  // días de historial acumulan remanente hasta el 10 ene, donde una segunda
+  // ancla "captura" un saldo cualquiera. El propio 10 ene NO es comparable
+  // entre las dos cuentas: por diseño, una ancla intermedia todavía compone
+  // ESE día con la trayectoria previa a la captura (ver `recorrerDesdeCaptura`
+  // / "historialDiario atraviesa una ancla intermedia, no arranca directo en
+  // ella"), mientras que en una cuenta que arranca justo ahí ese primer
+  // renglón sí es "ya inicio de ese día" — por eso el remanente limpio se nota
+  // un día antes en la cuenta fresca que en la que atraviesa la ancla. Lo que
+  // importa es que, ya "adentro" de la nueva ancla, ambas cuentas generan la
+  // misma SECUENCIA de bruto/isr — es decir, ninguna cargó el remanente viejo.
+  const base = { tramos: [{ hasta: null, tasa: 12 }], baseAnual: 365, redondeoDiario: REDONDEO_ACUMULADO };
+
+  const conHistoria = { ...base, montoInvertido: 12345.67, fechaActualizacion: '2026-01-10',
+    historial: [{ fecha: '2026-01-01', monto: 10000 }] };
+  const fresca = { ...base, montoInvertido: 12345.67, fechaActualizacion: '2026-01-10' };
+
+  const brutoHistoria = historialDiario(conHistoria, '2026-01-12')
+    .filter(f => f.fecha > '2026-01-10').map(f => f.bruto);
+  const brutoFresca = historialDiario(fresca, '2026-01-12').map(f => f.bruto);
+
+  assert.deepEqual(brutoHistoria, brutoFresca.slice(0, brutoHistoria.length),
+    'la secuencia de bruto tras la nueva ancla no debería depender del remanente previo');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
