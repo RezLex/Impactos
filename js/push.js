@@ -57,6 +57,29 @@ export function estadoPermiso() {
 }
 
 /**
+ * Estado real de este dispositivo.
+ *
+ * `activo` no es lo mismo que `permiso === 'granted'`: el permiso del navegador
+ * no se puede revocar desde JavaScript, así que "desactivar" significa quitar la
+ * suscripción y borrar el token. El permiso se queda concedido y el dispositivo
+ * deja de recibir igual. La verdad la tiene `pushManager`, no `Notification`.
+ *
+ * @returns {{soportado: boolean, permiso: string, activo: boolean}}
+ */
+export async function estadoPush() {
+  const soportado = await soportaPush();
+  const permiso   = estadoPermiso();
+  let activo = false;
+  if (soportado && permiso === 'granted') {
+    try {
+      const registro = await navigator.serviceWorker.ready;
+      activo = !!(await registro.pushManager.getSubscription());
+    } catch { /* SW no listo: se reporta inactivo, que es lo conservador */ }
+  }
+  return { soportado, permiso, activo };
+}
+
+/**
  * Pide el token y lo guarda. El token es el id del documento: reabrir la app
  * reescribe el mismo, en vez de acumular un registro por sesión.
  */
@@ -111,69 +134,72 @@ export async function activarPush() {
 }
 
 /**
+ * Deja de recibir avisos en este dispositivo.
+ *
+ * El permiso del navegador **no se puede revocar** desde JavaScript, así que lo
+ * que se hace es cortar por el otro lado: se borra el token de Firestore —el
+ * Apps Script deja de tener a dónde enviar— y se anula la suscripción con
+ * `deleteToken`, que además la da de baja en los servidores de FCM. Volver a
+ * activar no vuelve a preguntar nada, porque el permiso sigue concedido.
+ */
+export async function desactivarPush() {
+  try {
+    const messaging = await _getMessaging();
+    const { getToken, deleteToken } = await import(SDK);
+    const registro = await navigator.serviceWorker.ready;
+
+    // Se pide el token ANTES de invalidarlo: es el id del documento a borrar
+    const token = await getToken(messaging, {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: registro,
+    }).catch(() => null);
+
+    if (token) await remove('dispositivos', token).catch(() => {});
+    await deleteToken(messaging);
+
+    toast('Este dispositivo dejará de recibir avisos');
+    _pintarBoton();
+    return true;
+  } catch (e) {
+    toast('No se pudo desactivar: ' + e.message, 'danger');
+    return false;
+  }
+}
+
+/**
  * Refresca el token en cada inicio de sesión. FCM lo rota de vez en cuando y
  * un token viejo deja de recibir sin avisar a nadie: el envío desde Apps
  * Script simplemente responde UNREGISTERED contra un documento fantasma.
  */
 async function _sincronizarToken() {
   if (estadoPermiso() !== 'granted' || !VAPID_KEY) return;
-  try { await _registrarToken(); } catch { /* sin conexión o SW no listo aún */ }
-}
-
-/**
- * Con la app abierta el push no llega al Service Worker, llega aquí. Mostrar
- * una notificación del sistema sobre la app que ya estás mirando sobra: basta
- * un toast, y de paso se refresca el contador.
- */
-async function _escucharPrimerPlano() {
   try {
-    const messaging = await _getMessaging();
-    const { onMessage } = await import(SDK);
-    onMessage(messaging, payload => {
-      const d = payload?.data || {};
-      toast(`${d.titulo || 'Compra detectada'} · toca Notificaciones para registrarla`, 'info');
-      import('./modules/notificaciones.js').then(m => m.refrescarBadge()).catch(() => {});
-    });
-  } catch { /* sin soporte: no hay nada que escuchar */ }
+    const registro = await navigator.serviceWorker.ready;
+    // Si el usuario desactivó los avisos, la suscripción ya no existe pero el
+    // permiso sigue concedido. Sin esta guarda, el siguiente inicio de sesión
+    // los resucitaría solo, sin que nadie lo haya pedido.
+    if (!(await registro.pushManager.getSubscription())) return;
+    await _registrarToken();
+  } catch { /* sin conexión o SW no listo aún */ }
 }
 
-const TEXTOS = {
-  granted:   { icono: 'bi-bell-fill',  texto: 'Notificaciones activadas' },
-  denied:    { icono: 'bi-bell-slash', texto: 'Notificaciones bloqueadas' },
-  default:   { icono: 'bi-bell',       texto: 'Activar notificaciones' },
-};
 
+// El interruptor vive en Ajustes (`js/modules/ajustes.js`); aquí solo se
+// notifica que el estado cambió, para que la vista se repinte si está abierta.
 function _pintarBoton() {
-  const btn = document.getElementById('btn-push');
-  if (!btn) return;
-  const t = TEXTOS[estadoPermiso()] || TEXTOS.default;
-  btn.innerHTML = `<i class="bi ${t.icono}"></i><span>${t.texto}</span>`;
-  btn.title     = t.texto;
-  // Bloqueado no se arregla desde aquí: el navegador ya no vuelve a preguntar,
-  // hay que ir a los permisos del sitio.
-  btn.disabled  = estadoPermiso() === 'denied';
-}
-
-/** Cablea el botón del sidebar y pone al día el token. Lo llama `app.js` al entrar. */
-export async function initPush() {
-  const btn = document.getElementById('btn-push');
-
-  if (!(await soportaPush())) {
-    if (btn) btn.hidden = true;   // no ofrecer algo que no puede funcionar
-    return;
-  }
-
-  _pintarBoton();
-  btn?.addEventListener('click', activarPush);
-  _sincronizarToken();
-  _escucharPrimerPlano();
+  document.dispatchEvent(new CustomEvent('push-cambio'));
 }
 
 /**
- * Borra el token de este dispositivo. Lo usa el Apps Script del lado servidor
- * cuando FCM responde que ya no existe; aquí sirve para no dejar basura si el
- * usuario revoca el permiso desde el navegador.
+ * Pone al día el token de este dispositivo. Lo llama `app.js` al entrar.
+ *
+ * No hay nada que escuchar en primer plano: el `onMessage` del SDK depende de
+ * que el Service Worker use el handler de FCM para reenviar el mensaje a la
+ * página, y el nuestro es un listener `push` propio. La notificación la muestra
+ * siempre `sw.js`, esté la app abierta o cerrada — que es el comportamiento que
+ * se quiere.
  */
-export async function olvidarToken(token) {
-  try { await remove('dispositivos', token); } catch { /* ya no estaba */ }
+export async function initPush() {
+  if (!(await soportaPush())) return;
+  _sincronizarToken();
 }

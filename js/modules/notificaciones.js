@@ -97,10 +97,12 @@ async function _avisoPush(container) {
 
   let push;
   try { push = await import('../push.js'); } catch { return; }
-  const estado = push.estadoPermiso();
-  if (estado === 'granted' || !(await push.soportaPush())) return;
+  // `activo`, no `permiso`: el permiso puede seguir concedido y el dispositivo
+  // estar dado de baja desde Ajustes. En ese caso sí hay algo que ofrecer.
+  const { soportado, permiso, activo } = await push.estadoPush();
+  if (!soportado || activo) return;
 
-  hueco.innerHTML = estado === 'denied'
+  hueco.innerHTML = permiso === 'denied'
     ? `<div class="alert alert-secondary d-flex gap-2 align-items-center py-2" style="font-size:0.85rem">
          <i class="bi bi-bell-slash"></i>
          <span>Las notificaciones están bloqueadas para este sitio. Se habilitan desde los

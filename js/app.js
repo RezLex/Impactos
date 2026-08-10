@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.9.3-T6';
+const APP_VERSION = '1.9.3-T7';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -26,7 +26,8 @@ function onLogin() {
   // Contador de compras detectadas sin registrar. Va aparte del router para
   // que se vea aunque la sesión arranque en otra vista.
   import('./modules/notificaciones.js').then(m => m.refrescarBadge()).catch(() => {});
-  // Web Push: cablea el botón del sidebar y refresca el token si ya hay permiso
+  // Web Push: refresca el token si el dispositivo ya estaba suscrito, y escucha
+  // los avisos que llegan con la app abierta. El interruptor vive en Ajustes.
   import('./push.js').then(m => m.initPush()).catch(() => {});
 }
 
@@ -58,7 +59,8 @@ function setupRouter() {
     if (pts[1]) load('evento-detalle', pts[1]);
     else        load('eventos');
   });
-  register('/exportar',  ()       => load('exportar'));
+  register('/ajustes',   ()       => load('ajustes'));
+  register('/exportar',  ()       => navigate('/ajustes'));   // la vista se absorbió en Ajustes
   register('/festivos',  ()       => load('festivos'));
   register('/admin',     ()       => load('admin-tarjetas'));
   initRouter(content);
@@ -75,8 +77,9 @@ function setupNav() {
     document.getElementById('sidebar-overlay').classList.remove('show');
   };
 
+  // En móvil el cajón se abre solo desde la hamburguesa del header: la bottom
+  // nav ya no tiene botón de Menú, sus cinco lugares son destinos.
   document.getElementById('mobile-menu-btn').addEventListener('click', openSidebar);
-  document.getElementById('bottom-menu-btn').addEventListener('click', openSidebar);
   document.getElementById('sidebar-overlay').addEventListener('click', closeSidebar);
 
   // Close sidebar on nav link click (mobile)
@@ -98,34 +101,12 @@ function setupNav() {
 }
 
 // ── Tema claro / oscuro ───────────────────────────────────────────────────────
-// El modo ya viene aplicado por el script inline de index.html (window.TEMA);
-// aquí solo se maneja el botón que cicla Sistema → Claro → Oscuro.
-const TEMAS = [
-  { pref: 'sistema', icono: 'bi-circle-half', texto: 'Sistema' },
-  { pref: 'claro',   icono: 'bi-sun',         texto: 'Claro'   },
-  { pref: 'oscuro',  icono: 'bi-moon-stars',  texto: 'Oscuro'  }
-];
-
+// El modo ya viene aplicado por el script inline de index.html (window.TEMA), y
+// el selector de las tres opciones vive en Ajustes. Aquí solo queda lo que debe
+// estar activo siempre, sin depender de qué vista esté abierta: seguir en vivo
+// el tema del sistema operativo cuando la preferencia es "Sistema".
 function setupTema() {
-  const btn = document.getElementById('btn-tema');
-  if (!btn || !window.TEMA) return;
-
-  const pintar = pref => {
-    const t = TEMAS.find(x => x.pref === pref) || TEMAS[0];
-    btn.innerHTML = `<i class="bi ${t.icono}"></i><span>Tema: ${t.texto}</span>`;
-    btn.title     = `Tema: ${t.texto}`;
-  };
-
-  pintar(window.TEMA.leer());
-
-  btn.addEventListener('click', () => {
-    const i    = TEMAS.findIndex(t => t.pref === window.TEMA.leer());
-    const next = TEMAS[(i + 1) % TEMAS.length].pref;
-    window.TEMA.guardar(next);
-    pintar(next);
-  });
-
-  // En modo Sistema, seguir en vivo el cambio de tema del sistema operativo
+  if (!window.TEMA) return;
   window.TEMA.mq.addEventListener('change', () => {
     if (window.TEMA.leer() === 'sistema') window.TEMA.aplicar('sistema');
   });

@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v23';
+const CACHE = 'impactos-v25';
 
 const SHELL = [
   './',
@@ -12,7 +12,7 @@ const SHELL = [
   './js/modules/dashboard.js',
   './js/modules/evento-detalle.js',
   './js/modules/eventos.js',
-  './js/modules/exportar.js',
+  './js/modules/ajustes.js',
   './js/modules/festivos.js',
   './js/modules/fijos.js',
   './js/modules/impacto.js',

@@ -157,13 +157,17 @@
           <i class="bi bi-bar-chart-line"></i><span>Impacto Mensual</span>
         </a>
       </li>
-      <li>
+      <li data-hide-mobile>
         <a href="#/rendimientos" class="nav-link" data-route="/rendimientos" title="Rendimientos">
           <i class="bi bi-piggy-bank"></i><span>Rendimientos</span>
         </a>
       </li>
     </ul>
 
+    <!-- Eventos de Ofertas: oculto del nav en ambos tamaños. La ruta #/eventos
+         y su módulo siguen vivos y funcionando; solo se quitó el acceso desde
+         el menú. Para devolverlo, descomentar este bloque. -->
+    <!--
     <div class="sidebar-section-label">Eventos</div>
     <ul class="sidebar-nav">
       <li>
@@ -172,9 +176,13 @@
         </a>
       </li>
     </ul>
+    -->
 
+    <!-- Catálogos que se dan de alta una vez y el resto de la app consulta. Se
+         llamaba "Ajustes", que desde que existe #/ajustes en el pie chocaba con
+         una vista que sí son ajustes de la app. -->
     <div class="sidebar-section-label sidebar-section-settings">
-      <i class="bi bi-gear-fill"></i><span>Ajustes</span>
+      <i class="bi bi-gear-fill"></i><span>Administración</span>
     </div>
     <ul class="sidebar-nav">
       <li>
@@ -196,14 +204,8 @@
 
     <div class="sidebar-footer">
       <div class="sidebar-version" id="sidebar-version"></div>
-      <button id="btn-push" class="btn btn-link nav-link" title="Activar notificaciones">
-        <i class="bi bi-bell"></i><span>Activar notificaciones</span>
-      </button>
-      <button id="btn-tema" class="btn btn-link nav-link" title="Tema">
-        <i class="bi bi-circle-half"></i><span>Tema: Sistema</span>
-      </button>
-      <a href="#/exportar" class="nav-link" data-route="/exportar" title="Exportar Datos">
-        <i class="bi bi-download"></i><span>Exportar Datos</span>
+      <a href="#/ajustes" class="nav-link" data-route="/ajustes" title="Ajustes">
+        <i class="bi bi-sliders"></i><span>Ajustes</span>
       </a>
       <button id="btn-signout" class="btn btn-link nav-link" title="Cerrar Sesión">
         <i class="bi bi-box-arrow-right"></i><span>Cerrar Sesión</span>
@@ -234,12 +236,15 @@
   </div>
 
   <!-- Mobile Bottom Nav -->
+  <!-- Cinco destinos, con el Dashboard al centro. Ya no hay botón de Menú aquí:
+       el cajón se abre con la hamburguesa del header, y ese hueco rinde más
+       como acceso directo a Rendimientos. -->
   <nav class="bottom-nav d-lg-none">
-    <a href="#/" class="bottom-nav-item" data-route="/"><i class="bi bi-speedometer2"></i><span>Inicio</span></a>
     <a href="#/tarjetas" class="bottom-nav-item" data-route="/tarjetas"><i class="bi bi-credit-card-2-front"></i><span>Tarjetas</span></a>
     <a href="#/compras" class="bottom-nav-item" data-route="/compras"><i class="bi bi-bag"></i><span>Compras y Gastos</span></a>
+    <a href="#/" class="bottom-nav-item" data-route="/"><i class="bi bi-speedometer2"></i><span>Inicio</span></a>
     <a href="#/impacto" class="bottom-nav-item" data-route="/impacto"><i class="bi bi-bar-chart-line"></i><span>Impacto</span></a>
-    <button class="bottom-nav-item" id="bottom-menu-btn"><i class="bi bi-grid-3x3-gap"></i><span>Menú</span></button>
+    <a href="#/rendimientos" class="bottom-nav-item" data-route="/rendimientos"><i class="bi bi-piggy-bank"></i><span>Rendimientos</span></a>
   </nav>
 
 </div>

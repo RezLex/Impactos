@@ -7,11 +7,13 @@
  *
  * La comparten `file-store.js` (para saber qué claves servir) y `sync.js` (para
  * saber qué leer de Firestore real) — así no hay dos listas que puedan
- * desalinearse, que es justo el bug que tiene hoy `js/modules/exportar.js`: a su
- * `COLLECTIONS` le faltan `contado, gastos, config, impacto`, y tiene una clave
- * `'fijos'` que no coincide con la colección real `gastosFijos` (exporta 0 filas
- * de Gastos Fijos sin que nadie lo note). No se corrige ese archivo aquí, solo se
- * evita copiar el mismo error.
+ * desalinearse, que es justo el bug que tenía `js/modules/exportar.js`: a su
+ * `COLLECTIONS` le faltaban `contado, gastos, config, impacto`, y tenía una
+ * clave `'fijos'` que no coincidía con la colección real `gastosFijos` (exportaba
+ * 0 filas de Gastos Fijos sin que nadie lo notara). Se corrigió al mover esa
+ * vista a `js/modules/ajustes.js`, que ahora sí lista las 12 con datos del
+ * usuario. Siguen siendo dos listas distintas a propósito: esta incluye
+ * `notificaciones` y `dispositivos`, que el respaldo no necesita.
  *
  * `config` (doc único `'general'`) e `impacto` (docs con id = mes `'YYYY-MM'`) solo
  * se tocan vía `getById`/`upsert` en la app real, nunca `getAll` — igual encajan en

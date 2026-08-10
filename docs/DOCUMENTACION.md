@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T6`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T7`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -106,7 +106,7 @@ impactos/
     │   ├── eventos.js          # Lista de eventos de ofertas
     │   ├── evento-detalle.js   # Detalle de evento: planeación, realizadas, promos
     │   ├── festivos.js         # CRUD de días festivos oficiales MX
-    │   ├── exportar.js         # Exportación de datos a Excel o JSON + mantenimiento de caché
+    │   ├── ajustes.js         # Ajustes: notificaciones, tema, exportación y mantenimiento
     │   └── quick-add.js        # Registro rápido de compras y gastos (FAB)
     │
     └── utils/
@@ -557,7 +557,7 @@ Vista de cartera (wallet) de todas las tarjetas registradas:
 - **Reverso** (crédito/préstamo): chips de Límite total y Saldo disponible en la franja negra superior; CLABE y números en el cuerpo
 - El saldo disponible se muestra en verde si no hay compras posteriores a la última actualización, o en blanco si fue ajustado (ver [Cálculo de Saldo Disponible](#cálculo-de-saldo-disponible))
 
-### Administración (`#/admin`)
+### Instituciones y Tarjetas (`#/admin`)
 CRUD completo de instituciones y tarjetas:
 - Tabla agrupada por institución con encabezado coloreado
 - Número de cliente de la institución visible y copiable
@@ -688,7 +688,7 @@ El aviso instantáneo de la misma cadena. La app se queda como PWA — no hay AP
   **y la PWA instalada** desde Safari; en una pestaña normal no hay permiso posible.
 
 ### Gastos Fijos (`#/fijos`)
-Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
+Registro de gastos recurrentes (módulo en la sección **Administración** del nav):
 - Tabla ordenada por institución → nombre del gasto, con totalizador al pie
 - Asociación a tarjeta y número específico (física o digital)
 - Tres modos de configuración de cobro (se muestra como texto en tabla):
@@ -826,15 +826,48 @@ CRUD del catálogo de días festivos oficiales de México:
 - Tabla con fecha y nombre del festivo
 - Usado por el motor de cálculo de ciclos para ajustar fechas de corte y pago a días hábiles
 
-### Exportar Datos (`#/exportar`)
-Exportación completa de los datos del usuario:
-- **Excel:** un archivo `.xlsx` con una hoja por colección (Instituciones, Tarjetas, MSI, Gastos Fijos, Eventos, Festivos MX)
-- **JSON:** archivo `.json` con todas las colecciones en un solo objeto
-- El nombre del archivo incluye la fecha actual (`IMPACTOS_YYYY-MM-DD`)
+### Ajustes (`#/ajustes`)
 
-**Sección Mantenimiento:**
-- **Limpiar caché de datos:** limpia el caché en memoria de Firestore (IndexedDB local). Útil si los datos se ven desactualizados sin recargar.
-- **Limpiar caché del SW:** elimina todas las entradas del Cache Storage del Service Worker y fuerza una recarga del SW. No afecta la base de datos en Firebase.
+Absorbió la antigua vista *Exportar Datos* y los dos controles que vivían sueltos en el pie del
+sidebar. Ahí ocupaban espacio permanente para algo que se toca dos veces al año, y el de
+notificaciones solo sabía activar. `#/exportar` redirige aquí, igual que `#/msi` a `#/compras`.
+
+**Notificaciones** — un interruptor por dispositivo:
+- **Activar** pide el permiso del navegador (si hace falta) y registra el token en
+  [`dispositivos`](#dispositivostoken).
+- **Desactivar** borra ese token y anula la suscripción con `deleteToken`. Es importante entender
+  por qué son dos cosas distintas: **el permiso del navegador no se puede revocar desde
+  JavaScript**, así que se corta por el otro lado — el Apps Script se queda sin a dónde enviar.
+  El permiso sigue concedido, y por eso volver a activar no pregunta nada.
+- Por lo mismo, el estado real se lee de `pushManager.getSubscription()`, no de
+  `Notification.permission`: pueden discrepar, y la suscripción es la que manda
+  (`estadoPush()` en `js/push.js`).
+- Con el permiso en `denied` el interruptor se deshabilita: el navegador ya no vuelve a
+  preguntar y hay que devolverlo desde los permisos del sitio.
+- Si el dispositivo no soporta push, en vez del interruptor sale la explicación (en iPhone hacen
+  falta iOS 16.4+ y la PWA instalada).
+
+**Apariencia** — Sistema · Claro · Oscuro, como tres opciones visibles en vez del botón que
+ciclaba entre ellas. En `app.js` solo queda el seguimiento en vivo del tema del sistema operativo,
+que debe funcionar esté abierta la vista que esté.
+
+**Exportar datos:**
+- **Excel:** un `.xlsx` con una hoja por colección
+- **JSON:** un `.json` con todas las colecciones en un objeto
+- El nombre incluye la fecha (`IMPACTOS_YYYY-MM-DD`)
+- Se exportan las 12 colecciones con datos del usuario. Quedan fuera `notificaciones` (bandeja
+  transitoria) y `dispositivos` (tokens de push, que fuera de su navegador no significan nada)
+
+> **Corregido al mover la vista:** la lista de colecciones del módulo viejo tenía la clave `fijos`,
+> que no existe —la colección real es `gastosFijos`—, así que la hoja de Gastos Fijos salía vacía
+> sin avisar; y le faltaban `contado`, `gastos`, `impacto` y `config` por completo. Para algo que
+> se usa como respaldo era una pérdida silenciosa de datos.
+
+**Mantenimiento:**
+- **Limpiar caché de datos:** limpia el caché en memoria y el de `localStorage` (`clearCache` de
+  `db.js`). Útil si los datos se ven desactualizados sin recargar.
+- **Limpiar caché del SW:** elimina todas las entradas del Cache Storage y fuerza una recarga del
+  Service Worker. No afecta la base de datos en Firebase.
 
 ### Botón de Registro Rápido (FAB)
 Botón flotante (`+`) disponible en todos los módulos después de iniciar sesión:
@@ -897,16 +930,30 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 | `#/eventos/{id}` | evento-detalle.js | Detalle de evento |
 | `#/admin` | admin-tarjetas.js | CRUD instituciones y tarjetas |
 | `#/festivos` | festivos.js | Catálogo de festivos MX |
-| `#/exportar` | exportar.js | Exportación de datos |
+| `#/ajustes` | ajustes.js | Ajustes de la app (absorbió Exportar Datos) |
+| `#/exportar` | — | Redirige a `#/ajustes` (compatibilidad) |
 
 Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
-**Navegación (sidebar desktop / bottom nav móvil):**
+**Sidebar (escritorio):**
 - **Principal:** Dashboard, Tarjetas, Compras y Gastos, Notificaciones, Impacto Mensual, Rendimientos
-- **Eventos:** Eventos de Ofertas
-- **Ajustes:** Administración, Gastos Fijos, Días Festivos
-- **Footer sidebar:** Exportar Datos, Cerrar Sesión
-- En móvil, los ítems duplicados en bottom nav se ocultan del sidebar (`data-hide-mobile`)
+- **Administración:** Instituciones y Tarjetas, Gastos Fijos, Días Festivos — catálogos que se dan
+  de alta una vez y el resto de la app consulta. No confundir con `#/ajustes`, que son los ajustes
+  de la app y vive en el pie
+- **Footer:** Ajustes, Cerrar Sesión
+
+**Bottom nav (móvil):** Tarjetas · Compras y Gastos · **Dashboard** · Impacto · Rendimientos.
+
+- El Dashboard va **al centro**, no en un extremo: es el destino más frecuente y el centro de la
+  barra es lo más cómodo con el pulgar.
+- Los cinco lugares son destinos. **No hay botón de Menú**: el cajón se abre con la hamburguesa
+  del header, y ese hueco rinde más como acceso directo a Rendimientos.
+- Los ítems duplicados en la bottom nav se ocultan del sidebar en móvil (`data-hide-mobile`), así
+  que el cajón queda con lo que no cabe abajo: Notificaciones, Administración y el pie.
+
+> **Eventos de Ofertas está oculto del nav** en ambos tamaños. La ruta `#/eventos` y su módulo
+> siguen funcionando; solo se quitó el acceso desde el menú. El bloque está comentado en
+> `index.html`, listo para devolverlo.
 
 ---
 
