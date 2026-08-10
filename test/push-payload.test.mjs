@@ -118,6 +118,9 @@ test('los campos que manda el script son los que lee el Service Worker', () => {
   assert.equal(mostrada.opciones.tag, 'noti-1');       // reintento reemplaza, no apila
   assert.equal(mostrada.opciones.data.ruta, '/notificaciones');
   assert.ok(mostrada.opciones.icon.includes('icon-192'));
+  // El badge tiene que ser el monocromo: Android lo enmascara por alfa y con un
+  // ícono opaco de borde a borde saldría un cuadrado en la barra de estado.
+  assert.ok(mostrada.opciones.badge.includes('badge-96'));
 });
 
 test('a plazos: los meses van en el título', () => {

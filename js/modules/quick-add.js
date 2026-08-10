@@ -1,5 +1,6 @@
-import { getAll, getById, create, recentWhere } from '../utils/db.js';
+import { getAll, getById, create, update, remove, recentWhere, where } from '../utils/db.js';
 import { r2 } from '../utils/formatters.js';
+import { opcionesAcumulables, totalAcumulado } from '../utils/acumular.js';
 
 // Mediodía es la hora neutra que se guarda cuando NO se capturó hora real
 const _hasRealTime = dt => dt?.length > 10 && !dt.includes('T12:00:00');
@@ -212,6 +213,138 @@ function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   return favGroup + instGroups;
 }
 
+// ── Acumular compra ───────────────────────────────────────────────────────────
+// La regla de qué es acumulable vive en `utils/acumular.js`; aquí solo está el
+// modal. Solo aplica de contado: a plazos el plan de mensualidades es del cargo
+// original y fusionarlos daría una mensualidad que no existe.
+
+// Se cachea a nivel de módulo, no del modal: si abres y cierras varias veces
+// seguidas no tiene sentido releer. Se descarta al recargar la página.
+let _notisPendientes = null;
+
+async function _cargarNotisPendientes() {
+  if (_notisPendientes) return _notisPendientes;
+  try {
+    const todas = await getAll('notificaciones', where('estatus', '==', 'pendiente'));
+    _notisPendientes = todas.filter(n => n.tipo === 'compra');
+  } catch {
+    _notisPendientes = [];   // sin permiso o sin conexión: el toggle queda vacío
+  }
+  return _notisPendientes;
+}
+
+const ACUM_HTML = `
+  <div class="col-12">
+    <div class="form-check mb-1">
+      <input class="form-check-input" type="checkbox" id="qa-acumular">
+      <label class="form-check-label" for="qa-acumular" style="font-size:0.85rem">
+        Acumular compra <span class="text-muted">— sumar otro cargo de esta misma tarjeta</span>
+      </label>
+    </div>
+    <div id="qa-acumular-campos" style="display:none">
+      <select class="form-select form-select-sm" id="qa-acumular-sel">
+        <option value="">— Nada por acumular —</option>
+      </select>
+      <div class="form-text" id="qa-acumular-nota"></div>
+    </div>
+  </div>`;
+
+/**
+ * Cablea el toggle. Devuelve `() => opción elegida | null`, que el guardado usa
+ * para sumar el importe y decidir qué hacer con el origen.
+ *
+ * @param {string} msgIdActual  msgId de la notificación desde la que se abrió el
+ *   modal, si aplica: no tiene sentido ofrecerle acumularse consigo misma.
+ */
+function _wireAcumular(tarjetas, contado, msgIdActual, alCambiar) {
+  const chk    = document.getElementById('qa-acumular');
+  const campos = document.getElementById('qa-acumular-campos');
+  const sel    = document.getElementById('qa-acumular-sel');
+  const nota   = document.getElementById('qa-acumular-nota');
+  const selTc  = document.querySelector('#qa-contado-form [name="tarjetaId"]');
+  const inTot  = document.querySelector('#qa-contado-form [name="total"]');
+  if (!chk || !sel) return () => null;
+
+  const opciones = new Map();   // value -> { tipo, id, total, etiqueta }
+
+  const elegido = () => (chk.checked && opciones.get(sel.value)) || null;
+
+  const tarjetaActual = () => (selTc?.value || '').split('::')[0];
+
+  const repoblar = () => {
+    const tcId = tarjetaActual();
+    opciones.clear();
+
+    const { notificaciones: notis, compras } = opcionesAcumulables({
+      tarjetaId: tcId,
+      notificaciones: _notisPendientes || [],
+      contado,
+      tarjetas,
+      msgIdActual,
+    });
+
+    const opt = (tipo, id, total, texto) => {
+      const value = `${tipo}:${id}`;
+      opciones.set(value, { tipo, id, total: Number(total) || 0, etiqueta: texto });
+      return `<option value="${value}">${_attr(texto)}</option>`;
+    };
+
+    const grupoNotis = notis.length ? `<optgroup label="Notificaciones pendientes">${
+      notis.map(n => opt('noti', n.id, n.datos?.total,
+        `${currency(n.datos?.total)} — ${n.datos?.desc || 'Sin descripción'}`)).join('')
+    }</optgroup>` : '';
+
+    const grupoCompras = compras.length ? `<optgroup label="Compras registradas">${
+      compras.map(c => opt('contado', c.id, c.total,
+        `${currency(c.total)} — ${c.compra || 'Sin descripción'} · ${fmtDate((c.fechaCompra || '').slice(0, 10))}`)).join('')
+    }</optgroup>` : '';
+
+    const vacio = !grupoNotis && !grupoCompras;
+    sel.innerHTML =
+      `<option value="">${vacio
+        ? (tcId ? '— Nada por acumular en esta tarjeta —' : '— Elige una tarjeta primero —')
+        : '— Selecciona qué acumular —'}</option>` + grupoNotis + grupoCompras;
+    sel.disabled = vacio;
+    pintarNota();
+  };
+
+  const pintarNota = () => {
+    const e = elegido();
+    if (!e) { nota.textContent = ''; return; }
+    const suma = totalAcumulado(inTot?.value, e);
+    nota.innerHTML = `Total resultante: <strong>${currency(suma)}</strong>` + (e.tipo === 'contado'
+      ? ' · la compra elegida se eliminará al guardar'
+      : ' · la notificación se marcará como procesada');
+  };
+
+  const refrescar = () => { pintarNota(); alCambiar?.(); };
+
+  chk.addEventListener('change', async () => {
+    campos.style.display = chk.checked ? '' : 'none';
+    if (chk.checked) { await _cargarNotisPendientes(); repoblar(); }
+    refrescar();
+  });
+  // Cambiar de tarjeta cambia por completo qué se puede acumular
+  selTc?.addEventListener('change', () => { if (chk.checked) repoblar(); refrescar(); });
+  sel.addEventListener('change', refrescar);
+  inTot?.addEventListener('input', pintarNota);
+
+  return elegido;
+}
+
+/** Cierra el origen de lo acumulado: la compra absorbida se borra, la notificación se marca. */
+async function _cerrarAcumulado(acum) {
+  if (!acum) return;
+  if (acum.tipo === 'contado') {
+    await remove('contado', acum.id);
+  } else {
+    await update('notificaciones', acum.id, { estatus: 'procesada' });
+    // El cache local quedó viejo, y el contador del sidebar también
+    _notisPendientes = null;
+    import('./notificaciones.js').then(m => m.refrescarBadge()).catch(() => {});
+  }
+}
+
 // ── Preview ───────────────────────────────────────────────────────────────────
 
 const PREVIEW_HTML = `
@@ -341,13 +474,19 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
 }
 
 let _previewTimer = null;
-function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = []) {
+// `extraTotalFn` suma al total un importe que no está en ningún campo del
+// formulario — hoy solo lo usa "Acumular compra". Sin esto la vista previa
+// mentiría justo en lo que sirve para decidir: disponible e impacto del mes.
+// Devuelve su propio refrescador, para poder dispararla desde fuera de los
+// campos que vigila.
+function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = [], extraTotalFn = null) {
   const getValues = () => {
     const form = document.getElementById(formId);
     if (!form) return;
     const tarjetaId     = (form.querySelector(`[name="${tarjetaValField}"]`)?.value || '').split('::')[0];
     const fecha         = form.querySelector(`[name="${fechaField}"]`)?.value || '';
-    const total         = Number(form.querySelector(`[name="${totalField}"]`)?.value) || 0;
+    const total         = (Number(form.querySelector(`[name="${totalField}"]`)?.value) || 0)
+                          + (extraTotalFn ? extraTotalFn() : 0);
     const monthlyAmount = monthlyAmountFn ? monthlyAmountFn(form) : total;
     clearTimeout(_previewTimer);
     _previewTimer = setTimeout(() => _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos), 250);
@@ -366,6 +505,7 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
   });
 
   getValues();
+  return getValues;
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -422,6 +562,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
             <label class="form-label">Descripción *</label>
             <input type="text" class="form-control" name="compra" value="${_attr(p.compra)}" required placeholder="Ej: Amazon — Auriculares">
           </div>
+          ${ACUM_HTML}
           ${_bonifFieldsQA(null)}
         </div>
       </form>
@@ -437,7 +578,15 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   _wireBonifQA();
   _wireTimeToggle();
   _wireTimePicker();
-  _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos);
+
+  // Se cablean en este orden y con el indirecto de `refrescarPreview` porque se
+  // necesitan mutuamente: la vista previa tiene que sumar lo acumulado, y
+  // elegir algo que acumular tiene que redibujarla.
+  let refrescarPreview = () => {};
+  const acumElegido = _wireAcumular(tarjetas, contado, p.msgId, () => refrescarPreview());
+  refrescarPreview = _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas,
+    festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos,
+    () => acumElegido()?.total || 0);
 
   // Solo en el pre-registro por enlace: la fuente no siempre dice si fue a
   // meses, así que se permite cambiar de opinión sin recapturar los datos.
@@ -460,14 +609,20 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     data.tarjetaId = tarjetaId;
     data.numeroTarjeta = numeroTarjeta || '';
     data.total = Number(data.total);
+    const acum = acumElegido();
+    if (acum) data.total = totalAcumulado(data.total, acum);
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonifQA(data);
     try {
       await create('contado', data);
+      // Después de crear, nunca antes: si falla el cierre del origen queda una
+      // notificación pendiente de más, que se descarta a mano. Al revés se
+      // habría borrado una compra sin nada que la reemplace.
+      await _cerrarAcumulado(acum);
       closeModal();
-      toast('Compra registrada');
+      toast(acum ? 'Compra registrada, acumulando el cargo anterior' : 'Compra registrada');
       if (onSaved) onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });

@@ -72,7 +72,72 @@
       }
     }
   ],
-  "contado": [],
+  "contado": [
+    {
+      "id": "co-1",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Súper",
+      "total": 842.3,
+      "fechaCompra": "2026-08-07T19:20:00"
+    },
+    {
+      "id": "co-2",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Oxxo Casa",
+      "total": 87,
+      "fechaCompra": "2026-08-06T09:58:00"
+    },
+    {
+      "id": "co-3",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Barbería",
+      "total": 250,
+      "fechaCompra": "2026-08-04T12:00:00"
+    },
+    {
+      "id": "co-4",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Tejuino",
+      "total": 45,
+      "fechaCompra": "2026-08-02T12:00:00"
+    },
+    {
+      "id": "co-5",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Boliche",
+      "total": 380.5,
+      "fechaCompra": "2026-07-30T21:15:00"
+    },
+    {
+      "id": "co-6",
+      "tarjetaId": "tc-nu",
+      "numeroTarjeta": "5301 2233 4455 4321",
+      "compra": "Amazon",
+      "total": 1299,
+      "fechaCompra": "2026-07-28T12:00:00"
+    },
+    {
+      "id": "co-7",
+      "tarjetaId": "tc-revolut",
+      "numeroTarjeta": "4111 5566 7788 6734",
+      "compra": "Steam",
+      "total": 249,
+      "fechaCompra": "2026-08-05T21:29:00"
+    },
+    {
+      "id": "co-8",
+      "tarjetaId": "tc-revolut",
+      "numeroTarjeta": "4111 9900 1122 2167",
+      "compra": "Mercado Libre",
+      "total": 1580,
+      "fechaCompra": "2026-08-01T14:02:00"
+    }
+  ],
   "msi": [],
   "gastos": [],
   "notificaciones": [

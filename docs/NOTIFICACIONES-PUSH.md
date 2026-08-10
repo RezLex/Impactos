@@ -5,9 +5,9 @@
 > ya corre en producción), no del dispositivo — por eso alcanza con Web Push y no hace falta
 > empaquetar nativo.
 >
-> **Estado:** se implementa en fases. Fase 1 (Apps Script → Firestore) escrita en
-> `docs/app-script.gs`, pendiente de desplegar. Fases 2 (sección en la app), 3 (Web Push) y
-> 4 (acumular compra), sin empezar.
+> **Estado:** implementado por completo (fases 1 a 4) y desplegado como `1.9.3-T5`. El detalle
+> vigente de cada pieza vive en `DOCUMENTACION.md`; este archivo queda como registro del diseño
+> acordado y de por qué se decidió así.
 
 ## Arranque: dos triggers en vez de uno
 

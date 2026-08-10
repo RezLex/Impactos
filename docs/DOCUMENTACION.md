@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T5`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T6`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -78,8 +78,11 @@ impactos/
 ├── DOCUMENTACION.md            # Este archivo
 │
 ├── icons/
-│   ├── icon-192.png            # Ícono PWA 192×192 (banco estilizado)
-│   └── icon-512.png            # Ícono PWA 512×512
+│   ├── icon-192.png            # Ícono PWA 192×192 (banco estilizado, maskable)
+│   ├── icon-512.png            # Ícono PWA 512×512 (maskable)
+│   ├── favicon-32.png          # Pestaña del navegador — a sangre, sin el margen del maskable
+│   ├── favicon-16.png          # Ídem, para pantallas sin escalado
+│   └── badge-96.png            # Silueta monocroma para el `badge` de las notificaciones push
 │
 ├── css/
 │   └── app.css                 # Todos los estilos (variables, layout, componentes)
@@ -107,6 +110,7 @@ impactos/
     │   └── quick-add.js        # Registro rápido de compras y gastos (FAB)
     │
     └── utils/
+        ├── acumular.js         # Qué se le puede acumular a una compra de contado
         ├── db.js               # CRUD genérico para Firestore
         ├── formatters.js       # Formateo de moneda, fechas, seriales Excel, etc.
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
@@ -841,6 +845,37 @@ Botón flotante (`+`) disponible en todos los módulos después de iniciar sesi�
 - Guarda directamente sin requerir navegar al módulo correspondiente
 - La Descripción/Nombre va al final del formulario para no bloquear el preview
 
+#### Acumular compra (solo De Contado)
+
+Para cuando un cargo en realidad continúa a otro anterior: la segunda mitad de una cuenta, un
+cobro que el comercio partió en dos. En vez de dos compras sueltas se registra una sola por la
+suma. **No aplica a plazos**: ahí el plan de mensualidades es del cargo original y fusionarlos
+daría una mensualidad que no existe.
+
+Al activar el toggle aparece un `<select>` con dos `<optgroup>`, ambos filtrados por la tarjeta
+elegida en el formulario (la regla vive en `js/utils/acumular.js`, probada en
+`test/acumular.test.mjs`):
+
+- **Notificaciones pendientes** — de [`notificaciones`](#notificacionesid). Se filtran resolviendo
+  `datos.tarjeta` con `matchTarjetaPorTerminacion`, porque el documento no guarda `tarjetaId`. Si
+  el modal se abrió *desde* una notificación, esa se excluye: no tiene sentido acumularse consigo
+  misma (se detecta por `msgId`).
+- **Compras registradas** — las 5 más recientes de contado de esa tarjeta.
+
+Comportamiento:
+
+- La colección de notificaciones se carga **al activar el toggle**, no en `_loadData`: así los
+  otros dos modales del FAB no pagan una lectura extra por abrirse.
+- Cambiar de tarjeta repuebla el select; cambiar de opción o de total repinta la nota con el
+  **total resultante** y con lo que va a pasar con el origen.
+- La **vista previa incluye lo acumulado** (`extraTotalFn` en `_wirePreview`). Sin eso mentiría
+  justo en lo que sirve para decidir: disponible e impacto del mes.
+- Al guardar, el total es la suma. Después de crear la compra —nunca antes— se cierra el origen:
+  una **compra registrada** se elimina (su monto quedó absorbido); una **notificación** pasa a
+  `estatus: procesada`. El orden importa: al revés, un fallo dejaría una compra borrada sin nada
+  que la reemplace, mientras que así lo peor que puede pasar es una notificación pendiente de más,
+  que se descarta a mano.
+
 ---
 
 ## Navegación y Routing
@@ -1438,7 +1473,7 @@ el endpoint donde escribe `test/file-store.js`.
 
 | Archivo | Git | Contenido |
 |---|---|---|
-| `test/fixtures/seed.json` | commiteado | Semilla ficticia inicial, coherente con el motor real: `instituciones` + `inversiones` calculadas con `rendimiento.js`, dos `tarjetas` de crédito y cinco `notificaciones` que cubren los casos de esa vista (contado, a plazos, sin match en el diccionario, sin tarjeta identificable y una ya procesada). Las tarjetas están porque el modal exige una: sin ellas la bandeja de notificaciones se ve pero no se puede probar de punta a punta. El resto de las colecciones, arrays vacíos |
+| `test/fixtures/seed.json` | commiteado | Semilla ficticia inicial, coherente con el motor real: `instituciones` + `inversiones` calculadas con `rendimiento.js`, dos `tarjetas` de crédito, cinco `notificaciones` que cubren los casos de esa vista (contado, a plazos, sin match en el diccionario, sin tarjeta identificable y una ya procesada) y ocho compras de `contado` —seis en la misma tarjeta, para ver el corte en las 5 más recientes de "Acumular compra"—. Las tarjetas están porque el modal exige una: sin ellas la bandeja de notificaciones se ve pero no se puede probar de punta a punta. El resto de las colecciones, arrays vacíos |
 | `test/fixtures/firestore.json` | **ignorado** (`.gitignore`) | Snapshot real que descarga **Sincronizar**; datos financieros reales, uno por dispositivo, nunca debe llegar al historial del repo |
 
 `test/file-store.js` implementa la misma superficie que `js/utils/db.js` (`getAll, getById,

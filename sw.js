@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v21';
+const CACHE = 'impactos-v23';
 
 const SHELL = [
   './',
@@ -22,6 +22,7 @@ const SHELL = [
   './js/modules/quick-add.js',
   './js/modules/rendimientos.js',
   './js/modules/tarjetas.js',
+  './js/utils/acumular.js',
   './js/utils/ciclo.js',
   './js/utils/db.js',
   './js/utils/formatters.js',
@@ -78,7 +79,10 @@ self.addEventListener('push', e => {
   e.waitUntil(self.registration.showNotification(payload.titulo || 'Compra detectada', {
     body:  payload.cuerpo || '',
     icon:  './icons/icon-192.png',
-    badge: './icons/icon-192.png',
+    // El badge es el ícono chico junto al nombre de la app, y Android lo
+    // enmascara por canal alfa: descarta el color y se queda con la silueta.
+    // Pasarle icon-192 daba un cuadrado, porque es opaco de borde a borde.
+    badge: './icons/badge-96.png',
     // El id del documento como tag: si el envío se reintenta, la notificación
     // se reemplaza en vez de apilar copias de la misma compra.
     tag:      payload.notifId || 'impactos-compra',
