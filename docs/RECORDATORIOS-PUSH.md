@@ -58,35 +58,62 @@ que los `datos` no tienen la forma de una compra).
 
 ### 1. Corte de tarjeta — `revisarCortes()`
 
-Por cada tarjeta, la fuente de verdad es `impacto/{mesActualYYYY-MM}` (doc por
-id, `GET` directo — no query), **no** un cálculo propio de `ciclo.js`:
+`impacto/{YYYY-MM}` es un doc **por mes calendario, independiente** — la app no
+obliga a cerrar un mes antes de abrir el siguiente
+(`js/modules/impacto.js:_crearImpacto` crea el doc del mes que se visite, sin
+tocar los anteriores). Es decir, en agosto puede seguir habiendo un
+`impacto/2026-07` con `estado: 'activo'` y una tarjeta sin confirmar — si la
+revisión solo mirara el mes calendario actual, ese caso quedaría fuera del
+radar para siempre. Por eso `revisarCortes()` no pide un mes puntual: **lista
+todos** los `impacto` con `estado === 'activo'` (colección chica, un doc por
+mes — mismo patrón de "traer todo y filtrar en memoria" que ya usa
+`listarNotificaciones()` en `app-script.gs`) y revisa cada uno:
 
-- **Si el doc no existe** (nunca se abrió `#/impacto` este mes): candidato a
-  notificación tipo `corte`, subtipo "falta impacto" — `datos: { mes, falta:
-  true }`. Redirige a `#/impacto` (que ya lo crea al abrirse,
-  `js/modules/impacto.js:_crearImpacto`).
-- **Si el doc existe pero `estado !== 'activo'`** (ya cerrado): no hace nada —
-  el mes ya se resolvió.
-- **Si el doc existe y está `activo`**: para cada entrada de `tarjetas[]` con
+Tres subtipos posibles, marcados en `datos.subtipo` (además de discriminar el
+mensaje, evita que compartan clave de dedupe entre sí):
+
+- **`faltaImpacto`** — mes calendario actual sin doc (nunca se abrió
+  `#/impacto` este mes). `datos: { subtipo: 'faltaImpacto', mes }`. Redirige a
+  `#/impacto` (que ya lo crea al abrirse). Chequeo solo del mes actual — los
+  meses futuros no existen por diseño, y uno pasado sin doc simplemente nunca
+  se abrió (no es "un mes atorado", no aplica el caso de abajo).
+- **`sinConfirmar`** — por cada `impacto` con `estado === 'activo'` (el actual
+  o uno anterior sin cerrar), por cada entrada de `tarjetas[]` con
   `fechaCorte` y `confirmado !== true` (`docs/DOCUMENTACION.md` — campos de
-  `impacto.tarjetas[]`), candidata a notificación tipo `corte` con `datos: {
-  tarjetaId, nombre, fechaCorte, monto: montoAPagar ?? estimadoTotal }`.
-  Redirige a `#/impacto`.
+  `impacto.tarjetas[]`). `datos: { subtipo: 'sinConfirmar', tarjetaId, nombre,
+  mes, fechaCorte, monto: montoAPagar ?? estimadoTotal }`.
+- **`sinCerrar`** — por cada `impacto` con `estado === 'activo'` **y `mes <
+  mesActual`** (un mes ya terminado que se quedó abierto), sin importar el
+  estado de sus tarjetas: recordatorio a nivel mes para cerrarlo. `datos: {
+  subtipo: 'sinCerrar', mes }`. Es el respaldo para cuando todas las tarjetas
+  ya están `confirmado`/`pagado` (entonces `sinConfirmar` ya se autorresolvió)
+  pero el usuario nunca tocó "Cerrar mes" — sin este subtipo ese caso quedaría
+  sin ningún aviso. Corre en paralelo e independiente de `sinConfirmar`: un
+  mes puede tener ambos a la vez, o solo `sinCerrar` si ya no le falta
+  confirmar nada.
 
-**Cadencia de reintento (para ambos casos, mismo mecanismo):** en vez de crear
-un documento nuevo cada vez (que llenaría la bandeja de duplicados), se
-mantiene **un solo doc `pendiente`** por clave natural (`mes` para "falta
-impacto"; `tarjetaId + mes` para "sin confirmar"), con un campo `ultimoAviso`
-(timestamp):
-- No existe doc pendiente para esa clave → si ya pasó al menos 1 día desde
-  `fechaCorte` (o desde el día 1 del mes, para "falta impacto"), se crea con
-  `ultimoAviso = ahora` y entra a la lista de la corrida para el push.
+Todos redirigen a `#/impacto/{mes}` (`js/modules/impacto.js` navega por mes vía
+`navigate('/impacto/' + mes)`, línea 258-259 — así abre directo el mes
+atrasado, no el actual). Si `mes` no es el mes calendario actual, el texto del
+push lo aclara ("de {mes}") para no confundirlo con el mes en curso.
+
+**Cadencia de reintento (los tres subtipos, mismo mecanismo):** en vez de
+crear un documento nuevo cada vez (que llenaría la bandeja de duplicados), se
+mantiene **un solo doc `pendiente`** por clave natural (`subtipo + mes` para
+`faltaImpacto`/`sinCerrar`; `subtipo + tarjetaId + mes` para `sinConfirmar`),
+con un campo `ultimoAviso` (timestamp):
+- No existe doc pendiente para esa clave → si ya pasó al menos 1 día desde la
+  fecha que dispara la condición (`fechaCorte` para `sinConfirmar`; el día 1
+  del mes para `faltaImpacto`; el día 1 del mes siguiente al que quedó
+  abierto, para `sinCerrar`), se crea con `ultimoAviso = ahora` y entra a la
+  lista de la corrida para el push.
 - Ya existe un doc pendiente → si `ahora - ultimoAviso >= DIAS_REINTENTO` días
   y la condición sigue vigente (sigue sin `confirmado` / el impacto sigue sin
-  existir), se actualiza `ultimoAviso = ahora` (mismo doc, no uno nuevo) y
-  entra a la lista del push. Si ya se cumplió la condición (el usuario
-  confirmó, o el impacto ya se creó), el doc pasa solo a `estatus: 'procesada'`
-  — se autorresuelve sin que el usuario tenga que tocarlo.
+  existir / el mes sigue `activo`), se actualiza `ultimoAviso = ahora` (mismo
+  doc, no uno nuevo) y entra a la lista del push. Si ya se cumplió la
+  condición (el usuario confirmó, el impacto ya se creó, o el mes ya se
+  cerró), el doc pasa solo a `estatus: 'procesada'` — se autorresuelve sin que
+  el usuario tenga que tocarlo.
 
 ### 2. Gasto fijo por confirmar — `revisarGastosFijos()`
 
@@ -114,9 +141,11 @@ Si hoy es el último día del mes, crea **una sola** `notificaciones` `{ tipo:
 reintento — es un solo aviso al mes).
 
 ### Textos del push
-- Corte, falta impacto: `Genera el Impacto de {mes}` / `toca para generarlo`.
-- Corte, sin confirmar: `Cortó tu tarjeta {nombre}` / `{monto} por confirmar —
-  toca para revisarlo`.
+- Corte, `faltaImpacto`: `Genera el Impacto de {mes}` / `toca para generarlo`.
+- Corte, `sinConfirmar`: `Cortó tu tarjeta {nombre}` / `{monto} por confirmar —
+  toca para revisarlo` (si `mes` no es el actual, agrega `(de {mes})`).
+- Corte, `sinCerrar`: `Impacto de {mes} sin cerrar` / `toca para revisarlo y
+  cerrarlo`.
 - Gasto fijo: `{nombre} — gasto fijo por confirmar` / `{importe}`.
 - Rendimiento: `Fin de mes` / `revisa los rendimientos de tus cuentas`.
 - Igual que hoy: **un solo push por corrida** (detalle si es uno, resumen si
