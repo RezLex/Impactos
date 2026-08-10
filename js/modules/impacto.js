@@ -1,4 +1,4 @@
-import { getAll, getById, upsert, update, recentWhere } from '../utils/db.js';
+import { getAll, getById, upsert, update, recentWhere, where } from '../utils/db.js';
 import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth, r2 } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
@@ -11,8 +11,19 @@ import {
 } from '../utils/impacto-calc.js';
 
 export async function render(container, mesParam) {
-  const mes = mesParam || currentYYYYMM();
-  await renderView(container, mes);
+  if (mesParam) return renderView(container, mesParam);
+  const mesActivo = await _resolverMesActivo();
+  navigate('/impacto/' + mesActivo);
+}
+
+// ── Mes activo ───────────────────────────────────────────────────────────────
+
+async function _resolverMesActivo() {
+  const activos = await getAll('impacto', where('estado', '==', 'activo'));
+  if (activos.length) return activos.map(a => a.mes).sort()[0];
+  const cerrados = await getAll('impacto', where('estado', '==', 'cerrado'));
+  if (cerrados.length) return nextMonth(cerrados.map(c => c.mes).sort().at(-1));
+  return currentYYYYMM(); // instalación nueva: nunca hubo ningún impacto
 }
 
 // ── Main view ────────────────────────────────────────────────────────────────
@@ -20,9 +31,9 @@ export async function render(container, mesParam) {
 async function renderView(container, mes) {
   container.innerHTML = `<div class="loading-overlay"><div class="spinner-border text-primary" role="status"></div></div>`;
   try {
-    const mesCurrent = currentYYYYMM();
-    const isFuture   = mes > mesCurrent;
-    const isPast     = mes < mesCurrent;
+    const mesActivo = await _resolverMesActivo();
+    const isFuture  = mes > mesActivo;
+    const isPast    = mes < mesActivo;
 
     const [impactoExistente, tarjetas, instituciones, contado, msi, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos] =
       await Promise.all([
@@ -45,15 +56,7 @@ async function renderView(container, mes) {
     const nominaAprox     = Number(configGen?.nominaAprox) || 0;
 
     let impacto;
-    if (isFuture) {
-      impacto = proyectarMes(mes, mesCurrent, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas, pagosDiferidos);
-      // Enrich projection tarjetas with institution data
-      impacto.tarjetas = impacto.tarjetas.map(t => {
-        const tc   = cardMap[t.tarjetaId];
-        const inst = instMap[tc?.institucionId];
-        return { ...t, institucion: inst?.nombre || '', color: inst?.color || '#607d8b' };
-      });
-    } else if (impactoExistente) {
+    if (impactoExistente) {
       impacto = impactoExistente;
       // Recalculate estimates + sync dates/new tarjetas for active impactos
       if (impacto.estado === 'activo') {
@@ -119,10 +122,18 @@ async function renderView(container, mes) {
           upsert('impacto', mes, { tarjetas: updatedTarjetas }); // fire-and-forget
         }
       }
-    } else if (!isPast) {
+    } else if (mes === mesActivo) {
       impacto = await _crearImpacto(mes, tarjetasCredito, contado, msi, gastos, festivosMX, nominaAprox, instMap, pagosDiferidos);
+    } else if (isFuture) {
+      impacto = proyectarMes(mes, mesActivo, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas, pagosDiferidos);
+      // Enrich projection tarjetas with institution data
+      impacto.tarjetas = impacto.tarjetas.map(t => {
+        const tc   = cardMap[t.tarjetaId];
+        const inst = instMap[tc?.institucionId];
+        return { ...t, institucion: inst?.nombre || '', color: inst?.color || '#607d8b' };
+      });
     } else {
-      impacto = null;
+      impacto = null; // mes pasado que nunca se generó
     }
 
     const gastosDebitoLive = (impacto?.estado === 'cerrado' || isFuture)
@@ -130,7 +141,7 @@ async function renderView(container, mes) {
       : getGastosDebitoCompleto(gastos, gastosFijos, mes, debitoIds, tarjetas, festivosMX);
 
     const ctx = {
-      mes, mesCurrent, isFuture, isPast, tarjetas, cardMap, instMap,
+      mes, mesActivo, isFuture, isPast, tarjetas, cardMap, instMap,
       tarjetasCredito, festivosMX, configGen, nominaAprox, contado, msi, gastos, pagosDiferidos,
       gastosDebitoLive, debitoIds, container,
     };
@@ -189,7 +200,7 @@ async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gasto
 // ── Page render ──────────────────────────────────────────────────────────────
 
 function _renderPage(container, impacto, ctx) {
-  const { mes, mesCurrent, isFuture, isPast, gastosDebitoLive, nominaAprox } = ctx;
+  const { mes, mesActivo, isFuture, isPast, gastosDebitoLive, nominaAprox } = ctx;
   const hoy = toISODate(new Date());
 
   const isActivo    = impacto?.estado === 'activo';
@@ -915,6 +926,13 @@ async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {
     gastosDebito: gastosDebitoLive,
     totales,
   });
+
+  // Activar automáticamente el siguiente mes
+  const proximoMes = nextMonth(impacto.mes);
+  if (!(await getById('impacto', proximoMes))) {
+    await _crearImpacto(proximoMes, ctx.tarjetasCredito, ctx.contado, ctx.msi, ctx.gastos, ctx.festivosMX, ctx.nominaAprox, ctx.instMap, ctx.pagosDiferidos);
+  }
+
   toast('Impacto cerrado');
   await renderView(ctx.container, ctx.mes);
 }
