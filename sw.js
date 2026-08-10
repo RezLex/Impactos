@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v19';
+const CACHE = 'impactos-v21';
 
 const SHELL = [
   './',
@@ -6,6 +6,7 @@ const SHELL = [
   './js/app.js',
   './js/auth.js',
   './js/firebase.js',
+  './js/push.js',
   './js/router.js',
   './js/modules/admin-tarjetas.js',
   './js/modules/dashboard.js',
@@ -17,6 +18,7 @@ const SHELL = [
   './js/modules/impacto.js',
   './js/modules/migracion.js',
   './js/modules/msi.js',
+  './js/modules/notificaciones.js',
   './js/modules/quick-add.js',
   './js/modules/rendimientos.js',
   './js/modules/tarjetas.js',
@@ -24,6 +26,7 @@ const SHELL = [
   './js/utils/db.js',
   './js/utils/formatters.js',
   './js/utils/impacto-calc.js',
+  './js/utils/prefill-compra.js',
   './js/utils/rendimiento.js',
   './js/utils/saldo.js',
   './js/utils/ui.js',
@@ -54,6 +57,54 @@ self.addEventListener('activate', e => {
       ))
       .then(() => self.clients.claim())
   );
+});
+
+// ── Web Push ────────────────────────────────────────────────────────────────
+// Los mensajes llegan data-only desde el Apps Script (ver docs/app-script.gs).
+// Es deliberado: si trajeran bloque `notification`, Chrome mostraría la suya
+// además de esta y saldrían dos avisos por compra.
+
+self.addEventListener('push', e => {
+  if (!e.data) return;
+
+  let payload = {};
+  try {
+    const json = e.data.json();
+    payload = json.data || json;   // FCM anida en `data`; una prueba manual, no
+  } catch {
+    payload = { cuerpo: e.data.text() };
+  }
+
+  e.waitUntil(self.registration.showNotification(payload.titulo || 'Compra detectada', {
+    body:  payload.cuerpo || '',
+    icon:  './icons/icon-192.png',
+    badge: './icons/icon-192.png',
+    // El id del documento como tag: si el envío se reintenta, la notificación
+    // se reemplaza en vez de apilar copias de la misma compra.
+    tag:      payload.notifId || 'impactos-compra',
+    renotify: !!payload.notifId,
+    data:     { ruta: '/notificaciones' },
+  }));
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const ruta = e.notification.data?.ruta || '/notificaciones';
+
+  e.waitUntil((async () => {
+    const abiertos = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const propio   = abiertos.find(c => c.url.startsWith(self.registration.scope));
+
+    // Con la app ya abierta se le avisa por mensaje en vez de navegarla: un
+    // `navigate()` a la misma URL con otro hash recarga la pestaña entera y se
+    // perdería lo que el usuario tuviera a medias.
+    if (propio) {
+      await propio.focus();
+      propio.postMessage({ tipo: 'navegar', ruta });
+      return;
+    }
+    await self.clients.openWindow('./#' + ruta);
+  })());
 });
 
 self.addEventListener('fetch', e => {

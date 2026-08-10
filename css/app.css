@@ -340,42 +340,51 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 
 /* Collapsed state */
-.sidebar.collapsed .sidebar-logo { display: none; }
-.sidebar.collapsed .sidebar-title { display: none; }
+/* Colapsar es una preferencia de ESCRITORIO, y se recuerda en localStorage. En
+   móvil el sidebar no se colapsa: es un cajón que entra a ancho completo. Sin
+   este @media, quien lo dejara colapsado en la compu abría el cajón en el
+   teléfono y lo encontraba a ancho completo pero con los iconos centrados y
+   sin una sola etiqueta — la clase seguía puesta y solo el `width` estaba
+   contrarrestado (ver la sección RESPONSIVE). */
+@media (min-width: 992px) {
+  .sidebar.collapsed .sidebar-logo { display: none; }
+  .sidebar.collapsed .sidebar-title { display: none; }
 
-.sidebar.collapsed .nav-link span,
-.sidebar.collapsed .sidebar-footer span { display: none; }
+  .sidebar.collapsed .nav-link span,
+  .sidebar.collapsed .sidebar-footer span { display: none; }
 
-.sidebar.collapsed .sidebar-section-label {
-  height: 1px;
-  background: rgba(255,255,255,.12);
-  padding: 0;
-  margin: 6px 10px;
-  overflow: hidden;
-  font-size: 0;
-  gap: 0;
-}
-.sidebar.collapsed .sidebar-section-settings {
-  height: auto;
-  background: transparent;
-  padding: 10px 0 2px;
-  margin: 0;
-  font-size: 0;
-  justify-content: center;
-}
-.sidebar.collapsed .sidebar-section-settings i {
-  font-size: 0.8rem;
-  color: rgba(255,255,255,.3);
-}
+  .sidebar.collapsed .sidebar-section-label {
+    height: 1px;
+    background: rgba(255,255,255,.12);
+    padding: 0;
+    margin: 6px 10px;
+    overflow: hidden;
+    font-size: 0;
+    gap: 0;
+  }
+  .sidebar.collapsed .sidebar-section-settings {
+    height: auto;
+    background: transparent;
+    padding: 10px 0 2px;
+    margin: 0;
+    font-size: 0;
+    justify-content: center;
+  }
+  .sidebar.collapsed .sidebar-section-settings i {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,.3);
+  }
 
-.sidebar.collapsed .sidebar-nav .nav-link,
-.sidebar.collapsed .sidebar-footer .nav-link,
-.sidebar.collapsed .sidebar-footer button.nav-link {
-  justify-content: center;
-  padding: 11px;
-  gap: 0;
+  .sidebar.collapsed .sidebar-nav .nav-link,
+  .sidebar.collapsed .sidebar-footer .nav-link,
+  .sidebar.collapsed .sidebar-footer button.nav-link {
+    justify-content: center;
+    padding: 11px;
+    gap: 0;
+  }
+  .sidebar.collapsed .sidebar-primary-label { display: none !important; }
+  .sidebar.collapsed .sidebar-version { display: none; }
 }
-.sidebar.collapsed .sidebar-primary-label { display: none !important; }
 
 .sidebar-footer {
   margin-top: auto;
@@ -391,7 +400,6 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   padding: 4px 16px 2px;
   letter-spacing: .04em;
 }
-.sidebar.collapsed .sidebar-version { display: none; }
 .sidebar-footer .nav-link,
 .sidebar-footer button.nav-link {
   width: 100%;
@@ -1926,6 +1934,200 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 }
 .inv-upd-est-val { font-size: 1.35rem; font-weight: 700; line-height: 1.2; }
 .inv-upd-delta { font-size: 0.78rem; margin-top: 10px; min-height: 1.2em; }
+
+/* ==================== NOTIFICACIONES ==================== */
+/* Una sola línea por pendiente en escritorio: monto, comercio, insignias,
+   asunto y los datos del cargo. Apilarlos desperdiciaba todo el ancho de la
+   card para cuatro renglones cortos. */
+.noti-item {
+  display: flex;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition: background .12s;
+}
+.noti-item:last-child { border-bottom: 0; }
+.noti-item:hover { background: var(--row-hover); }
+
+.noti-monto {
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;   /* montos alineados entre filas */
+  flex-shrink: 0;
+  min-width: 96px;
+}
+.noti-comercio {
+  font-size: 0.92rem;
+  font-weight: 600;
+  flex: 0 1 auto;
+  max-width: 28%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* El asunto absorbe el ancho sobrante: es el campo largo y el primero que
+   conviene recortar cuando falta espacio. */
+.noti-asunto {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.noti-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.noti-item > .badge-tipo { flex-shrink: 0; }
+
+/* Terminación de la tarjeta, teñida con el color de su institución (el color
+   inline lo pone el JS, junto con el texto legible sobre él). */
+.noti-tarjeta {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 1px 9px;
+  font-variant-numeric: tabular-nums;
+}
+/* Terminación que no casó con ninguna tarjeta registrada: el dato sigue siendo
+   útil, pero no hay institución de la cual sacar un color. */
+.noti-tarjeta-nd { background: var(--tint-neutral); color: var(--on-tint-neutral); }
+
+/* Móvil: dos renglones exactos. Arriba todo lo que identifica el cargo —monto,
+   comercio, insignias, fecha/hora y la terminación—; abajo el asunto, que es lo
+   único realmente largo. Cabe porque el año se oculta (estas detecciones nunca
+   pasan de 30 días) y porque el comercio es el que cede espacio.
+   El asunto baja con `order`, no reordenando el HTML: en escritorio tiene que
+   ir en medio, absorbiendo el ancho sobrante. */
+@media (max-width: 575.98px) {
+  .noti-item {
+    position: relative;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 8px;
+    padding-right: 42px;   /* la columna que ocupa la × */
+  }
+  .noti-monto    { flex: 0 0 auto; min-width: 0; font-size: 1.05rem; }
+  .noti-comercio { flex: 0 1 auto; max-width: 100%; }   /* el que cede al apretarse */
+  /* La fecha se va al borde derecho: el renglón ocupa el ancho completo en vez
+     de dejar un hueco muerto al final. La terminación se queda pegada al
+     comercio, que es a lo que pertenece. */
+  .noti-meta     { flex: 0 0 auto; margin-left: auto; }
+  .noti-anio     { display: none; }
+  .noti-asunto   { order: 9; flex: 1 0 100%; }
+  /* Centrada contra los dos renglones, no pegada al primero */
+  .noti-item > .btn-icon {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+  }
+}
+
+/* Contador de pendientes en el enlace del sidebar. */
+.nav-badge {
+  margin-left: auto;
+  background: var(--danger);
+  color: #fff;
+  font-size: var(--fs-mini);
+  font-weight: 700;
+  line-height: 1.5;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 20px;
+  text-align: center;
+}
+
+/* Colapsado no cabe el número, pero sí la señal: el badge se convierte en un
+   punto sobre la campana. Sin esto se lo llevaba la regla que oculta todos los
+   <span> del sidebar colapsado, y no quedaba ningún indicio de pendientes.
+   Va dentro del mismo @media de escritorio que el resto del colapso: en el
+   cajón móvil el sidebar nunca está colapsado y el badge se ve completo.
+   El selector lleva `span.nav-badge` a propósito: necesita más especificidad
+   que la regla que oculta los <span>, y el `:not([hidden])` conserva el
+   ocultamiento cuando el contador está en cero. */
+@media (min-width: 992px) {
+  .sidebar.collapsed .sidebar-nav .nav-link { position: relative; }
+  .sidebar.collapsed .sidebar-nav .nav-link span.nav-badge:not([hidden]) {
+    display: block;
+    position: absolute;
+    top: 7px;
+    right: 13px;
+    width: 10px;
+    height: 10px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    font-size: 0;          /* el número no cabe; queda solo el punto */
+    line-height: 0;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--sidebar-bg);   /* lo despega del ícono */
+  }
+}
+
+/* Campana flotante en móvil. La sección no cabe en la bottom nav, así que sin
+   esto habría que abrir el cajón para enterarse de que hay pendientes. Además
+   de avisar, lleva a la sección de un toque. Solo existe si hay algo que
+   atender: es una alerta, no un elemento de navegación permanente.
+   Sin fondo propio — el color lo pone el contador, que es lo que debe saltar.
+   Queda fija sobre el header, que es `sticky` y por lo tanto nunca se va: por
+   eso el ícono puede ser blanco sin riesgo de perderse sobre el contenido. */
+#noti-bubble { display: none; }
+#noti-bubble:not([hidden]) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: fixed;
+  /* Centrada en el header móvil: (52 - 40) / 2. Los 40px son área táctil, no
+     un recuadro visible. */
+  top: calc((var(--header-h) - 40px) / 2);
+  right: 8px;
+  z-index: 600;            /* sobre el header sticky (500), bajo el cajón (999) */
+  width: 40px;
+  height: 40px;
+  color: #fff;
+  text-decoration: none;
+}
+/* Campaneo: quieta la mayor parte del ciclo y un repique corto al final. Una
+   oscilación continua en algo que vive fijo en pantalla cansa a los diez
+   segundos; así llama la atención sin volverse ruido. Pivota desde el asa, que
+   es como se mueve una campana de verdad. */
+@keyframes noti-campaneo {
+  0%, 80%, 100% { transform: rotate(0deg); }
+  83% { transform: rotate(14deg); }
+  86% { transform: rotate(-12deg); }
+  89% { transform: rotate(9deg); }
+  92% { transform: rotate(-6deg); }
+  95% { transform: rotate(3deg); }
+}
+#noti-bubble i {
+  font-size: 1.35rem;
+  transform-origin: 50% 10%;
+  animation: noti-campaneo 4.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  #noti-bubble i { animation: none; }
+}
+#noti-bubble .noti-bubble-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 20px;
+  background: var(--danger);
+  color: #fff;
+  font-size: var(--fs-mini);
+  font-weight: 700;
+  line-height: 18px;
+  box-shadow: 0 0 0 2px var(--sidebar-bg);   /* lo despega de la campana */
+}
 
 /* ==================== UTILITIES ==================== */
 .text-success { color: var(--success) !important; }

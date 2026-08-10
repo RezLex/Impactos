@@ -32,6 +32,8 @@ export const COLECCIONES = [
   'contado',
   'msi',
   'gastos',
+  'notificaciones',
+  'dispositivos',
   'pagosDiferidos',
   'gastosFijos',
   'festivosMX',

@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.9.3-T3';
+const APP_VERSION = '1.9.3-T5';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -23,10 +23,18 @@ function onLogin() {
   setupTema();
   setupRouter();
   setupFab();
+  // Contador de compras detectadas sin registrar. Va aparte del router para
+  // que se vea aunque la sesión arranque en otra vista.
+  import('./modules/notificaciones.js').then(m => m.refrescarBadge()).catch(() => {});
+  // Web Push: cablea el botón del sidebar y refresca el token si ya hay permiso
+  import('./push.js').then(m => m.initPush()).catch(() => {});
 }
 
 function onLogout() {
   clearCache();
+  // Si no, el contador y la burbuja quedan colgados con la cifra del usuario
+  // anterior detrás de la pantalla de login
+  import('./modules/notificaciones.js').then(m => m.pintarBadge(0)).catch(() => {});
   document.getElementById('auth-overlay').classList.remove('d-none');
   document.getElementById('app-layout').classList.add('d-none');
   document.getElementById('quick-add-fab').classList.add('d-none');
@@ -42,6 +50,7 @@ function setupRouter() {
   register('/tarjetas',  ()       => load('tarjetas'));
   register('/compras',   (p, pts, query) => load('msi', pts[1] || null, query));
   register('/msi',       ()       => navigate('/compras'));
+  register('/notificaciones', ()  => load('notificaciones'));
   register('/fijos',     ()       => load('fijos'));
   register('/impacto',   (p, pts) => load('impacto', pts[1] || null));
   register('/rendimientos', ()    => load('rendimientos'));
@@ -154,6 +163,14 @@ function setupFab() {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
   navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+
+  // Tap en un push con la app ya abierta: el SW pide la navegación por mensaje
+  // en vez de navegar la pestaña él mismo, que la recargaría entera.
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data?.tipo !== 'navegar' || !e.data.ruta) return;
+    navigate(e.data.ruta);
+    import('./modules/notificaciones.js').then(m => m.refrescarBadge()).catch(() => {});
+  });
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────

@@ -38,6 +38,8 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Estado mensual de todas las tarjetas (impacto)
 - Planeación y comparación de compras en eventos de ofertas (Hot Sale, Buen Fin, etc.)
 - Catálogo de días festivos oficiales de México
+- Compras detectadas automáticamente en el correo, listas para registrar de un toque
+  (ver [Notificaciones](#notificaciones-notificaciones))
 
 **Características principales:**
 - Interfaz responsiva: sidebar en desktop, bottom navigation en móvil; en móvil las tarjetas se muestran en stack con efecto de superposición
@@ -45,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T5`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -85,7 +87,8 @@ impactos/
 └── js/
     ├── app.js                  # Punto de entrada — auth, nav, router bootstrap, SW registration
     ├── auth.js                 # Google Sign-In + verificación de acceso por UID
-    ├── firebase.js             # Inicialización Firebase (config + exports db/auth)
+    ├── firebase.js             # Inicialización Firebase (config + exports app/db/auth)
+    ├── push.js                 # Web Push: permiso, token FCM y mensajes en primer plano
     ├── router.js               # Hash router con lazy loading de módulos
     │
     ├── modules/
@@ -93,6 +96,7 @@ impactos/
     │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
     │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
     │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
+    │   ├── notificaciones.js   # Compras detectadas en el correo, pendientes de registrar
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
     │   ├── impacto.js          # Impacto mensual rediseñado — confirmación, pago, cierre
     │   ├── rendimientos.js     # Cuentas de inversión y cálculo de rendimientos compuestos
@@ -108,6 +112,7 @@ impactos/
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
         ├── saldo.js            # Cálculo de saldo disponible/usado con ajuste por compras
         ├── impacto-calc.js     # Cálculos del Impacto mensual (filtrado, estimados, proyección)
+        ├── prefill-compra.js   # Compra detectada → precarga del modal (notificaciones y URL)
         ├── rendimiento.js      # Motor de rendimientos compuestos con tramos progresivos
         └── ui.js               # Toast, modals, confirmaciones reutilizables
 ```
@@ -311,6 +316,43 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 | `bonificacion` | object? | Bonificación/cashback esperado (misma estructura que `contado`) |
 | `liquidado` | boolean? | `true` cuando la compra está completamente saldada |
 | `fechaLiquidacion` | string? | Fecha ISO en que se marcó como liquidada (`YYYY-MM-DD`) |
+
+### `notificaciones/{id}`
+
+Compras que el Apps Script detectó en el correo y todavía no se registran. Es la **única colección que escribe algo distinto de la app**: la crea `procesarCompras()` (ver `docs/app-script.gs` y `docs/NOTIFICACIONES-PUSH.md`); la app solo la lee y le cambia el `estatus`.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `tipo` | string | `compra`. Reservado para tipos futuros (`recordatorio`), aún no implementados |
+| `estatus` | string | `pendiente`, `procesada` o `descartada` |
+| `datos` | object | La compra detectada (ver abajo) |
+| `creado` | string | Timestamp ISO del momento de la detección |
+
+**Estructura de `datos`** — son los mismos nombres de campo que viajaban en el query string del [pre-registro por URL](#pre-registro-de-compra-vía-url), a propósito: las dos entradas comparten la traducción de `js/utils/prefill-compra.js`.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `desc` | string | Comercio ya resuelto por el diccionario del script, o el nombre crudo si no hubo match |
+| `total` | number | Importe cargado |
+| `fecha` | string | `YYYY-MM-DD`; si el correo no la trae, la del correo |
+| `hora` | string | `HH:mm` |
+| `tarjeta` | string | **Terminación** de 4 dígitos, o `NA` si el correo no la revela. No es un `tarjetaId`: el mapeo lo hace la app con `matchTarjetaPorTerminacion` |
+| `meses` | number? | Solo en compras a plazos — su presencia es lo que decide el tipo |
+| `mensualidad` | number? | Solo en compras a plazos; manda sobre `total / meses` |
+| `msgId` | string | Id del mensaje de Gmail — sirve para detectar que la compra ya se registró |
+| `asunto` | string | Asunto crudo del correo, el contexto que salva la fila cuando no hubo match |
+| `match` | boolean | Si el diccionario reconoció el comercio |
+
+El `estatus` no lo revisa ningún proceso en segundo plano: lo escribe la app al registrar o descartar. El trigger diario del script sí borra las `procesada`/`descartada` con más de 30 días.
+
+### `dispositivos/{token}`
+
+Dispositivos suscritos a Web Push. **El id del documento es el token de FCM**, así que reabrir la app reescribe el mismo registro en vez de acumular uno por sesión. Los escribe `js/push.js`; los lee el Apps Script para saber a dónde enviar, y los borra cuando FCM responde que el token ya no existe.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `ua` | string | `navigator.userAgent` — para reconocer de qué dispositivo es |
+| `visto` | string | Timestamp ISO del último inicio de sesión que refrescó el token |
 
 ### `gastosFijos/{id}`
 
@@ -572,6 +614,75 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 
 > **Regla:** registros de tarjeta de crédito en `gastos` provienen únicamente de confirmar un gasto fijo. Las entradas manuales usan solo tarjetas de débito.
 
+### Notificaciones (`#/notificaciones`)
+
+Bandeja de compras que el Apps Script detectó en el correo (colección
+[`notificaciones`](#notificacionesid)) y que todavía no se registran. Sustituye al correo
+individual por compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
+
+- Lista solo las de `tipo: compra` y `estatus: pendiente`, más recientes arriba. El filtro por
+  `estatus` va en la consulta; el de `tipo` en JS, para no necesitar un índice compuesto.
+- Cada fila muestra el importe, el comercio (`datos.desc`), el **asunto crudo del correo**
+  (`datos.asunto`), la fecha/hora y la terminación de la tarjeta como píldora teñida con el color
+  de su institución (se resuelve con `matchTarjetaPorTerminacion`, porque la notificación solo
+  guarda los 4 dígitos; sin coincidencia va en gris neutro). Dos insignias más: `N MSI` en compras
+  a plazos y `sin match` cuando el diccionario del script no reconoció el comercio — ahí el asunto
+  es lo único que orienta.
+- **Escritorio:** todo en un renglón, con el asunto absorbiendo el ancho sobrante. **Móvil:** dos
+  renglones exactos — arriba lo que identifica el cargo, abajo el asunto. El asunto baja con
+  `order`, no reordenando el HTML, y el año de la fecha se oculta para que el primer renglón
+  quepa (ninguna detección pasa de 30 días).
+- **Tocar la fila** abre el modal del Registro Rápido precargado
+  (`prefillDesdeDatos` → `openQuickAdd`), el mismo del FAB, con su vista previa de ciclo,
+  disponible e impacto. Al guardar, la notificación pasa a `estatus: procesada`. Si el modal se
+  cambia de contado a plazos (o al revés), la notificación se cierra igual: `onSaved` viaja con
+  el cambio.
+- Si el `msgId` ya está en `contado` o `msi`, la compra se registró antes: no se abre el modal,
+  la notificación se marca `procesada` directamente.
+- **La `×`** la marca `descartada` sin registrar nada, con confirmación.
+- **Indicadores de pendientes**, los dos alimentados por `refrescarBadge` (que llama `app.js` al
+  iniciar sesión y esta vista tras cada cambio; `pintarBadge(0)` los apaga al cerrar sesión):
+  - **Escritorio:** insignia con el número en el enlace del sidebar. Con el sidebar colapsado se
+    convierte en un punto sobre la campana — la regla que oculta las etiquetas se llevaba también
+    el badge y no quedaba señal alguna.
+  - **Móvil:** campana flotante en la esquina superior derecha (`#noti-bubble`), fija sobre el
+    header. Sin fondo propio: el color lo pone el contador, que es lo que debe saltar. La sección
+    no cabe en la bottom nav, así que sin ella habría que abrir el cajón para enterarse. Solo
+    aparece si hay pendientes —es una alerta, no navegación permanente— y lleva a
+    `#/notificaciones` de un toque. El contador se corta en `9+`.
+
+#### Notificaciones push (Web Push / FCM)
+
+El aviso instantáneo de la misma cadena. La app se queda como PWA — no hay APK; ver
+`docs/APK-ANDROID.md` para la evaluación que se descartó.
+
+- **Activación:** botón en el pie del sidebar (`#btn-push`) y aviso dentro de `#/notificaciones`
+  mientras el permiso no esté concedido. Tiene que salir de un gesto del usuario:
+  `Notification.requestPermission()` lo exige. Si el permiso quedó en `denied`, el botón se
+  deshabilita — el navegador ya no vuelve a preguntar y hay que ir a los permisos del sitio.
+- **Token:** `js/push.js` pide el token con la clave VAPID y lo guarda en
+  [`dispositivos`](#dispositivostoken). Reusa el registro de `./sw.js` con
+  `navigator.serviceWorker.ready`; un registro nuevo dejaría la suscripción en un Service Worker
+  distinto del que atiende los push. El token se refresca en cada inicio de sesión, porque FCM lo
+  rota y uno viejo deja de recibir sin avisar.
+- **Envío:** `enviarPush()` en `docs/app-script.gs`, contra la API v1 de FCM, justo después de
+  crear la notificación. Va en su propio `try`: si el push falla, la notificación ya está
+  guardada y se ve al abrir la app — no debe provocar un reintento, que duplicaría el documento.
+  Los tokens muertos (404 / `UNREGISTERED`) se borran ahí mismo.
+- **Mensajes data-only**, sin bloque `notification`. Es lo que permite que el listener `push` de
+  `sw.js` decida qué mostrar; con bloque `notification` Chrome pinta además la suya y saldrían
+  dos avisos por compra. El `tag` es el id del documento, así que un reintento reemplaza en vez
+  de apilar.
+- **Tap en el aviso:** si la app ya está abierta, el Service Worker le manda
+  `{tipo:'navegar', ruta}` por `postMessage` y `app.js` navega. Un `navigate()` a la misma URL
+  con otro hash recargaría la pestaña y se perdería lo que estuviera a medias.
+- **Con la app en primer plano** el push no llega al Service Worker sino a `onMessage`: ahí basta
+  un toast y refrescar el contador, en vez de una notificación del sistema encima de la app que
+  ya estás mirando.
+- **Requisitos externos:** clave VAPID en `js/push.js` (Firebase Console → Cloud Messaging → Web
+  Push certificates) y el scope `firebase.messaging` en el Apps Script. En iOS hace falta 16.4+
+  **y la PWA instalada** desde Safari; en una pestaña normal no hay permiso posible.
+
 ### Gastos Fijos (`#/fijos`)
 Registro de gastos recurrentes (módulo en la sección **Ajustes** del nav):
 - Tabla ordenada por institución → nombre del gasto, con totalizador al pie
@@ -742,6 +853,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 | `#/tarjetas` | tarjetas.js | Vista wallet de tarjetas |
 | `#/compras` | msi.js | Compras y Gastos (De Contado + A Plazos + Gastos); `#/compras/gastos` abre directamente la pestaña Gastos |
 | `#/msi` | — | Redirige a `#/compras` (compatibilidad) |
+| `#/notificaciones` | notificaciones.js | Compras detectadas en el correo, pendientes de registrar |
 | `#/fijos` | fijos.js | Gastos fijos |
 | `#/impacto` | impacto.js | Mes actual |
 | `#/impacto/2026-05` | impacto.js | Mes específico |
@@ -755,7 +867,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
 **Navegación (sidebar desktop / bottom nav móvil):**
-- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Impacto Mensual, Rendimientos
+- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Notificaciones, Impacto Mensual, Rendimientos
 - **Eventos:** Eventos de Ofertas
 - **Ajustes:** Administración, Gastos Fijos, Días Festivos
 - **Footer sidebar:** Exportar Datos, Cerrar Sesión
@@ -765,10 +877,18 @@ Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
 ## Pre-registro de Compra vía URL
 
-Un enlace externo (ej. una automatización que lee correos de notificación bancaria) puede abrir
-la app con `#/compras?desc=...&total=...` y precargar el modal de Registro Rápido con los datos
-de la compra, lista para revisar y confirmar. No se guarda nada automáticamente — el usuario
-siempre confirma en el modal antes de escribir en Firestore.
+> **Camino secundario.** El Apps Script ya no manda este enlace: ahora escribe un documento en
+> [`notificaciones`](#notificacionesid) y la compra se registra desde
+> [`#/notificaciones`](#notificaciones-notificaciones). Esta ruta se conserva para que los correos
+> viejos que sigan en la bandeja funcionen, y por si alguna vez conviene volver a mandar un enlace
+> precargado. **Las dos entradas comparten la misma traducción**
+> (`prefillDesdeDatos` en `js/utils/prefill-compra.js`): lo que se describe abajo sobre resolución
+> de tarjeta, anti-duplicado, mensualidad y hora aplica igual a las notificaciones, que traen esos
+> mismos campos desde Firestore en vez de la URL.
+
+Un enlace externo puede abrir la app con `#/compras?desc=...&total=...` y precargar el modal de
+Registro Rápido con los datos de la compra, lista para revisar y confirmar. No se guarda nada
+automáticamente — el usuario siempre confirma en el modal antes de escribir en Firestore.
 
 ### Parámetros
 
@@ -801,7 +921,7 @@ argumento (`URLSearchParams`) y lo pasa a `msi.js` (`js/app.js`).
 **Tipo de compra:** lo decide la *presencia* de `meses`, no un parámetro `tipo` aparte. Sin
 `meses` → De Contado; con `meses` → A Plazos (`msi.js` → `render()`).
 
-**Resolución de tarjeta (`_matchTarjetaPorTerminacion`):** busca la terminación solo entre
+**Resolución de tarjeta (`matchTarjetaPorTerminacion`):** busca la terminación solo entre
 tarjetas de **crédito** — los selectores de Compras y Registro Rápido no listan débito, así que
 casar con una de débito dejaría el campo sin opción correspondiente. Si la terminación aparece
 en más de una tarjeta o número, **gana la física**: es la que suele aparecer en el cargo del
@@ -811,7 +931,8 @@ banco, y el orden en que vienen los números no lo garantiza. Sin coincidencia (
 **Anti-duplicado:** `msgId` se busca en **ambas** colecciones (`contado` y `msi`), no solo en la
 del tipo que trae el enlace — desde el modal se puede cambiar de tipo antes de guardar, así que
 un mismo `msgId` puede haber terminado en cualquiera de las dos. Si ya existe, no se abre modal
-y se muestra un toast; si no, `_prefillDesdeQuery` arma el objeto de precarga.
+y se muestra un toast; si no, `prefillDesdeDatos` arma el objeto de precarga (`_prefillDesdeQuery`
+en `msi.js` es solo el envoltorio que le pasa el query string convertido a objeto plano).
 
 **Mensualidad:** si el enlace la trae, tiene prioridad sobre el cálculo `total / meses` del
 modal — puede no coincidir exactamente por redondeos del banco.
@@ -1317,7 +1438,7 @@ el endpoint donde escribe `test/file-store.js`.
 
 | Archivo | Git | Contenido |
 |---|---|---|
-| `test/fixtures/seed.json` | commiteado | Semilla ficticia inicial, coherente con el motor real (`instituciones` + `inversiones` calculadas con `rendimiento.js`, arrays vacíos para el resto) |
+| `test/fixtures/seed.json` | commiteado | Semilla ficticia inicial, coherente con el motor real: `instituciones` + `inversiones` calculadas con `rendimiento.js`, dos `tarjetas` de crédito y cinco `notificaciones` que cubren los casos de esa vista (contado, a plazos, sin match en el diccionario, sin tarjeta identificable y una ya procesada). Las tarjetas están porque el modal exige una: sin ellas la bandeja de notificaciones se ve pero no se puede probar de punta a punta. El resto de las colecciones, arrays vacíos |
 | `test/fixtures/firestore.json` | **ignorado** (`.gitignore`) | Snapshot real que descarga **Sincronizar**; datos financieros reales, uno por dispositivo, nunca debe llegar al historial del repo |
 
 `test/file-store.js` implementa la misma superficie que `js/utils/db.js` (`getAll, getById,

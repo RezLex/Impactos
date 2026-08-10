@@ -140,6 +140,12 @@
           <i class="bi bi-bag"></i><span>Compras y Gastos</span>
         </a>
       </li>
+      <li>
+        <a href="#/notificaciones" class="nav-link" data-route="/notificaciones" title="Notificaciones">
+          <i class="bi bi-bell"></i><span>Notificaciones</span>
+          <span class="nav-badge" id="nav-badge-notificaciones" hidden>0</span>
+        </a>
+      </li>
       <li data-hide-mobile>
         <a href="#/impacto" class="nav-link" data-route="/impacto" title="Impacto Mensual">
           <i class="bi bi-bar-chart-line"></i><span>Impacto Mensual</span>
@@ -184,6 +190,9 @@
 
     <div class="sidebar-footer">
       <div class="sidebar-version" id="sidebar-version"></div>
+      <button id="btn-push" class="btn btn-link nav-link" title="Activar notificaciones">
+        <i class="bi bi-bell"></i><span>Activar notificaciones</span>
+      </button>
       <button id="btn-tema" class="btn btn-link nav-link" title="Tema">
         <i class="bi bi-circle-half"></i><span>Tema: Sistema</span>
       </button>
@@ -231,6 +240,12 @@
 
 <!-- Sidebar Overlay (Mobile) -->
 <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+<!-- Burbuja de compras pendientes (solo móvil; en escritorio basta el badge del sidebar) -->
+<a href="#/notificaciones" id="noti-bubble" class="d-lg-none" hidden title="Compras detectadas sin registrar">
+  <i class="bi bi-bell-fill"></i>
+  <span class="noti-bubble-count" id="noti-bubble-count">0</span>
+</a>
 
 <!-- Toast Container -->
 <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999"></div>

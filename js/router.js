@@ -41,6 +41,7 @@ function _updateNav(base) {
     '/':          'Dashboard',
     '/tarjetas':  'Tarjetas',
     '/compras':   'Compras y Gastos',
+    '/notificaciones': 'Notificaciones',
     '/fijos':     'Gastos Fijos',
     '/impacto':   'Impacto Mensual',
     '/rendimientos': 'Rendimientos',

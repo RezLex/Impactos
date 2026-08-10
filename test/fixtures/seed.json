@@ -16,10 +16,149 @@
       "color": "#820ad1"
     }
   ],
-  "tarjetas": [],
+  "tarjetas": [
+    {
+      "id": "tc-nu",
+      "institucionId": "inst-nu",
+      "nombre": "Crédito",
+      "tipo": "credito",
+      "favorita": true,
+      "limiteTotal": 45000,
+      "saldoDisponible": 38200,
+      "fechaActualizacionSaldo": "2026-08-01T12:00:00.000Z",
+      "numeros": [
+        {
+          "formato": "fisica",
+          "numero": "5301 2233 4455 4321",
+          "fechaVencimiento": "09/29"
+        }
+      ],
+      "ciclo": {
+        "metodoCiclo": "a",
+        "diaCorte": 12,
+        "diaPago": 2,
+        "ajusteCorte": "siguiente",
+        "ajustePago": "anterior",
+        "baseCalculo": "original"
+      }
+    },
+    {
+      "id": "tc-revolut",
+      "institucionId": "inst-revolut",
+      "nombre": "Crédito",
+      "tipo": "credito",
+      "limiteTotal": 30000,
+      "saldoDisponible": 27500,
+      "fechaActualizacionSaldo": "2026-08-01T12:00:00.000Z",
+      "numeros": [
+        {
+          "formato": "fisica",
+          "numero": "4111 5566 7788 6734",
+          "fechaVencimiento": "04/30"
+        },
+        {
+          "formato": "digital",
+          "numero": "4111 9900 1122 2167",
+          "fechaVencimiento": "04/30"
+        }
+      ],
+      "ciclo": {
+        "metodoCiclo": "b",
+        "diaCorte": 20,
+        "diasAlPago": 20,
+        "ajusteCorte": "siguiente",
+        "ajustePago": "siguiente",
+        "baseCalculo": "original"
+      }
+    }
+  ],
   "contado": [],
   "msi": [],
   "gastos": [],
+  "notificaciones": [
+    {
+      "id": "noti-contado",
+      "tipo": "compra",
+      "estatus": "pendiente",
+      "creado": "2026-08-08T18:42:00.000Z",
+      "datos": {
+        "desc": "Amazon",
+        "total": 1499,
+        "fecha": "2026-08-08",
+        "hora": "18:41",
+        "tarjeta": "4321",
+        "msgId": "msg-amazon-1",
+        "asunto": "Pago/Compra con Tarjeta Santander",
+        "match": true
+      }
+    },
+    {
+      "id": "noti-plazos",
+      "tipo": "compra",
+      "estatus": "pendiente",
+      "creado": "2026-08-07T11:05:00.000Z",
+      "datos": {
+        "desc": "API Global",
+        "total": 1372.23,
+        "fecha": "2026-08-07",
+        "hora": "11:04",
+        "tarjeta": "6734",
+        "meses": 6,
+        "mensualidad": 228.71,
+        "msgId": "msg-mp-1",
+        "asunto": "Pago aprobado en API GLOBAL",
+        "match": true
+      }
+    },
+    {
+      "id": "noti-sinmatch",
+      "tipo": "compra",
+      "estatus": "pendiente",
+      "creado": "2026-08-06T09:12:00.000Z",
+      "datos": {
+        "desc": "TIENDA RARA SA DE CV",
+        "total": 320.5,
+        "fecha": "2026-08-06",
+        "hora": "09:11",
+        "tarjeta": "2167",
+        "msgId": "msg-pp-1",
+        "asunto": "Autorizó un pago para TIENDA RARA SA DE CV",
+        "match": false
+      }
+    },
+    {
+      "id": "noti-sintarjeta",
+      "tipo": "compra",
+      "estatus": "pendiente",
+      "creado": "2026-08-05T21:30:00.000Z",
+      "datos": {
+        "desc": "Steam",
+        "total": 249,
+        "fecha": "2026-08-05",
+        "hora": "21:29",
+        "tarjeta": "NA",
+        "msgId": "msg-pp-2",
+        "asunto": "Recibo de su pago a STEAMPOWERED",
+        "match": true
+      }
+    },
+    {
+      "id": "noti-vieja",
+      "tipo": "compra",
+      "estatus": "procesada",
+      "creado": "2026-07-02T10:00:00.000Z",
+      "datos": {
+        "desc": "Oxxo Casa",
+        "total": 87,
+        "fecha": "2026-07-02",
+        "hora": "09:58",
+        "tarjeta": "4321",
+        "msgId": "msg-oxxo-1",
+        "asunto": "Pago/Compra con Tarjeta Santander",
+        "match": true
+      }
+    }
+  ],
   "pagosDiferidos": [],
   "gastosFijos": [],
   "festivosMX": [],

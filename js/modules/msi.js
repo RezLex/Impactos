@@ -1,4 +1,5 @@
 import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
+import { prefillDesdeDatos } from '../utils/prefill-compra.js';
 
 const _hasRealTime = dt => dt?.length > 10 && !dt.includes('T12:00:00');
 
@@ -1644,68 +1645,13 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
 // ── Pre-registro de compra vía parámetros de URL (#/compras?desc=...&total=...) ──────
 
-function _matchTarjetaPorTerminacion(tarjetaParam, tarjetas) {
-  const digits = (tarjetaParam || '').replace(/\D/g, '');
-  if (!digits) return null; // incluye el caso "PP" (PayPal/cuenta), que no matchea ninguna tarjeta
-  // Solo crédito: los selectores de De Contado y A Plazos únicamente listan
-  // tarjetas de crédito, así que casar con una de débito daría un tarjetaId
-  // sin opción correspondiente y el campo quedaría vacío sin explicación.
-  const coincidencias = [];
-  for (const t of tarjetas.filter(x => !x.oculta && x.tipo === 'credito')) {
-    (Array.isArray(t.numeros) ? t.numeros : []).forEach(n => {
-      if (n.numero && String(n.numero).replace(/\D/g, '').slice(-4) === digits)
-        coincidencias.push({ tarjetaId: t.id, numero: n.numero, formato: n.formato });
-    });
-  }
-  if (!coincidencias.length) return null;
-  // Con varias coincidencias gana la física: es la que suele aparecer en el
-  // cargo del banco, y el orden del array no garantiza cuál viene primero.
-  const elegida = coincidencias.find(c => c.formato === 'fisica') || coincidencias[0];
-  return { tarjetaId: elegida.tarjetaId, numero: elegida.numero };
-}
-
-// Parámetros del enlace: desc, total, fecha, hora, tarjeta y msgId siempre;
-// meses y mensualidad solo en compras a plazos. Los que no aplican se omiten,
-// nunca llegan vacíos.
+// Fallback: el Apps Script ya no manda este enlace (ahora escribe una
+// notificación en Firestore y la app la procesa desde #/notificaciones), pero
+// los correos viejos que sigan en la bandeja tienen que seguir funcionando.
+// La conversión en sí vive en utils porque la comparte esa sección, que recibe
+// exactamente los mismos campos desde Firestore en vez de la URL.
 function _prefillDesdeQuery(query, tarjetas, contadoItems, msiItems) {
-  const desc  = query.get('desc');
-  const total = parseFloat(query.get('total'));   // llega como string: "1372.23"
-  if (!desc || !Number.isFinite(total)) return null;
-
-  // El tipo lo decide la PRESENCIA de `meses`, no un parámetro aparte
-  const meses  = parseInt(query.get('meses'), 10);
-  const esMsi  = query.has('meses') && Number.isFinite(meses) && meses > 0;
-
-  // El msgId se busca en las DOS colecciones: desde el modal se puede cambiar
-  // de contado a plazos, así que pudo guardarse en cualquiera de las dos.
-  const msgId = query.get('msgId') || '';
-  if (msgId && [...contadoItems, ...msiItems].some(c => c.msgId === msgId)) return 'duplicado';
-
-  const fechaParam = query.get('fecha');
-  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(fechaParam || '') ? fechaParam : toISODate(new Date());
-  const hora  = /^\d{2}:\d{2}$/.test(query.get('hora') || '') ? query.get('hora') : '';
-  // `tarjeta` llega como 'NA' cuando el correo no revela la terminación
-  const match = _matchTarjetaPorTerminacion(query.get('tarjeta'), tarjetas);
-
-  const datos = {
-    compra: desc,
-    total,
-    fechaCompra: hora ? `${fecha}T${hora}:00` : fecha,
-    // La hora va aparte porque el enlace puede traer 12:00 como hora real, y
-    // en el resto de la app mediodía es el centinela de "sin hora capturada":
-    // deducirla del datetime la perdería justo en ese caso.
-    ...(hora ? { hora } : {}),
-    tarjetaId: match?.tarjetaId || '',
-    numeroTarjeta: match?.numero || '',
-    ...(msgId ? { msgId } : {}),
-  };
-  if (esMsi) {
-    datos.mesesTotal = meses;
-    // La mensualidad real del banco manda: puede no ser exactamente total/meses
-    const mensualidad = parseFloat(query.get('mensualidad'));
-    if (Number.isFinite(mensualidad)) datos.mensualidad = mensualidad;
-  }
-  return { tipo: esMsi ? 'msi' : 'contado', datos };
+  return prefillDesdeDatos(Object.fromEntries(query), tarjetas, contadoItems, msiItems);
 }
 
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
