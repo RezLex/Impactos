@@ -32,7 +32,6 @@ const FS_IMPACTO     = FS_DOCS + '/users/' + UID + '/impacto';
 const FS_GASTOSFIJOS = FS_DOCS + '/users/' + UID + '/gastosFijos';
 const FS_GASTOS      = FS_DOCS + '/users/' + UID + '/gastos';
 const FS_FESTIVOS    = FS_DOCS + '/users/' + UID + '/festivosMX';
-const DIAS_REINTENTO = 2;   // cadencia de reintento de corte/impacto faltante
 
 // ---------- Trigger diario único ----------
 
@@ -78,14 +77,16 @@ function procesarRecordatorios() {
  *   - sinCerrar — por cada `impacto` activo con `mes < mesActual` (un mes ya
  *     terminado que se quedó abierto).
  *
- * Cadencia de reintento (los tres subtipos, mismo mecanismo): un solo doc
- * `notificaciones` por clave natural (el propio id del documento), con
- * `ultimoAviso`. Se recalculan los candidatos vigentes en cada corrida y se
- * comparan contra los `pendiente` que ya existen:
- *   - Clave vigente sin doc pendiente → si ya pasó al menos 1 día desde la
- *     fecha que dispara la condición, se crea y entra al push.
- *   - Clave vigente con doc pendiente → si ya pasaron `DIAS_REINTENTO` días
- *     desde `ultimoAviso`, se actualiza (mismo doc) y entra al push.
+ * Sin reintento por tiempo: un solo doc `notificaciones` por clave natural
+ * (el propio id del documento). Se recalculan los candidatos vigentes en
+ * cada corrida y se comparan contra los `pendiente` que ya existen:
+ *   - Clave vigente con doc `pendiente` → no se toca. Mientras el usuario no
+ *     la descarte (o el tap la marque `procesada`), no se manda otro aviso
+ *     aunque pasen varias corridas — evita repetir el mismo recordatorio
+ *     todos los días.
+ *   - Clave vigente sin doc `pendiente` (nunca existió, o el último se
+ *     descartó/procesó) → si ya pasó al menos 1 día desde la fecha que
+ *     dispara la condición, se crea uno nuevo y entra al push.
  *   - Doc pendiente cuya clave ya no es vigente → la condición se cumplió
  *     (confirmó, se creó el impacto, o se cerró el mes): pasa a
  *     `estatus: 'procesada'`, sin que el usuario tenga que tocarlo.
@@ -138,28 +139,16 @@ function _procesarCandidatosCorte(candidatos, pendientes, hoy, soloLectura) {
   pendientes.forEach(function (n) {
     const key = idDeRuta(n._nombre);
     vistos[key] = true;
-    const c = candidatos[key];
 
-    if (!c) {
+    if (!candidatos[key]) {
       // La condición ya no es vigente: se autorresuelve.
       if (!soloLectura) _fsPatch(FS_API + n._nombre, { estatus: fsVal('procesada') }, ['estatus']);
-      return;
     }
-
-    const dias = _diasDesde(n.ultimoAviso, hoy);
-    if (dias >= DIAS_REINTENTO) {
-      if (!soloLectura) {
-        _fsPatch(FS_API + n._nombre, {
-          datos: fsMap(c.datos),
-          ultimoAviso: { timestampValue: new Date().toISOString() },
-        }, ['datos', 'ultimoAviso']);
-      }
-      resultado.push({ notifId: key, tipo: 'corte', datos: c.datos });
-    }
+    // Sigue vigente y sigue pendiente: no se toca, no se reenvía.
   });
 
   Object.keys(candidatos).forEach(function (key) {
-    if (vistos[key]) return;
+    if (vistos[key]) return;   // ya hay un aviso pendiente para esta clave
     const c = candidatos[key];
     if (_diasDesde(c.fechaDisparo, hoy) < 1) return;
 
@@ -168,7 +157,6 @@ function _procesarCandidatosCorte(candidatos, pendientes, hoy, soloLectura) {
         fields: {
           tipo: fsVal('corte'), estatus: fsVal('pendiente'),
           datos: fsMap(c.datos), creado: { timestampValue: new Date().toISOString() },
-          ultimoAviso: { timestampValue: new Date().toISOString() },
         },
       });
     }
@@ -569,7 +557,6 @@ function pruebaFirestoreRecordatorios() {
     {
       id: 'prueba-corte', tipo: 'corte',
       datos: { subtipo: 'sinConfirmar', tarjetaId: 'prueba', nombre: 'PRUEBA — borrar', mes: '2026-01', fechaCorte: '2026-01-01', monto: 1.23 },
-      extra: { ultimoAviso: { timestampValue: ahora } },
     },
     {
       id: 'prueba-gastoFijo', tipo: 'gastoFijo',
@@ -586,7 +573,6 @@ function pruebaFirestoreRecordatorios() {
       tipo: fsVal(p.tipo), estatus: fsVal('pendiente'),
       datos: fsMap(p.datos), creado: { timestampValue: ahora },
     };
-    Object.keys(p.extra || {}).forEach(function (k) { fields[k] = p.extra[k]; });
 
     fsFetch(FS_NOTIS + '/' + p.id, 'patch', { fields: fields });
     console.log(p.tipo + ' — creado: ' + p.id);

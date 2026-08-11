@@ -18,7 +18,8 @@ Tres recordatorios nuevos, todos proactivos (deben llegar sin que el usuario
 abra la app):
 
 1. **Corte de tarjeta** — mientras el monto a pagar siga sin confirmarse en el
-   Impacto Mensual del mes en curso, recordarlo cada 2 días a partir del corte.
+   Impacto Mensual del mes en curso, recordarlo a partir del corte; mientras el
+   aviso siga pendiente (no se haya descartado) no se repite.
 2. **Gasto fijo por confirmar** — el día en que se detecta un gasto fijo
    pendiente de confirmar ese mes.
 3. **Cierre de mes** — el último día de cada mes, para recordar ajustar los
@@ -32,7 +33,8 @@ Decisiones ya tomadas:
   pts[1] || null, query))` en `js/app.js:52`, y `renderView(container, tab)` en
   `js/modules/msi.js:76,212` ya sabe abrir directo en `tab === 'gastos'`).
 - El recordatorio de corte se apoya en el snapshot `impacto/{YYYY-MM}` (no en un
-  cálculo de fecha independiente) y tiene lógica de reintento cada 2 días.
+  cálculo de fecha independiente) y no se reenvía por tiempo — mientras el
+  último aviso siga `pendiente` (el usuario no lo descartó), no se repite.
 - Toda la lógica nueva va en un **archivo `.gs` separado** dentro del mismo
   proyecto de Apps Script, para no tocar el pipeline de compras que ya está en
   producción.
@@ -52,7 +54,6 @@ const FS_GASTOSFIJOS = FS_DOCS + '/users/' + UID + '/gastosFijos';
 const FS_GASTOS      = FS_DOCS + '/users/' + UID + '/gastos';
 const FS_TARJETAS    = FS_DOCS + '/users/' + UID + '/tarjetas';
 const FS_FESTIVOS    = FS_DOCS + '/users/' + UID + '/festivosMX';
-const DIAS_REINTENTO = 2;   // cadencia de reintento de corte/impacto faltante
 ```
 
 ### Trigger diario único: `procesarRecordatorios()`
@@ -105,23 +106,24 @@ Todos redirigen a `#/impacto/{mes}` (`js/modules/impacto.js` navega por mes vía
 atrasado, no el actual). Si `mes` no es el mes calendario actual, el texto del
 push lo aclara ("de {mes}") para no confundirlo con el mes en curso.
 
-**Cadencia de reintento (los tres subtipos, mismo mecanismo):** en vez de
+**Sin reintento por tiempo (los tres subtipos, mismo mecanismo):** en vez de
 crear un documento nuevo cada vez (que llenaría la bandeja de duplicados), se
-mantiene **un solo doc `pendiente`** por clave natural (`subtipo + mes` para
-`faltaImpacto`/`sinCerrar`; `subtipo + tarjetaId + mes` para `sinConfirmar`),
-con un campo `ultimoAviso` (timestamp):
-- No existe doc pendiente para esa clave → si ya pasó al menos 1 día desde la
-  fecha que dispara la condición (`fechaCorte` para `sinConfirmar`; el día 1
-  del mes para `faltaImpacto`; el día 1 del mes siguiente al que quedó
-  abierto, para `sinCerrar`), se crea con `ultimoAviso = ahora` y entra a la
-  lista de la corrida para el push.
-- Ya existe un doc pendiente → si `ahora - ultimoAviso >= DIAS_REINTENTO` días
-  y la condición sigue vigente (sigue sin `confirmado` / el impacto sigue sin
-  existir / el mes sigue `activo`), se actualiza `ultimoAviso = ahora` (mismo
-  doc, no uno nuevo) y entra a la lista del push. Si ya se cumplió la
-  condición (el usuario confirmó, el impacto ya se creó, o el mes ya se
-  cerró), el doc pasa solo a `estatus: 'procesada'` — se autorresuelve sin que
-  el usuario tenga que tocarlo.
+mantiene **un solo doc** por clave natural (`subtipo + mes` para
+`faltaImpacto`/`sinCerrar`; `subtipo + tarjetaId + mes` para `sinConfirmar`):
+- Ya existe un doc `pendiente` para esa clave → no se toca. Mientras el
+  usuario no lo descarte (o lo abra y quede `procesada`), no se manda otro
+  aviso aunque pasen varias corridas — evita repetir el mismo recordatorio
+  todos los días.
+- No existe doc `pendiente` para esa clave (nunca se creó, o el último se
+  descartó/procesó sin que la condición de fondo se resolviera) → si ya pasó
+  al menos 1 día desde la fecha que dispara la condición (`fechaCorte` para
+  `sinConfirmar`; el día 1 del mes para `faltaImpacto`; el día 1 del mes
+  siguiente al que quedó abierto, para `sinCerrar`), se crea uno nuevo y
+  entra a la lista del push.
+- Doc `pendiente` cuya condición ya no es vigente (el usuario confirmó, el
+  impacto ya se creó, o el mes ya se cerró) → pasa solo a
+  `estatus: 'procesada'` — se autorresuelve sin que el usuario tenga que
+  tocarlo.
 
 ### 2. Gasto fijo por confirmar — `revisarGastosFijos()`
 
@@ -193,7 +195,7 @@ Script antes de crear el trigger de producción.
   `docs/NOTIFICACIONES-PUSH.md` — falta cruzar la referencia ahí una vez
   implementado.
 - `docs/DOCUMENTACION.md`: ampliar el modelo de `notificaciones` (los 4 tipos y
-  la forma de `datos`/`ultimoAviso` por tipo) cuando se implemente.
+  la forma de `datos` por tipo) cuando se implemente.
 
 ## Verificación (al implementar)
 - Apps Script no tiene test runner: correr desde el editor, en este orden,

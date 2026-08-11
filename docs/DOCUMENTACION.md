@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T9`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T10`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -336,14 +336,15 @@ crean `procesarCompras()` y `procesarRecordatorios()` (ver `docs/app-script.gs`,
 | `estatus` | string | `pendiente`, `procesada` o `descartada` |
 | `datos` | object | El detalle del aviso — forma distinta por `tipo` (ver abajo) |
 | `creado` | string | Timestamp ISO del momento en que se creó el documento |
-| `ultimoAviso` | string? | Solo en `tipo: corte` — timestamp ISO del último push mandado por esta clave; controla la cadencia de reintento de 2 días (`DIAS_REINTENTO`) |
 
 El documento de un recordatorio de corte usa como **id** su propia clave natural en vez de un id
 autogenerado (`faltaImpacto-{mes}`, `sinConfirmar-{tarjetaId}-{mes}`, `sinCerrar-{mes}`) — así
-la corrida diaria hace *upsert* sobre el mismo doc en vez de acumular uno nuevo por aviso. Los de
-`gastoFijo` y `rendimiento` no llevan reintento (eventos puntuales), pero también usan clave
-natural como id para no duplicarse entre corridas: `gastoFijo-{gastaFijoId}-{mes}` y
-`rendimiento-{mes}`.
+la corrida diaria hace *upsert* sobre el mismo doc en vez de acumular uno nuevo por aviso. Mientras
+ese doc siga `pendiente`, la corrida diaria no manda otro aviso aunque la condición siga vigente
+(no hay reintento por tiempo); en cuanto el usuario lo descarta o se marca `procesada` sin que la
+condición de fondo se haya resuelto, la siguiente corrida vuelve a crear uno. Los de `gastoFijo` y
+`rendimiento` no se repiten nunca (eventos puntuales), pero también usan clave natural como id para
+no duplicarse entre corridas: `gastoFijo-{gastaFijoId}-{mes}` y `rendimiento-{mes}`.
 
 **Estructura de `datos` en `tipo: compra`** — son los mismos nombres de campo que viajaban en el
 query string del [pre-registro por URL](#pre-registro-de-compra-vía-url), a propósito: las dos

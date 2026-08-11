@@ -51,7 +51,7 @@ users/{uid}/notificaciones/{id}
   creado:    timestamp
 ```
 
-(Modelo completo de los 4 tipos, con el detalle de `datos` y `ultimoAviso` por tipo, en
+(Modelo completo de los 4 tipos, con el detalle de `datos` por tipo, en
 `docs/DOCUMENTACION.md` → [`notificaciones/{id}`](DOCUMENTACION.md#notificacionesid).)
 
 `datos` usa **los mismos nombres de campo que hoy viajan en el query string del deep-link**; el
