@@ -45,7 +45,7 @@ el usuario ve y procesa las pendientes.
 
 ```
 users/{uid}/notificaciones/{id}
-  tipo:      'compra'                      // ver docs/RECORDATORIOS-PUSH.md para 'corte' | 'gastoFijo' | 'rendimiento'
+  tipo:      'compra'                      // ver docs/RECORDATORIOS-PUSH.md para 'corte' | 'gastoFijo' | 'rendimiento' | 'pago'
   estatus:   'pendiente' | 'procesada' | 'descartada'
   datos:     { desc, total, fecha, hora, tarjeta, meses?, mensualidad?, msgId, asunto, match }
   creado:    timestamp
@@ -202,7 +202,8 @@ alfa). Los importes se formatean con `pesos()` — llegan como `number`, y `'$' 
 
 - ~~Reglas de recordatorios de vencimientos/eventos (tipo `recordatorio`)~~ — implementado en
   `docs/RECORDATORIOS-PUSH.md` (`docs/app-script-recordatorios.gs`, tipos `corte`/`gastoFijo`/
-  `rendimiento`, colección `notificaciones` compartida con el tipo `compra` de este documento).
+  `rendimiento`/`pago`, colección `notificaciones` compartida con el tipo `compra` de este
+  documento).
 
 ## Nota sobre `APK-ANDROID.md`
 

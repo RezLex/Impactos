@@ -323,28 +323,32 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 
 ### `notificaciones/{id}`
 
-Bandeja de avisos accionables: compras que el Apps Script detectó en el correo, más los tres
+Bandeja de avisos accionables: compras que el Apps Script detectó en el correo, más los cuatro
 recordatorios que agrega `docs/app-script-recordatorios.gs` (corte de tarjeta, gasto fijo por
-confirmar, cierre de mes). Es la **única colección que escribe algo distinto de la app**: la
-crean `procesarCompras()` y `procesarRecordatorios()` (ver `docs/app-script.gs`,
-`docs/app-script-recordatorios.gs`, `docs/NOTIFICACIONES-PUSH.md` y
+confirmar, cierre de mes, pago pendiente por quincena). Es la **única colección que escribe algo
+distinto de la app**: la crean `procesarCompras()` y `procesarRecordatorios()` (ver
+`docs/app-script.gs`, `docs/app-script-recordatorios.gs`, `docs/NOTIFICACIONES-PUSH.md` y
 `docs/RECORDATORIOS-PUSH.md`); la app solo la lee y le cambia el `estatus`.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `tipo` | string | `compra` \| `corte` \| `gastoFijo` \| `rendimiento` |
+| `tipo` | string | `compra` \| `corte` \| `gastoFijo` \| `rendimiento` \| `pago` |
 | `estatus` | string | `pendiente`, `procesada` o `descartada` |
 | `datos` | object | El detalle del aviso — forma distinta por `tipo` (ver abajo) |
 | `creado` | string | Timestamp ISO del momento en que se creó el documento |
 
-El documento de un recordatorio de corte usa como **id** su propia clave natural en vez de un id
-autogenerado (`faltaImpacto-{mes}`, `sinConfirmar-{tarjetaId}-{mes}`, `sinCerrar-{mes}`) — así
-la corrida diaria hace *upsert* sobre el mismo doc en vez de acumular uno nuevo por aviso. Mientras
-ese doc siga `pendiente`, la corrida diaria no manda otro aviso aunque la condición siga vigente
-(no hay reintento por tiempo); en cuanto el usuario lo descarta o se marca `procesada` sin que la
-condición de fondo se haya resuelto, la siguiente corrida vuelve a crear uno. Los de `gastoFijo` y
-`rendimiento` no se repiten nunca (eventos puntuales), pero también usan clave natural como id para
-no duplicarse entre corridas: `gastoFijo-{gastaFijoId}-{mes}` y `rendimiento-{mes}`.
+Todos los recordatorios (no las compras) usan como **id** su propia clave natural en vez de un id
+autogenerado — así la corrida diaria hace *upsert* sobre el mismo doc en vez de acumular uno nuevo
+por aviso: `faltaImpacto-{mes}`, `sinConfirmar-{tarjetaId}-{mes}`, `sinCerrar-{mes}` (`corte`),
+`gastoFijo-{gastaFijoId}-{mes}`, `rendimiento-{mes}` y `pago-{mes}-{fechaNomina}`. La cadencia de
+reenvío **no es igual para todos**:
+- `corte` y `pago` comparten el mismo mecanismo (`_procesarCandidatos` en
+  `docs/app-script-recordatorios.gs`): **sin reintento por tiempo** — mientras el doc siga
+  `pendiente`, la corrida diaria no manda otro aviso aunque la condición siga vigente; en cuanto
+  el usuario lo descarta o se marca `procesada` sin que la condición de fondo se haya resuelto
+  (sigue sin `confirmado`, o sigue habiendo alguna tarjeta sin `pagado` en el grupo), la siguiente
+  corrida vuelve a crear uno.
+- `gastoFijo` y `rendimiento` no se repiten nunca (eventos puntuales).
 
 **Estructura de `datos` en `tipo: compra`** — son los mismos nombres de campo que viajaban en el
 query string del [pre-registro por URL](#pre-registro-de-compra-vía-url), a propósito: las dos
@@ -377,6 +381,14 @@ entradas comparten la traducción de `js/utils/prefill-compra.js`.
 **Estructura de `datos` en `tipo: gastoFijo`:** `{ gastaFijoId, nombre, importe, fechaPago }`.
 
 **Estructura de `datos` en `tipo: rendimiento`:** `{ mes }`.
+
+**Estructura de `datos` en `tipo: pago`:** `{ mes, fechaNomina, quincena, cantidad, resumen }` — una
+por cada valor distinto de `fechaNomina` entre las tarjetas del **único impacto activo** que
+siguen sin `pagado`. `fechaNomina` es el mismo campo que ya guarda cada `impacto.tarjetas[]`
+(la quincena — día 15 o último día del mes, ajustada a hábil — anterior o igual a la fecha límite
+de pago; ver [`impacto/{YYYY-MM}`](#impactoyyyy-mm)); `quincena` (`Q1`/`Q2`) es solo la etiqueta para el
+texto, según el día de `fechaNomina` sea `<= 15` o no. `resumen` son los nombres de hasta 2
+tarjetas + "y N más", mismo criterio que `textoResumen` en `app-script.gs`.
 
 El `estatus` no lo revisa ningún proceso en segundo plano: lo escribe la app al registrar o descartar. El trigger diario del script sí borra las `procesada`/`descartada` con más de 30 días.
 

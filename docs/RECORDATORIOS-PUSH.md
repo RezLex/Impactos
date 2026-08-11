@@ -1,8 +1,8 @@
 # Recordatorios push — plan
 
 > Extiende el sistema de notificaciones (`docs/NOTIFICACIONES-PUSH.md`) con los
-> tipos `corte`/`gastoFijo`/`rendimiento` que ese diseño dejó pendientes. Este
-> archivo es el plan acordado.
+> tipos `corte`/`gastoFijo`/`rendimiento`/`pago` que ese diseño dejó pendientes.
+> Este archivo es el plan acordado.
 >
 > **Estado:** implementado del lado del cliente (`js/modules/notificaciones.js`)
 > y escrito el Apps Script nuevo (`docs/app-script-recordatorios.gs`), **sin
@@ -14,7 +14,7 @@
 
 ## Alcance
 
-Tres recordatorios nuevos, todos proactivos (deben llegar sin que el usuario
+Cuatro recordatorios nuevos, todos proactivos (deben llegar sin que el usuario
 abra la app):
 
 1. **Corte de tarjeta** — mientras el monto a pagar siga sin confirmarse en el
@@ -24,9 +24,13 @@ abra la app):
    pendiente de confirmar ese mes.
 3. **Cierre de mes** — el último día de cada mes, para recordar ajustar los
    rendimientos de las cuentas.
+4. **Pago pendiente por quincena** — a partir de la fecha de nómina anterior
+   al pago de cada tarjeta (Q1 o Q2), cuántas tarjetas del Impacto activo
+   siguen sin pagarse; misma regla que el corte: mientras el aviso siga
+   pendiente (no se haya descartado) no se repite.
 
 Decisiones ya tomadas:
-- El switch único de push en Ajustes cubre los tres tipos nuevos (sin
+- El switch único de push en Ajustes cubre los cuatro tipos nuevos (sin
   sub-toggles); `js/modules/ajustes.js` no se toca.
 - El recordatorio de gasto fijo redirige a `#/compras/gastos` (tab "Gastos" del
   módulo Compras y Gastos — `register('/compras', (p, pts, query) => load('msi',
@@ -59,7 +63,7 @@ const FS_FESTIVOS    = FS_DOCS + '/users/' + UID + '/festivosMX';
 ### Trigger diario único: `procesarRecordatorios()`
 Un solo trigger de tiempo (independiente de los dos que ya tiene
 `app-script.gs`, para que un bug acá no afecte la detección de compras), que
-llama a las tres rutinas de abajo y al final manda **un solo push** agrupando lo
+llama a las cuatro rutinas de abajo y al final manda **un solo push** agrupando lo
 que se haya creado/reenviado en la corrida (mismo patrón "uno si es una, resumen
 si son varias" que ya usa `enviarPush`/`textoResumen` en `app-script.gs`, pero
 implementado en este archivo con su propio `enviarPushRecordatorios(items)` ya
@@ -150,6 +154,31 @@ Si hoy es el último día del mes, crea **una sola** `notificaciones` `{ tipo:
 'rendimiento', estatus: 'pendiente', datos: { mes } }` (dedupe por `mes`, sin
 reintento — es un solo aviso al mes).
 
+### 4. Pago pendiente por quincena — `revisarPagosPendientes()`
+
+A diferencia de las tres anteriores, esta **sí depende de que haya mes activo
+único** (`docs/IMPACTO-MES-ACTIVO.md`): toma directo el (único) `impacto` con
+`estado === 'activo'` — sin él, no hay nada que revisar.
+
+Cada tarjeta de ese impacto ya trae `fechaNomina` en el snapshot (el mismo
+campo que calcula `js/modules/impacto.js` para mostrar el badge `1Q`/`2Q` en
+la columna "Pago" — la quincena, día 15 o último día del mes ajustado a
+hábil, anterior o igual a la fecha límite de pago real de la tarjeta). Se
+agrupan las tarjetas con `pagado !== true` por su `fechaNomina` exacta (no por
+"la quincena de este mes en abstracto" — una tarjeta cuyo pago cae a
+principios de mes puede mapear a la nómina de fin del mes anterior); cada
+grupo es un candidato con `datos: { mes, fechaNomina, quincena, cantidad,
+resumen }` (`quincena` es solo la etiqueta según el día de `fechaNomina`;
+`resumen` son hasta 2 nombres + "y N más", mismo criterio que `textoResumen`
+en `app-script.gs`) y `fechaDisparo = fechaNomina`, con id
+`pago-{mes}-{fechaNomina}`. Redirige a `#/impacto/{mes}`.
+
+Se procesa con el **mismo `_procesarCandidatos` que `corte`** (misma regla de
+"sin reintento por tiempo" — ver arriba): mientras el grupo tenga un aviso
+`pendiente`, no se reenvía aunque pasen varias corridas; se autorresuelve a
+`procesada` en cuanto ya no queda ninguna tarjeta sin pagar en ese grupo
+(todas con `pagado: true`, el Impacto se cerró, o ya no es el mes activo).
+
 ### Textos del push
 - Corte, `faltaImpacto`: `Genera el Impacto de {mes}` / `toca para generarlo`.
 - Corte, `sinConfirmar`: `Cortó tu tarjeta {nombre}` / `{monto} por confirmar —
@@ -158,14 +187,18 @@ reintento — es un solo aviso al mes).
   cerrarlo`.
 - Gasto fijo: `{nombre} — gasto fijo por confirmar` / `{importe}`.
 - Rendimiento: `Fin de mes` / `revisa los rendimientos de tus cuentas`.
+- Pago: `{cantidad} tarjeta(s) por pagar (Q1|Q2)` / `{resumen} — toca para
+  revisarlas`.
 - Igual que hoy: **un solo push por corrida** (detalle si es uno, resumen si
   son varios), `data-only`, `tag` = id del doc.
 
 ### Funciones de prueba
 Mismo patrón que ya usa `app-script.gs` (`pruebaFirestore`, `pruebaPushUna/
-Varias`, `diagnostico`): agregar `pruebaRecordatorios()` (corre las tres
-rutinas en modo lectura/log, sin escribir) para validar en el editor de Apps
-Script antes de crear el trigger de producción.
+Varias`, `diagnostico`): `pruebaRecordatorios()` corre las cuatro rutinas en
+modo lectura/log, sin escribir, para validar en el editor de Apps Script antes
+de crear el trigger de producción. `pruebaRevisarPagosPendientes()` corre solo
+la nueva; `pruebaPushPagoPendiente()` manda un push de prueba con datos de
+mentira.
 
 ## Cambios en el cliente
 
@@ -174,15 +207,16 @@ Script antes de crear el trigger de producción.
   y traer los 4 tipos — esto también hace que `refrescarBadge`/`pintarBadge`
   (líneas 199-226) cuenten los recordatorios sin tocarlos.
 - `_fila` (línea 143-169): agregar una plantilla genérica para
-  `corte`/`gastoFijo`/`rendimiento` (ícono + texto corto), separada de la
-  plantilla de compra (monto, comercio, MSI, píldora de tarjeta).
+  `corte`/`gastoFijo`/`rendimiento`/`pago` (ícono + texto corto), separada de
+  la plantilla de compra (monto, comercio, MSI, píldora de tarjeta).
 - `_abrir` (línea 177-197): para los tipos nuevos, en vez de `openQuickAdd`,
-  navegar (`window.location.hash`) a `#/impacto` (corte), `#/compras/gastos`
-  (gastoFijo) o `#/rendimientos` (rendimiento), y marcar `estatus: 'procesada'`
-  con el mismo `update('notificaciones', n.id, ...)` que ya usa el flujo de
-  compra. Nota: para `corte`, el auto-resuelto que hace Apps Script (ver
-  arriba) es el mecanismo principal; el tap solo adelanta el `procesada` si el
-  usuario entra manualmente antes del próximo trigger.
+  navegar (`window.location.hash`) a `#/impacto` (corte y pago, con el `mes`
+  del doc si lo trae), `#/compras/gastos` (gastoFijo) o `#/rendimientos`
+  (rendimiento), y marcar `estatus: 'procesada'` con el mismo
+  `update('notificaciones', n.id, ...)` que ya usa el flujo de compra. Nota:
+  para `corte` y `pago`, el auto-resuelto que hace Apps Script (ver arriba) es
+  el mecanismo principal; el tap solo adelanta el `procesada` si el usuario
+  entra manualmente antes del próximo trigger.
 - Sin cambios en `_avisoPush`, en el botón `X` de descartar, ni en el resto.
 
 ### Sin cambios
@@ -194,7 +228,7 @@ Script antes de crear el trigger de producción.
 - Este archivo reemplaza la sección "Pendiente de definir" de
   `docs/NOTIFICACIONES-PUSH.md` — falta cruzar la referencia ahí una vez
   implementado.
-- `docs/DOCUMENTACION.md`: ampliar el modelo de `notificaciones` (los 4 tipos y
+- `docs/DOCUMENTACION.md`: ampliar el modelo de `notificaciones` (los 5 tipos y
   la forma de `datos` por tipo) cuando se implemente.
 
 ## Verificación (al implementar)
@@ -203,17 +237,19 @@ Script antes de crear el trigger de producción.
   1. `diagnosticoColecciones()` — cuenta documentos reales por colección, sin
      escribir nada; confirma que el `UID` y los scopes leen bien.
   2. `pruebaFirestoreRecordatorios()` — round-trip de escritura/lectura/
-     borrado contra Firestore para los tres tipos nuevos (`corte`,
-     `gastoFijo`, `rendimiento`), sin dejar residuo.
+     borrado contra Firestore para los cuatro tipos nuevos (`corte`,
+     `gastoFijo`, `rendimiento`, `pago`), sin dejar residuo.
   3. `pruebaRevisarCortes()`, `pruebaRevisarGastosFijos()`,
-     `pruebaRevisarCierreMes()` — cada rutina en modo lectura contra datos
-     reales (sin escribir ni mandar push); o `pruebaRecordatorios()` para
-     correr las tres juntas y ver además el texto del push que se mandaría.
+     `pruebaRevisarCierreMes()`, `pruebaRevisarPagosPendientes()` — cada
+     rutina en modo lectura contra datos reales (sin escribir ni mandar push);
+     o `pruebaRecordatorios()` para correr las cuatro juntas y ver además el
+     texto del push que se mandaría.
   4. `pruebaPushCorteFaltaImpacto()` / `pruebaPushCorteSinConfirmar()` /
      `pruebaPushCorteSinCerrar()` / `pruebaPushGastoFijo()` /
-     `pruebaPushRendimiento()` / `pruebaPushRecordatoriosVarios()` — mandan
-     push real con datos de mentira a los dispositivos ya registrados, uno
-     por subtipo y uno de resumen mezclado; no tocan Firestore.
+     `pruebaPushRendimiento()` / `pruebaPushPagoPendiente()` /
+     `pruebaPushRecordatoriosVarios()` — mandan push real con datos de
+     mentira a los dispositivos ya registrados, uno por subtipo y uno de
+     resumen mezclado; no tocan Firestore.
 - Cliente: `node --check` sobre `js/modules/notificaciones.js`. Por instrucción
   de `docs/CLAUDE.md`, no se levanta Playwright salvo pedido explícito — queda
   pendiente de confirmar visualmente en el teléfono real antes de un deploy

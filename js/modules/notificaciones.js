@@ -6,9 +6,10 @@ import { navigate } from '../router.js';
 
 // Compras que el Apps Script detectó en el correo y todavía no se registran
 // (tipo `compra`), más los recordatorios que agrega — corte de tarjeta,
-// gasto fijo por confirmar, cierre de mes (tipos `corte`/`gastoFijo`/
-// `rendimiento`). El script escribe los documentos; aquí se revisan y se
-// procesan. Ver docs/NOTIFICACIONES-PUSH.md y docs/RECORDATORIOS-PUSH.md.
+// gasto fijo por confirmar, cierre de mes, pago pendiente por quincena
+// (tipos `corte`/`gastoFijo`/`rendimiento`/`pago`). El script escribe los
+// documentos; aquí se revisan y se procesan. Ver docs/NOTIFICACIONES-PUSH.md
+// y docs/RECORDATORIOS-PUSH.md.
 
 // El comercio y el asunto vienen de un correo externo: se interpolan escapados.
 // Las comillas también, porque el asunto va además en un atributo `title`.
@@ -173,12 +174,13 @@ function _fila(n, tarjetas, instMap) {
     </div>`;
 }
 
-// ── Recordatorios (corte / gastoFijo / rendimiento) ─────────────────────────
+// ── Recordatorios (corte / gastoFijo / rendimiento / pago) ──────────────────
 
 const RECORDATORIO_ICONO = {
   corte: 'bi-credit-card-2-front',
   gastoFijo: 'bi-calendar-check',
   rendimiento: 'bi-graph-up-arrow',
+  pago: 'bi-cash-coin',
 };
 
 /** Título/cuerpo cortos para la fila — mismos textos acordados en docs/RECORDATORIOS-PUSH.md. */
@@ -192,6 +194,12 @@ function _textoRecordatorio(n) {
   }
   if (n.tipo === 'gastoFijo')   return { titulo: d.nombre, cuerpo: `Gasto fijo por confirmar — ${currency(d.importe)}` };
   if (n.tipo === 'rendimiento') return { titulo: 'Fin de mes', cuerpo: 'Revisa los rendimientos de tus cuentas' };
+  if (n.tipo === 'pago') {
+    return {
+      titulo: `${d.cantidad} tarjeta${d.cantidad === 1 ? '' : 's'} por pagar (${d.quincena})`,
+      cuerpo: d.resumen || '',
+    };
+  }
   return { titulo: 'Recordatorio', cuerpo: '' };
 }
 
@@ -222,9 +230,9 @@ async function _abrir(n, tarjetas, contadoItems, msiItems, container) {
     // El auto-resuelto de docs/RECORDATORIOS-PUSH.md (Apps Script) es el
     // mecanismo principal para cerrar estos recordatorios; el tap solo
     // adelanta el `procesada` si el usuario entra manualmente antes.
-    const ruta = n.tipo === 'corte'       ? (n.datos?.mes ? `/impacto/${n.datos.mes}` : '/impacto')
-               : n.tipo === 'gastoFijo'   ? '/compras/gastos'
-               : n.tipo === 'rendimiento' ? '/rendimientos'
+    const ruta = n.tipo === 'corte' || n.tipo === 'pago' ? (n.datos?.mes ? `/impacto/${n.datos.mes}` : '/impacto')
+               : n.tipo === 'gastoFijo'                  ? '/compras/gastos'
+               : n.tipo === 'rendimiento'                ? '/rendimientos'
                : '/notificaciones';
     await update('notificaciones', n.id, { estatus: 'procesada' });
     refrescarBadge();

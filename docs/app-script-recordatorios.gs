@@ -1,8 +1,9 @@
 /**
- * Recordatorios push — corte de tarjeta, gasto fijo por confirmar y cierre de
- * mes. Extiende el sistema de notificaciones (`docs/NOTIFICACIONES-PUSH.md`)
- * con `tipo: 'corte' | 'gastoFijo' | 'rendimiento'` en la misma colección
- * `notificaciones` que ya usa `app-script.gs` para `tipo: 'compra'`.
+ * Recordatorios push — corte de tarjeta, gasto fijo por confirmar, cierre de
+ * mes y pago pendiente por quincena. Extiende el sistema de notificaciones
+ * (`docs/NOTIFICACIONES-PUSH.md`) con `tipo: 'corte' | 'gastoFijo' |
+ * 'rendimiento' | 'pago'` en la misma colección `notificaciones` que ya usa
+ * `app-script.gs` para `tipo: 'compra'`.
  *
  * Archivo separado a propósito, dentro del mismo proyecto de Apps Script: los
  * archivos `.gs` de un proyecto comparten un solo scope global, así que este
@@ -14,13 +15,15 @@
  * Ver `docs/IMPACTO-MES-ACTIVO.md`: con mes activo único, `revisarCortes` ya
  * no puede toparse con más de un `impacto` en `estado: 'activo'` en el flujo
  * normal — pero se deja igual como respaldo defensivo (dato heredado, o un
- * mes que nadie visitó en mucho tiempo).
+ * mes que nadie visitó en mucho tiempo). `revisarPagosPendientes` sí asume el
+ * mes activo único: toma directo el (único) `impacto` `activo`.
  *
  * Trigger:
  *   procesarRecordatorios() — una vez al día, trigger de tiempo propio
  *   (independiente de los dos de `app-script.gs`, para que un bug acá no
- *   afecte la detección de compras). Corre las tres rutinas de abajo y manda
- *   UN solo push agrupando lo que se haya creado/reenviado en la corrida.
+ *   afecte la detección de compras). Corre las cuatro rutinas de abajo y
+ *   manda UN solo push agrupando lo que se haya creado/reenviado en la
+ *   corrida.
  *
  * Requiere: los mismos scopes y la misma propiedad de script `UID` que ya
  * pide `app-script.gs` — no se agrega ninguno nuevo.
@@ -49,6 +52,9 @@ function procesarRecordatorios() {
   try {
     creados = creados.concat(revisarCierreMes(mesActual, hoy));
   } catch (e) { console.log('CIERRE MES — ' + e.message); }
+  try {
+    creados = creados.concat(revisarPagosPendientes(hoy));
+  } catch (e) { console.log('PAGOS — ' + e.message); }
 
   // Mismo patrón que `procesarCompras`: el push va al final y en su propio
   // try — si falla, los documentos ya están en Firestore y se ven al abrir
@@ -129,10 +135,24 @@ function revisarCortes(mesActual, hoy, soloLectura) {
     return n.tipo === 'corte' && n.estatus === 'pendiente';
   });
 
-  return _procesarCandidatosCorte(candidatos, pendientes, hoy, soloLectura);
+  return _procesarCandidatos('corte', candidatos, pendientes, hoy, soloLectura);
 }
 
-function _procesarCandidatosCorte(candidatos, pendientes, hoy, soloLectura) {
+/**
+ * Compara `candidatos` (clave natural → `{ datos, fechaDisparo }`) contra los
+ * `notificaciones` `pendiente` de ese mismo `tipo` y aplica la misma regla
+ * para todos los tipos que la usan (hoy `corte` y `pago`): **sin reintento
+ * por tiempo**.
+ *   - Clave vigente con doc `pendiente` → no se toca. Mientras el usuario no
+ *     la descarte (o el tap la marque `procesada`), no se manda otro aviso
+ *     aunque pasen varias corridas.
+ *   - Clave vigente sin doc `pendiente` (nunca existió, o el último se
+ *     descartó/procesó) → si ya pasó al menos 1 día desde `fechaDisparo`, se
+ *     crea uno nuevo y entra al push.
+ *   - Doc pendiente cuya clave ya no es vigente → la condición se cumplió:
+ *     pasa a `estatus: 'procesada'`, sin que el usuario tenga que tocarlo.
+ */
+function _procesarCandidatos(tipo, candidatos, pendientes, hoy, soloLectura) {
   const resultado = [];
   const vistos = {};
 
@@ -155,12 +175,12 @@ function _procesarCandidatosCorte(candidatos, pendientes, hoy, soloLectura) {
     if (!soloLectura) {
       fsFetch(FS_NOTIS + '/' + key, 'patch', {
         fields: {
-          tipo: fsVal('corte'), estatus: fsVal('pendiente'),
+          tipo: fsVal(tipo), estatus: fsVal('pendiente'),
           datos: fsMap(c.datos), creado: { timestampValue: new Date().toISOString() },
         },
       });
     }
-    resultado.push({ notifId: key, tipo: 'corte', datos: c.datos });
+    resultado.push({ notifId: key, tipo: tipo, datos: c.datos });
   });
 
   return resultado;
@@ -315,6 +335,58 @@ function revisarCierreMes(mesActual, hoy, soloLectura) {
   return [{ notifId: notifId, tipo: 'rendimiento', datos: datos }];
 }
 
+// ---------- 4. Pago pendiente por quincena ----------
+
+/**
+ * A partir de la fecha de nómina anterior al pago de cada tarjeta
+ * (`fechaNomina` — ya calculada y guardada en el snapshot de `impacto` por
+ * `js/modules/impacto.js`, día 15 o último día del mes, ajustada a hábil),
+ * agrupa las tarjetas del **único impacto activo** que comparten esa fecha y
+ * siguen sin `pagado`. Q1/Q2 es solo una etiqueta para el texto (día del mes
+ * de `fechaNomina` <= 15 o no) — la agrupación real es por la fecha exacta,
+ * no por "la quincena de este mes", porque una tarjeta cuya fecha de pago cae
+ * a principios de mes puede mapear a la nómina de fin del mes anterior.
+ *
+ * Misma regla de "sin reintento por tiempo" que `corte` (`_procesarCandidatos`):
+ * mientras el grupo siga con un aviso `pendiente`, no se reenvía aunque pasen
+ * varias corridas; si el usuario lo descarta y todavía queda alguna tarjeta
+ * sin pagar en ese grupo, la siguiente corrida lo vuelve a crear.
+ */
+function revisarPagosPendientes(hoy, soloLectura) {
+  const impactos = listarColeccion(FS_IMPACTO);
+  const activo = impactos.filter(function (d) { return d.estado === 'activo'; })
+    .sort(function (a, b) { return a._id < b._id ? -1 : 1; })[0];
+  if (!activo) return [];
+
+  const grupos = {};   // fechaNomina -> [nombre, nombre, ...]
+  (activo.tarjetas || []).forEach(function (t) {
+    if (!t.fechaNomina || t.pagado === true) return;
+    (grupos[t.fechaNomina] || (grupos[t.fechaNomina] = [])).push(t.nombre);
+  });
+
+  const candidatos = {};
+  Object.keys(grupos).forEach(function (fechaNomina) {
+    const nombres  = grupos[fechaNomina];
+    const quincena = Number(fechaNomina.slice(8, 10)) <= 15 ? 'Q1' : 'Q2';
+    const resto    = nombres.length - 2;
+    candidatos['pago-' + activo._id + '-' + fechaNomina] = {
+      datos: {
+        mes: activo._id, fechaNomina: fechaNomina, quincena: quincena,
+        cantidad: nombres.length,
+        // Mismo criterio que `textoResumen` en app-script.gs: dos nombres y "y N más".
+        resumen: nombres.slice(0, 2).join(', ') + (resto > 0 ? ' y ' + resto + ' más' : ''),
+      },
+      fechaDisparo: fechaNomina,
+    };
+  });
+
+  const pendientes = listarNotificaciones().filter(function (n) {
+    return n.tipo === 'pago' && n.estatus === 'pendiente';
+  });
+
+  return _procesarCandidatos('pago', candidatos, pendientes, hoy, soloLectura);
+}
+
 // ---------- Web Push (FCM) ----------
 
 /**
@@ -346,6 +418,13 @@ function _textoRecordatorioUno(item, mesActual) {
 
   if (item.tipo === 'rendimiento') {
     return { titulo: 'Fin de mes', cuerpo: 'revisa los rendimientos de tus cuentas' };
+  }
+
+  if (item.tipo === 'pago') {
+    return {
+      titulo: d.cantidad + (d.cantidad === 1 ? ' tarjeta' : ' tarjetas') + ' por pagar (' + d.quincena + ')',
+      cuerpo: d.resumen + ' — toca para revisarlas',
+    };
   }
 
   return { titulo: 'Recordatorio', cuerpo: 'toca para revisarlo' };
@@ -485,7 +564,8 @@ function _nextMonthStr(yyyymm) {
 //   1. Consulta a las colecciones reales (`diagnosticoColecciones`).
 //   2. Procesamiento de cada rutina contra datos reales, en modo lectura —
 //      no escriben ni mandan push (`pruebaRevisarCortes`/`GastosFijos`/
-//      `CierreMes`, y `pruebaRecordatorios` que corre las tres juntas).
+//      `CierreMes`/`PagosPendientes`, y `pruebaRecordatorios` que corre las
+//      cuatro juntas).
 //   3. Envío de push — ida y vuelta contra Firestore (`pruebaFirestoreRecordatorios`)
 //      y envío real a los dispositivos registrados con datos de mentira, uno
 //      por subtipo (`pruebaPush*`).
@@ -498,6 +578,8 @@ function diagnosticoColecciones() {
   console.log('festivosMX: '  + listarColeccion(FS_FESTIVOS).length    + ' doc(s)');
   console.log('notificaciones pendientes (corte): ' +
     listarNotificaciones().filter(function (n) { return n.tipo === 'corte' && n.estatus === 'pendiente'; }).length);
+  console.log('notificaciones pendientes (pago): ' +
+    listarNotificaciones().filter(function (n) { return n.tipo === 'pago' && n.estatus === 'pendiente'; }).length);
 }
 
 /** `revisarCortes` en modo lectura contra datos reales — no escribe ni manda push. */
@@ -527,16 +609,27 @@ function pruebaRevisarCierreMes() {
   return items;
 }
 
+/** `revisarPagosPendientes` en modo lectura contra datos reales — no escribe ni manda push. */
+function pruebaRevisarPagosPendientes() {
+  const hoy = fmt(new Date(), 'yyyy-MM-dd');
+  const items = revisarPagosPendientes(hoy, true);
+  console.log('Pagos pendientes (' + items.length + '):');
+  items.forEach(function (it) { console.log('  ' + JSON.stringify(it)); });
+  return items;
+}
+
 /**
- * Corre las tres rutinas en modo lectura/log, sin escribir nada en Firestore
- * ni mandar push. Correrlo desde el editor antes de activar el trigger.
+ * Corre las cuatro rutinas en modo lectura/log, sin escribir nada en
+ * Firestore ni mandar push. Correrlo desde el editor antes de activar el
+ * trigger.
  */
 function pruebaRecordatorios() {
   const hoy       = fmt(new Date(), 'yyyy-MM-dd');
   const mesActual = hoy.slice(0, 7);
   console.log('Mes actual: ' + mesActual + ' | Hoy: ' + hoy);
 
-  const todos = pruebaRevisarCortes().concat(pruebaRevisarGastosFijos(), pruebaRevisarCierreMes());
+  const todos = pruebaRevisarCortes().concat(
+    pruebaRevisarGastosFijos(), pruebaRevisarCierreMes(), pruebaRevisarPagosPendientes());
   if (!todos.length) { console.log('Push que se mandaría → ninguno'); return; }
 
   const msg = todos.length === 1 ? _textoRecordatorioUno(todos[0], mesActual) : _textoRecordatorioVarios(todos);
@@ -545,9 +638,9 @@ function pruebaRecordatorios() {
 
 /**
  * Escribe un doc de mentira de cada tipo nuevo (`corte`, `gastoFijo`,
- * `rendimiento`) y los borra — valida de una sola vez los scopes, el `UID` y
- * el formato de valores tipados para las tres formas de `datos`, sin
- * ensuciar la colección. Mismo patrón que `pruebaFirestore` en
+ * `rendimiento`, `pago`) y los borra — valida de una sola vez los scopes, el
+ * `UID` y el formato de valores tipados para las cuatro formas de `datos`,
+ * sin ensuciar la colección. Mismo patrón que `pruebaFirestore` en
  * `app-script.gs`, extendido a los tipos nuevos. Correrlo antes de activar
  * el trigger.
  */
@@ -565,6 +658,10 @@ function pruebaFirestoreRecordatorios() {
     {
       id: 'prueba-rendimiento', tipo: 'rendimiento',
       datos: { mes: '2026-01' },
+    },
+    {
+      id: 'prueba-pago', tipo: 'pago',
+      datos: { mes: '2026-01', fechaNomina: '2026-01-15', quincena: 'Q1', cantidad: 1, resumen: 'PRUEBA — borrar' },
     },
   ];
 
@@ -592,6 +689,7 @@ const PRUEBA_RECORDATORIOS = [
   { notifId: 'prueba-corte-sincerrar', tipo: 'corte',       datos: { subtipo: 'sinCerrar', mes: '2026-07' } },
   { notifId: 'prueba-gastofijo',       tipo: 'gastoFijo',   datos: { gastaFijoId: 'prueba', nombre: 'Netflix', importe: 219, fechaPago: '2026-08-10' } },
   { notifId: 'prueba-rendimiento',     tipo: 'rendimiento', datos: { mes: '2026-08' } },
+  { notifId: 'prueba-pago',            tipo: 'pago',        datos: { mes: '2026-08', fechaNomina: '2026-08-14', quincena: 'Q1', cantidad: 3, resumen: 'Santander, BBVA y 1 más' } },
 ];
 
 /** Push de un recordatorio `faltaImpacto`: el formato con detalle. No toca la colección. */
@@ -608,6 +706,9 @@ function pruebaPushGastoFijo() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.s
 
 /** Push de cierre de mes: el formato con detalle. No toca la colección. */
 function pruebaPushRendimiento() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(4, 5)); }
+
+/** Push de pago pendiente por quincena: el formato con detalle. No toca la colección. */
+function pruebaPushPagoPendiente() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS.slice(5, 6)); }
 
 /** Push de VARIOS recordatorios mezclados: el formato de resumen. No toca la colección. */
 function pruebaPushRecordatoriosVarios() { _probarPushRecordatorios(PRUEBA_RECORDATORIOS); }
