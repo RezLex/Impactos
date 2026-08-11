@@ -171,7 +171,12 @@ grupo es un candidato con `datos: { mes, fechaNomina, quincena, cantidad,
 resumen }` (`quincena` es solo la etiqueta según el día de `fechaNomina`;
 `resumen` son hasta 2 nombres + "y N más", mismo criterio que `textoResumen`
 en `app-script.gs`) y `fechaDisparo = fechaNomina`, con id
-`pago-{mes}-{fechaNomina}`. Redirige a `#/impacto/{mes}`.
+`pago-{mes}-{fechaNomina}`. Redirige a `#/impacto` **sin mes** (no a
+`#/impacto/{mes}`): el aviso puede quedar pendiente varios días, y si en ese
+tiempo el usuario ya cerró el mes desde la app, `datos.mes` quedaría
+apuntando a un mes que ya no es el activo — mejor dejar que la propia app
+resuelva cuál es el vigente (`_resolverMesActivo`,
+`docs/IMPACTO-MES-ACTIVO.md`).
 
 Se procesa con el **mismo `_procesarCandidatos` que `corte`** (misma regla de
 "sin reintento por tiempo" — ver arriba): mientras el grupo tenga un aviso
@@ -210,13 +215,15 @@ mentira.
   `corte`/`gastoFijo`/`rendimiento`/`pago` (ícono + texto corto), separada de
   la plantilla de compra (monto, comercio, MSI, píldora de tarjeta).
 - `_abrir` (línea 177-197): para los tipos nuevos, en vez de `openQuickAdd`,
-  navegar (`window.location.hash`) a `#/impacto` (corte y pago, con el `mes`
-  del doc si lo trae), `#/compras/gastos` (gastoFijo) o `#/rendimientos`
-  (rendimiento), y marcar `estatus: 'procesada'` con el mismo
-  `update('notificaciones', n.id, ...)` que ya usa el flujo de compra. Nota:
-  para `corte` y `pago`, el auto-resuelto que hace Apps Script (ver arriba) es
-  el mecanismo principal; el tap solo adelanta el `procesada` si el usuario
-  entra manualmente antes del próximo trigger.
+  navegar (`window.location.hash`) a `#/impacto/{mes}` para `corte` (si el doc
+  no trae `mes`, a `#/impacto` genérico), `#/impacto` **sin mes** para `pago`
+  (siempre — ver arriba por qué no usa `datos.mes`), `#/compras/gastos`
+  (gastoFijo) o `#/rendimientos` (rendimiento), y marcar
+  `estatus: 'procesada'` con el mismo `update('notificaciones', n.id, ...)`
+  que ya usa el flujo de compra. Nota: para `corte` y `pago`, el auto-resuelto
+  que hace Apps Script (ver arriba) es el mecanismo principal; el tap solo
+  adelanta el `procesada` si el usuario entra manualmente antes del próximo
+  trigger.
 - Sin cambios en `_avisoPush`, en el botón `X` de descartar, ni en el resto.
 
 ### Sin cambios

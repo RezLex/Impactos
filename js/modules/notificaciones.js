@@ -230,9 +230,17 @@ async function _abrir(n, tarjetas, contadoItems, msiItems, container) {
     // El auto-resuelto de docs/RECORDATORIOS-PUSH.md (Apps Script) es el
     // mecanismo principal para cerrar estos recordatorios; el tap solo
     // adelanta el `procesada` si el usuario entra manualmente antes.
-    const ruta = n.tipo === 'corte' || n.tipo === 'pago' ? (n.datos?.mes ? `/impacto/${n.datos.mes}` : '/impacto')
-               : n.tipo === 'gastoFijo'                  ? '/compras/gastos'
-               : n.tipo === 'rendimiento'                ? '/rendimientos'
+    //
+    // `pago` siempre va a `/impacto` sin mes: el aviso puede quedar pendiente
+    // varios días, y si en ese tiempo el usuario ya cerró el mes desde la
+    // app, `datos.mes` quedaría apuntando a un mes que ya no es el activo —
+    // mejor dejar que la propia app resuelva cuál es el vigente. `corte` sí
+    // usa `datos.mes`: sus recordatorios (`sinCerrar`, o `sinConfirmar` de un
+    // mes atrasado) son justamente sobre un mes que puede no ser el activo.
+    const ruta = n.tipo === 'pago'        ? '/impacto'
+               : n.tipo === 'corte'       ? (n.datos?.mes ? `/impacto/${n.datos.mes}` : '/impacto')
+               : n.tipo === 'gastoFijo'   ? '/compras/gastos'
+               : n.tipo === 'rendimiento' ? '/rendimientos'
                : '/notificaciones';
     await update('notificaciones', n.id, { estatus: 'procesada' });
     refrescarBadge();
