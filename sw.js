@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v30';
+const CACHE = 'impactos-v31';
 
 const SHELL = [
   './',
@@ -87,7 +87,11 @@ self.addEventListener('push', e => {
     // se reemplaza en vez de apilar copias de la misma compra.
     tag:      payload.notifId || 'impactos-compra',
     renotify: !!payload.notifId,
-    data:     { ruta: '/notificaciones' },
+    // `ruta` viaja en el payload cuando Apps Script ya sabe el destino exacto
+    // (un solo recordatorio en la corrida — docs/app-script-recordatorios.gs);
+    // las compras y los resúmenes de varios mezclados no la traen y caen al
+    // fallback, que es donde el usuario revisa/procesa cada uno.
+    data:     { ruta: payload.ruta || '/notificaciones' },
   }));
 });
 

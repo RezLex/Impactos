@@ -196,6 +196,16 @@ Se procesa con el **mismo `_procesarCandidatos` que `corte`** (misma regla de
   revisarlas`.
 - Igual que hoy: **un solo push por corrida** (detalle si es uno, resumen si
   son varios), `data-only`, `tag` = id del doc.
+- **`ruta`** (nuevo): cuando la corrida manda el detalle de un solo
+  recordatorio, el payload FCM incluye `ruta` (`_rutaRecordatorio()`) con el
+  destino exacto — `/impacto` (`pago`), `/impacto/{mes}` o `/impacto` (`corte`
+  según traiga `datos.mes`), `/compras/gastos` (`gastoFijo`), `/rendimientos`
+  (`rendimiento`). `sw.js` la usa al abrir el push (`payload.ruta ||
+  '/notificaciones'`) — antes iba **siempre** a `/notificaciones` sin importar
+  el tipo, aunque el tap dentro de la lista (`_abrir` en
+  `js/modules/notificaciones.js`) ya redirigiera bien; ahora el push nativo
+  también abre directo. Cuando son varios mezclados no hay un solo destino,
+  así que no se manda `ruta` y cae al fallback de `sw.js`.
 
 ### Funciones de prueba
 Mismo patrón que ya usa `app-script.gs` (`pruebaFirestore`, `pruebaPushUna/

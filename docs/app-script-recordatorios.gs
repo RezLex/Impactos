@@ -430,6 +430,23 @@ function _textoRecordatorioUno(item, mesActual) {
   return { titulo: 'Recordatorio', cuerpo: 'toca para revisarlo' };
 }
 
+/**
+ * Ruta de la app a la que debe abrir el push al tocarlo — mismo criterio que
+ * `_abrir` en `js/modules/notificaciones.js`. `pago` va siempre a `/impacto`
+ * sin mes (el aviso puede quedar pendiente varios días; si en ese tiempo se
+ * cerró el mes activo, `datos.mes` ya no sería el vigente). `corte` sí usa
+ * `datos.mes` cuando lo trae: `sinCerrar` y un `sinConfirmar` atrasado son
+ * justamente sobre un mes que puede no ser el activo.
+ */
+function _rutaRecordatorio(item) {
+  const d = item.datos || {};
+  if (item.tipo === 'corte')       return d.mes ? '/impacto/' + d.mes : '/impacto';
+  if (item.tipo === 'pago')        return '/impacto';
+  if (item.tipo === 'gastoFijo')   return '/compras/gastos';
+  if (item.tipo === 'rendimiento') return '/rendimientos';
+  return '/notificaciones';
+}
+
 /** Texto de varios recordatorios mezclados: el detalle no cabe, la lista sí lo tiene. */
 function _textoRecordatorioVarios(items) {
   return {
@@ -443,7 +460,9 @@ function _textoRecordatorioVarios(items) {
 /**
  * Manda **un solo** aviso por corrida a todos los dispositivos registrados —
  * mismo mecanismo data-only que `enviarPush` en `app-script.gs`, adaptado a
- * los tres tipos de recordatorio en vez de compras.
+ * los cuatro tipos de recordatorio en vez de compras. Si es uno solo, el
+ * payload incluye `ruta` (`_rutaRecordatorio`) para que `sw.js` abra directo
+ * ahí al tocar el push, en vez de caer en `/notificaciones`.
  */
 function enviarPushRecordatorios(items, mesActual) {
   if (!items || !items.length) return 0;
@@ -454,8 +473,12 @@ function enviarPushRecordatorios(items, mesActual) {
   let msg;
   if (items.length === 1) {
     const t = _textoRecordatorioUno(items[0], mesActual);
-    msg = { titulo: t.titulo, cuerpo: t.cuerpo, tag: String(items[0].notifId) };
+    // Un solo recordatorio: ya se sabe el destino exacto, se manda en el
+    // payload para que sw.js abra directo ahí en vez de `/notificaciones`.
+    msg = { titulo: t.titulo, cuerpo: t.cuerpo, tag: String(items[0].notifId), ruta: _rutaRecordatorio(items[0]) };
   } else {
+    // Varios mezclados: no hay un solo destino que abrir, cae al fallback de
+    // sw.js (`/notificaciones`), donde se ven y procesan todos.
     msg = _textoRecordatorioVarios(items);
   }
 
@@ -470,7 +493,9 @@ function enviarPushRecordatorios(items, mesActual) {
       payload: JSON.stringify({
         message: {
           token: t.token,
-          data: { titulo: msg.titulo, cuerpo: msg.cuerpo, notifId: msg.tag },
+          data: msg.ruta
+            ? { titulo: msg.titulo, cuerpo: msg.cuerpo, notifId: msg.tag, ruta: msg.ruta }
+            : { titulo: msg.titulo, cuerpo: msg.cuerpo, notifId: msg.tag },
           webpush: { headers: { Urgency: 'high', TTL: '86400' } },
         },
       }),
@@ -725,6 +750,7 @@ function _probarPushRecordatorios(items) {
   const msg = items.length === 1 ? _textoRecordatorioUno(items[0], mesActual) : _textoRecordatorioVarios(items);
   console.log('título: ' + msg.titulo);
   console.log('cuerpo: ' + msg.cuerpo);
+  console.log('ruta: ' + (items.length === 1 ? _rutaRecordatorio(items[0]) : '/notificaciones (varios)'));
 
   console.log('enviados: ' + enviarPushRecordatorios(items, mesActual) + '/' + tokens.length);
 }

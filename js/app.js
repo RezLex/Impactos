@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.9.3-T12';
+const APP_VERSION = '1.9.3-T13';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
