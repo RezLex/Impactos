@@ -185,15 +185,16 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   width: 90%;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
-/* Mismo PNG que arma la PWA (manifest.json/icons/icon-192.png) — así el logo
-   de login/sidebar es el ícono real de la app instalada, no un glifo aparte. */
 .auth-logo {
   width: 72px;
   height: 72px;
+  background: rgba(255,255,255,0.15);
   border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin: 0 auto 20px;
-  display: block;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  font-size: 2rem;
 }
 .auth-card h1 {
   font-size: 1.8rem;
@@ -265,7 +266,7 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
   border-bottom: 1px solid rgba(255,255,255,0.1);
   flex-shrink: 0;
 }
-.sidebar-logo { width: 24px; height: 24px; border-radius: 6px; flex-shrink: 0; }
+.sidebar-logo { font-size: 1.4rem; flex-shrink: 0; }
 .sidebar-title {
   font-size: 1rem;
   font-weight: 700;
