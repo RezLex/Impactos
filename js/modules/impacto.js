@@ -219,8 +219,19 @@ function _renderPage(container, impacto, ctx) {
       )
     : null;
 
+  // Igual que el disponible: mientras el mes está activo, el límite se lee de
+  // la tarjeta actual en vez del snapshot guardado al crear el impacto, para
+  // que un cambio de límite en el módulo Tarjetas se refleje de inmediato.
+  const limiteVivoMap = isActivo
+    ? Object.fromEntries(
+        (impacto?.tarjetas || [])
+          .map(t => [t.tarjetaId, ctx.cardMap[t.tarjetaId]?.limiteTotal])
+          .filter(([, v]) => v != null)
+      )
+    : null;
+
   const totales = impacto
-    ? (isActivo ? recalcTotalesImpacto(impacto, gastosDebitoLive, nominaAprox, saldoVivoMap) : impacto.totales)
+    ? (isActivo ? recalcTotalesImpacto(impacto, gastosDebitoLive, nominaAprox, saldoVivoMap, limiteVivoMap) : impacto.totales)
     : null;
 
   const estadoBadge = isActivo
@@ -257,7 +268,7 @@ function _renderPage(container, impacto, ctx) {
     <p class="text-muted fw-semibold mb-1 mt-4" style="font-size:0.72rem;text-transform:uppercase;letter-spacing:.05em">
       <i class="bi bi-credit-card me-1"></i>Tarjetas de Crédito y Préstamos
     </p>
-    ${_renderTarjetasTable(impacto.tarjetas || [], isActivo, isCerrado, hoy, ctx.festivosMX, isProyeccion, saldoVivoMap)}` : ''}
+    ${_renderTarjetasTable(impacto.tarjetas || [], isActivo, isCerrado, hoy, ctx.festivosMX, isProyeccion, saldoVivoMap, limiteVivoMap)}` : ''}
 
     <!-- Debit gastos -->
     ${impacto ? _renderGastosDebito(gastosDebitoLive, ctx.cardMap, isCerrado) : ''}
@@ -400,7 +411,7 @@ function _renderBudgetSection(impacto, totales, isActivo, isProyeccion, nominaAp
     </div>` : ''}`;
 }
 
-function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [], isProyeccion = false, saldoVivoMap = null) {
+function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [], isProyeccion = false, saldoVivoMap = null, limiteVivoMap = null) {
   const CONF_ICON  = `<i class="bi bi-check-circle-fill" style="color:var(--bs-success);font-size:var(--fs-mini);flex-shrink:0"></i>`;
   const CONF_EMPTY = `<i style="font-size:var(--fs-mini);flex-shrink:0;visibility:hidden">·</i>`;
 
@@ -471,7 +482,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
         ${t.pagado ? `<span class="badge bg-success" style="font-size:var(--fs-nano);margin-left:18px">Pagada</span>` : ''}
       </td>
       ${!isProyeccion ? `
-      <td class="text-end" style="white-space:nowrap;${P}">${numCell(t.limiteTotal, isActivo ? null : t.limiteTotalConf, idx, 'limiteTotal')}</td>
+      <td class="text-end" style="white-space:nowrap;${P}">${numCell(limiteVivoMap?.[t.tarjetaId] ?? t.limiteTotal, isActivo ? null : t.limiteTotalConf, idx, 'limiteTotal')}</td>
       <td class="text-end" style="white-space:nowrap;${P}">${numCell(saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible, isActivo ? null : t.saldoDispConf, idx, 'saldoDisp')}</td>
       ` : ''}
       <td class="text-end" style="white-space:nowrap;padding:2px 6px 2px 18px">${dateCell(t.fechaCorte, t.fechaCorteConf, idx, 'fechaCorte')}</td>

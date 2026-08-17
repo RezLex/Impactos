@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T13`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T14`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -461,8 +461,8 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 | `fechaCorte` | string? | Fecha de corte del ciclo para este mes |
 | `fechaPago` | string? | Fecha límite de pago del ciclo |
 | `fechaNomina` | string? | Fecha de nómina anterior al pago (`YYYY-MM-DD`) — usada para ordenamiento |
-| `limiteTotal` | number | Snapshot límite total |
-| `saldoDisponible` | number? | Snapshot saldo disponible al crear |
+| `limiteTotal` | number | Snapshot límite total al crear. Mientras el impacto está `activo`, la vista muestra el límite **actual** de la tarjeta (no este snapshot); se vuelve a congelar aquí recién al cerrar el mes |
+| `saldoDisponible` | number? | Snapshot saldo disponible al crear. Mientras el impacto está `activo`, la vista muestra el saldo **en vivo** (`calcularSaldo`), no este snapshot; se congela aquí recién al cerrar el mes |
 | `estimadoContado` | number | Estimado de compras de contado |
 | `estimadoPlazos` | number | Estimado de mensualidades A Plazos |
 | `estimadoGastos` | number | Estimado de gastos de crédito |
@@ -489,7 +489,7 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 | `creditoDisponible` | number | Suma de saldos disponibles |
 | `deudaTotal` | number | `creditoTotal - creditoDisponible` |
 
-> Los estimados se recalculan automáticamente al abrir el Impacto activo. Si hay nuevas compras desde la última apertura, los estimados se actualizan en Firestore.
+> Los estimados se recalculan automáticamente al abrir el Impacto activo. Si hay nuevas compras desde la última apertura, los estimados se actualizan en Firestore. **Límite y disponible** se muestran en vivo mientras el mes está activo (`limiteVivoMap`/`saldoVivoMap` en `js/modules/impacto.js`, leídos de la colección `tarjetas` actual) — a diferencia de los estimados, esto no se persiste en el documento hasta que el mes se cierra.
 
 ### `inversiones/{id}`
 Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una institución ya registrada.
@@ -1232,8 +1232,9 @@ calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes) → { es
 calcularTotalesCredito(tarjetasImpacto) → { creditoTotal, creditoDisponible, deudaTotal }
 
 // Totales en tiempo real para impacto activo
-// saldoVivoMap: { [tarjetaId]: number } — saldo calculado por calcularSaldo, omite tarjetas con saldoDispConf
-recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?, saldoVivoMap?) → totales
+// saldoVivoMap:  { [tarjetaId]: number } — saldo calculado por calcularSaldo, omite tarjetas con saldoDispConf
+// limiteVivoMap: { [tarjetaId]: number } — limiteTotal actual de la tarjeta (colección `tarjetas`), omite tarjetas eliminadas
+recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride?, saldoVivoMap?, limiteVivoMap?) → totales
 
 // Proyección de un mes futuro con pago progresivo simulado
 // gastosFijosItems se incluyen solo si no existe ya un registro confirmado cuyo `mes`
