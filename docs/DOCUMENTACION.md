@@ -343,11 +343,12 @@ por aviso: `faltaImpacto-{mes}`, `sinConfirmar-{tarjetaId}-{mes}`, `sinCerrar-{m
 `gastoFijo-{gastaFijoId}-{mes}`, `rendimiento-{mes}` y `pago-{mes}-{fechaNomina}`. La cadencia de
 reenvío **no es igual para todos**:
 - `corte` y `pago` comparten el mismo mecanismo (`_procesarCandidatos` en
-  `docs/app-script-recordatorios.gs`): **sin reintento por tiempo** — mientras el doc siga
-  `pendiente`, la corrida diaria no manda otro aviso aunque la condición siga vigente; en cuanto
-  el usuario lo descarta o se marca `procesada` sin que la condición de fondo se haya resuelto
-  (sigue sin `confirmado`, o sigue habiendo alguna tarjeta sin `pagado` en el grupo), la siguiente
-  corrida vuelve a crear uno.
+  `docs/app-script-recordatorios.gs`, con `minDias` distinto — `corte` espera 1 día desde la
+  fecha que dispara la condición, `pago` la manda el mismo día): **sin reintento por tiempo** —
+  mientras el doc siga `pendiente`, la corrida diaria no manda otro aviso aunque la condición
+  siga vigente; en cuanto el usuario lo descarta o se marca `procesada` sin que la condición de
+  fondo se haya resuelto (sigue sin `montoAPagar`, o sigue habiendo alguna tarjeta sin `pagado`
+  en el grupo), la siguiente corrida vuelve a crear uno.
 - `gastoFijo` y `rendimiento` no se repiten nunca (eventos puntuales).
 
 **Estructura de `datos` en `tipo: compra`** — son los mismos nombres de campo que viajaban en el
@@ -390,7 +391,7 @@ de pago; ver [`impacto/{YYYY-MM}`](#impactoyyyy-mm)); `quincena` (`Q1`/`Q2`) es 
 texto, según el día de `fechaNomina` sea `<= 15` o no. `resumen` son los nombres de hasta 2
 tarjetas + "y N más", mismo criterio que `textoResumen` en `app-script.gs`.
 
-El `estatus` no lo revisa ningún proceso en segundo plano: lo escribe la app al registrar o descartar. El trigger diario del script sí borra las `procesada`/`descartada` con más de 30 días.
+El `estatus` no lo revisa ningún proceso en segundo plano: lo escribe la app al registrar o descartar. La limpieza de `procesada`/`descartada` con más de 30 días la hace `resumenPendientes()` (`docs/app-script.gs`, `limpiarCaducadas`) sobre **todos** los `tipo` de la colección, no solo `compra` — `docs/app-script-recordatorios.gs` no tiene limpieza propia y depende de que ese trigger siga corriendo (ver "Relación con `resumenPendientes()`" en `docs/RECORDATORIOS-PUSH.md`).
 
 ### `dispositivos/{token}`
 
@@ -466,7 +467,7 @@ Impacto mensual. El ID del documento es el mes en formato `YYYY-MM`. Reemplaza a
 | `estimadoPlazos` | number | Estimado de mensualidades A Plazos |
 | `estimadoGastos` | number | Estimado de gastos de crédito |
 | `estimadoTotal` | number | Suma de los tres estimados |
-| `confirmado` | boolean | Si el usuario confirmó los datos para este mes |
+| `confirmado` | boolean | Se inicializa en `false`; ningún flujo actual de `js/modules/impacto.js` lo pone en `true` — la confirmación real es campo por campo (`*Conf`, `montoAPagar`), no este booleano |
 | `montoAPagar` | number? | Monto confirmado/editado a pagar |
 | `fechaCorteConf` | string? | Fecha corte confirmada por el usuario |
 | `fechaPagoConf` | string? | Fecha pago confirmada por el usuario |
@@ -675,11 +676,11 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 ### Notificaciones (`#/notificaciones`)
 
 Bandeja de avisos accionables (colección [`notificaciones`](#notificacionesid)): compras que el
-Apps Script detectó en el correo, y los tres recordatorios de `docs/RECORDATORIOS-PUSH.md` —
-corte de tarjeta, gasto fijo por confirmar, cierre de mes. Sustituye al correo individual por
-compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
+Apps Script detectó en el correo, y los cuatro recordatorios de `docs/RECORDATORIOS-PUSH.md` —
+corte de tarjeta, gasto fijo por confirmar, cierre de mes, pago pendiente por quincena. Sustituye
+al correo individual por compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
 
-- Lista **los 4 tipos** con `estatus: pendiente`, más recientes arriba (`_cargarPendientes`) — ya
+- Lista **los 5 tipos** con `estatus: pendiente`, más recientes arriba (`_cargarPendientes`) — ya
   no filtra por `tipo`, así que `refrescarBadge`/`pintarBadge` cuentan los recordatorios sin
   cambios adicionales.
 - **Fila de compra** (`tipo: compra`): importe, comercio (`datos.desc`), el **asunto crudo del
@@ -698,15 +699,16 @@ compra que se mandaba antes; ver `docs/NOTIFICACIONES-PUSH.md`.
     plazos (o al revés), la notificación se cierra igual: `onSaved` viaja con el cambio.
   - Si el `msgId` ya está en `contado` o `msi`, la compra se registró antes: no se abre el modal,
     la notificación se marca `procesada` directamente.
-- **Fila de recordatorio** (`tipo: corte` \| `gastoFijo` \| `rendimiento`): plantilla genérica más
-  simple — ícono por tipo, título y cuerpo corto (`_textoRecordatorio`, mismos textos que el push
-  de `docs/app-script-recordatorios.gs`). **Tocar la fila** no abre el modal de compra: navega a
-  `#/impacto/{mes}` (corte), `#/compras/gastos` (gastoFijo) o `#/rendimientos` (rendimiento), y
-  marca `estatus: procesada`. El auto-resuelto que hace Apps Script cuando la condición deja de
-  cumplirse (tarjeta confirmada, impacto creado, mes cerrado) sigue siendo el mecanismo
-  principal — el tap solo adelanta el `procesada` si el usuario entra manualmente antes de la
-  próxima corrida.
-- **La `×`** la marca `descartada` sin registrar/procesar nada, con confirmación — igual en los 4
+- **Fila de recordatorio** (`tipo: corte` \| `gastoFijo` \| `rendimiento` \| `pago`): plantilla
+  genérica más simple — ícono por tipo, título y cuerpo corto (`_textoRecordatorio`, mismos
+  textos que el push de `docs/app-script-recordatorios.gs`). **Tocar la fila** no abre el modal de
+  compra: navega a `#/impacto/{mes}` (corte, si el doc trae `mes`), `#/impacto` sin mes (pago —
+  el aviso puede quedar pendiente varios días y para entonces el mes activo pudo cambiar),
+  `#/compras/gastos` (gastoFijo) o `#/rendimientos` (rendimiento), y marca `estatus: procesada`.
+  El auto-resuelto que hace Apps Script cuando la condición deja de cumplirse (monto confirmado,
+  impacto creado, mes cerrado, tarjeta pagada) sigue siendo el mecanismo principal — el tap solo
+  adelanta el `procesada` si el usuario entra manualmente antes de la próxima corrida.
+- **La `×`** la marca `descartada` sin registrar/procesar nada, con confirmación — igual en los 5
   tipos.
 - **Indicadores de pendientes**, los dos alimentados por `refrescarBadge` (que llama `app.js` al
   iniciar sesión y esta vista tras cada cambio; `pintarBadge(0)` los apaga al cerrar sesión):
@@ -777,7 +779,7 @@ Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
 - Tabla de tarjetas de crédito: Límite, Disponible, Corte, Pago (con badge 1Q/2Q)
 - **Disponible en tiempo real:** la columna Disponible y el total del métrico usan `calcularSaldo` (mismo cálculo que /tarjetas y /admin) — no el snapshot almacenado en el impacto. Si el campo fue confirmado manualmente (`saldoDispConf`), ese valor tiene precedencia sobre el calculado.
 - Datos confirmables individualmente por campo (✓ verde al confirmar)
-- **Registrar pago**: habilitado después del corte; actualiza `saldoDisponible` y avanza `mesesPagados` de A Plazos
+- **Registrar pago**: botón habilitado (`canPay`, `js/modules/impacto.js:460`) solo si la tarjeta no está ya `pagado` y además se cumple **al menos una** de: (a) ya pasó la fecha de corte efectiva (`fechaCorteConf ?? fechaCorte <= hoy`), o (b) el monto a pagar es `0`. Si no, el botón queda deshabilitado con tooltip "Espera al corte (fecha)". Al confirmar (`_registrarPago`, `js/modules/impacto.js:751`): marca `pagado: true` + `fechaPagado`, suma el monto al `saldoDisponible` de la tarjeta (si `monto > 0`) y avanza `mesesPagados` (reduce `restante`) de las compras A Plazos cuyo próximo pago cae en ese mes
 - **Cerrar mes**: requiere todas las tarjetas pagadas; guarda snapshot + totales
 - Auto-creación del impacto al abrir el módulo si no existe para el mes actual
 - Estimados se recalculan al reabrir (nuevas compras quedan reflejadas)

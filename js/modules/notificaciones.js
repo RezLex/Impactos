@@ -16,7 +16,7 @@ import { navigate } from '../router.js';
 const esc = s => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Pendientes de los 4 tipos (compra, corte, gastoFijo, rendimiento), más recientes arriba. */
+/** Pendientes de los 5 tipos (compra, corte, gastoFijo, rendimiento, pago), más recientes arriba. */
 async function _cargarPendientes() {
   const notis = await getAll('notificaciones', where('estatus', '==', 'pendiente'));
   return notis

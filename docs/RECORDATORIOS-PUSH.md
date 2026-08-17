@@ -4,13 +4,28 @@
 > tipos `corte`/`gastoFijo`/`rendimiento`/`pago` que ese diseño dejó pendientes.
 > Este archivo es el plan acordado.
 >
-> **Estado:** implementado del lado del cliente (`js/modules/notificaciones.js`)
-> y escrito el Apps Script nuevo (`docs/app-script-recordatorios.gs`), **sin
-> desplegar ni verificar** todavía: falta correr `pruebaRecordatorios()` desde
-> el editor de Apps Script, crear el trigger diario de `procesarRecordatorios()`
-> y confirmar en el teléfono real (ver "Verificación" al final de este
-> archivo). El detalle vigente de cada pieza vive en `docs/DOCUMENTACION.md`;
-> este archivo queda como registro del diseño acordado.
+> **Estado:** implementado y con trigger activo en producción; `gastoFijo` ya
+> llegó correctamente en pruebas reales. `corte` y `pago` no llegaban en
+> producción; se depuró y corrigió el 2026-08-14 — 17:
+> 1. `listarColeccion()` usaba `fsMapa`/`fsLeer` de `app-script.gs`, que **no
+>    decodifica `arrayValue`** — cualquier campo tipo lista cae a `null` en
+>    ese decoder. Como `impacto.tarjetas` es un array, `imp.tarjetas` llegaba
+>    `null` y `(imp.tarjetas || []).forEach(...)` iteraba sobre `[]` sin
+>    importar los datos reales — ni `revisarCortes` ni
+>    `revisarPagosPendientes` veían ninguna tarjeta. Se agregó un decoder
+>    local (`_fsMapaConArrays`/`_fsLeerConArrays`) que sí soporta
+>    `arrayValue`, sin tocar `app-script.gs`.
+> 2. `sinConfirmar` usaba el campo `confirmado`, que ningún flujo de la app
+>    pone nunca en `true` (ahora usa `montoAPagar == null`).
+> 3. `pago` había heredado por error el gate de "1 día después" de `corte`
+>    al generalizar `_procesarCandidatos` (ahora usa `minDias: 0`).
+> 4. Confirmado ya con datos reales (`pruebaRecordatorios()` sí encontró
+>    cortes y pagos pendientes), se cambió `procesarRecordatorios()` para
+>    mandar **un push por categoría** en vez de uno combinando las cuatro —
+>    ver "Trigger diario único" más abajo.
+>
+> **Sigue pendiente:** repetir el pegado manual del `.gs` completo en
+> `script.google.com` con estos cuatro cambios, y confirmar en el teléfono.
 
 ## Alcance
 
@@ -60,14 +75,41 @@ const FS_TARJETAS    = FS_DOCS + '/users/' + UID + '/tarjetas';
 const FS_FESTIVOS    = FS_DOCS + '/users/' + UID + '/festivosMX';
 ```
 
+### Relación con `resumenPendientes()` (`app-script.gs`)
+
+`procesarRecordatorios()` y `resumenPendientes()` son triggers diarios
+independientes, uno por archivo, y no se pisan — pero comparten una pieza
+que no es obvia a simple vista:
+
+| | `procesarRecordatorios()` (este archivo) | `resumenPendientes()` (`app-script.gs`) |
+|---|---|---|
+| `tipo` que mira | `corte`, `gastoFijo`, `rendimiento`, `pago` | Solo `compra` |
+| Qué hace | Detecta candidatos nuevos y crea/actualiza `notificaciones` | Solo lee lo que ya existe, no detecta nada |
+| Salida | Push (FCM), uno por categoría | Correo — un solo email con las `compra` `pendiente` |
+| Mantenimiento | Ninguno | `limpiarCaducadas(todas)` — borra `procesada`/`descartada` de más de 30 días, **de cualquier `tipo`**, no solo `compra` |
+
+`limpiarCaducadas` en `resumenPendientes()` opera sobre `listarNotificaciones()`
+sin filtrar por `tipo`, así que también borra los recordatorios de `corte`/
+`gastoFijo`/`rendimiento`/`pago` ya resueltos (`procesada`/`descartada`) que
+llevan más de `RETENCION_DIAS` (30) días. **Este archivo no tiene su propia
+limpieza** — depende de que `resumenPendientes()` siga corriendo; si algún
+día se desactiva ese trigger, los recordatorios viejos se quedarían
+acumulando en Firestore para siempre.
+
 ### Trigger diario único: `procesarRecordatorios()`
 Un solo trigger de tiempo (independiente de los dos que ya tiene
 `app-script.gs`, para que un bug acá no afecte la detección de compras), que
-llama a las cuatro rutinas de abajo y al final manda **un solo push** agrupando lo
-que se haya creado/reenviado en la corrida (mismo patrón "uno si es una, resumen
-si son varias" que ya usa `enviarPush`/`textoResumen` en `app-script.gs`, pero
-implementado en este archivo con su propio `enviarPushRecordatorios(items)` ya
-que los `datos` no tienen la forma de una compra).
+llama a las cuatro rutinas de abajo y manda **un push por categoría** — nunca
+uno mezclando las cuatro. Cada rutina que encontró algo dispara su propio
+`enviarPushRecordatorios(items)` ahí mismo (mismo patrón "uno si es una,
+resumen si son varias" que ya usa `enviarPush`/`textoResumen` en
+`app-script.gs`, pero implementado en este archivo porque los `datos` no
+tienen la forma de una compra); una categoría vacía no manda nada. Como cada
+llamada es homogénea (todos los items de esa rutina comparten `tipo`), el
+texto de "varios" (`_textoRecordatorioVarios`) puede decir de qué categoría
+son (p. ej. "3 recordatorios de corte pendientes") en vez de un genérico
+"N recordatorios pendientes", y usa `tipo` en el `tag` del push para que dos
+categorías de la misma corrida no se tapen entre sí.
 
 ### 1. Corte de tarjeta — `revisarCortes()`
 
@@ -92,17 +134,22 @@ mensaje, evita que compartan clave de dedupe entre sí):
   se abrió (no es "un mes atorado", no aplica el caso de abajo).
 - **`sinConfirmar`** — por cada `impacto` con `estado === 'activo'` (el actual
   o uno anterior sin cerrar), por cada entrada de `tarjetas[]` con
-  `fechaCorte` y `confirmado !== true` (`docs/DOCUMENTACION.md` — campos de
-  `impacto.tarjetas[]`). `datos: { subtipo: 'sinConfirmar', tarjetaId, nombre,
-  mes, fechaCorte, monto: montoAPagar ?? estimadoTotal }`.
+  `fechaCorte` y `montoAPagar == null` (`docs/DOCUMENTACION.md` — campos de
+  `impacto.tarjetas[]`). Usa `montoAPagar`, no el campo `confirmado`: este
+  último se inicializa en `false` en `js/modules/impacto.js` pero **ningún
+  flujo de la app lo pone en `true`** — la confirmación real es campo por
+  campo, y `montoAPagar` es el que importa acá (el mismo que muestra el
+  push). `datos: { subtipo: 'sinConfirmar', tarjetaId, nombre, mes,
+  fechaCorte, monto: montoAPagar ?? estimadoTotal }`.
 - **`sinCerrar`** — por cada `impacto` con `estado === 'activo'` **y `mes <
   mesActual`** (un mes ya terminado que se quedó abierto), sin importar el
   estado de sus tarjetas: recordatorio a nivel mes para cerrarlo. `datos: {
   subtipo: 'sinCerrar', mes }`. Es el respaldo para cuando todas las tarjetas
-  ya están `confirmado`/`pagado` (entonces `sinConfirmar` ya se autorresolvió)
-  pero el usuario nunca tocó "Cerrar mes" — sin este subtipo ese caso quedaría
-  sin ningún aviso. Corre en paralelo e independiente de `sinConfirmar`: un
-  mes puede tener ambos a la vez, o solo `sinCerrar` si ya no le falta
+  ya tienen `montoAPagar`/`pagado` (entonces `sinConfirmar` ya se
+  autorresolvió) pero el usuario nunca tocó "Cerrar mes" — sin este subtipo
+  ese caso quedaría sin ningún aviso. Corre en paralelo e independiente de
+  `sinConfirmar`: un mes puede tener ambos a la vez, o solo `sinCerrar` si ya
+  no le falta
   confirmar nada.
 
 Todos redirigen a `#/impacto/{mes}` (`js/modules/impacto.js` navega por mes vía
@@ -182,7 +229,12 @@ Se procesa con el **mismo `_procesarCandidatos` que `corte`** (misma regla de
 "sin reintento por tiempo" — ver arriba): mientras el grupo tenga un aviso
 `pendiente`, no se reenvía aunque pasen varias corridas; se autorresuelve a
 `procesada` en cuanto ya no queda ninguna tarjeta sin pagar en ese grupo
-(todas con `pagado: true`, el Impacto se cerró, o ya no es el mes activo).
+(todas con `pagado: true`, el Impacto se cerró, o ya no es el mes activo). A
+diferencia de `corte` (que espera 1 día completo desde `fechaDisparo` antes
+de crear el primer aviso — "el día después" del corte), `pago` llama a
+`_procesarCandidatos` con `minDias: 0`: el recordatorio es "a partir de"
+`fechaNomina`, el mismo día, no al siguiente — si no, con el gate por defecto
+se hubiera mandado un día tarde.
 
 ### Textos del push
 - Corte, `faltaImpacto`: `Genera el Impacto de {mes}` / `toca para generarlo`.
@@ -194,8 +246,10 @@ Se procesa con el **mismo `_procesarCandidatos` que `corte`** (misma regla de
 - Rendimiento: `Fin de mes` / `revisa los rendimientos de tus cuentas`.
 - Pago: `{cantidad} tarjeta(s) por pagar (Q1|Q2)` / `{resumen} — toca para
   revisarlas`.
-- Igual que hoy: **un solo push por corrida** (detalle si es uno, resumen si
-  son varios), `data-only`, `tag` = id del doc.
+- **Un push por categoría** (no uno por toda la corrida): detalle si esa
+  categoría encontró uno solo, resumen (con el nombre de la categoría en el
+  título) si encontró varios; `data-only`, `tag` = id del doc (o
+  `recordatorios-{tipo}-{timestamp}` en el resumen).
 - **`ruta`** (nuevo): cuando la corrida manda el detalle de un solo
   recordatorio, el payload FCM incluye `ruta` (`_rutaRecordatorio()`) con el
   destino exacto — `/impacto` (`pago`), `/impacto/{mes}` o `/impacto` (`corte`
@@ -218,17 +272,18 @@ mentira.
 ## Cambios en el cliente
 
 ### `js/modules/notificaciones.js`
-- `_cargarPendientes` (línea 16-23): quitar el filtro fijo a `tipo === 'compra'`
-  y traer los 4 tipos — esto también hace que `refrescarBadge`/`pintarBadge`
-  (líneas 199-226) cuenten los recordatorios sin tocarlos.
-- `_fila` (línea 143-169): agregar una plantilla genérica para
-  `corte`/`gastoFijo`/`rendimiento`/`pago` (ícono + texto corto), separada de
-  la plantilla de compra (monto, comercio, MSI, píldora de tarjeta).
-- `_abrir` (línea 177-197): para los tipos nuevos, en vez de `openQuickAdd`,
-  navegar (`window.location.hash`) a `#/impacto/{mes}` para `corte` (si el doc
-  no trae `mes`, a `#/impacto` genérico), `#/impacto` **sin mes** para `pago`
-  (siempre — ver arriba por qué no usa `datos.mes`), `#/compras/gastos`
-  (gastoFijo) o `#/rendimientos` (rendimiento), y marcar
+- `_cargarPendientes` (línea 20): sin filtro fijo a `tipo === 'compra'` — trae
+  los 5 tipos — esto también hace que `refrescarBadge`/`pintarBadge` (línea
+  293 en adelante) cuenten los recordatorios sin tocarlos.
+- `_fila` (línea 147) despacha a `_filaRecordatorio` (línea 206) para
+  cualquier tipo que no sea `compra` — plantilla genérica (ícono + texto
+  corto vía `_textoRecordatorio`), separada de la de compra (monto, comercio,
+  MSI, píldora de tarjeta).
+- `_abrir` (línea 228): para los tipos nuevos, en vez de `openQuickAdd`,
+  navega (`navigate()`, no `window.location.hash` directo) a `#/impacto/{mes}`
+  para `corte` (si el doc no trae `mes`, a `#/impacto` genérico), `#/impacto`
+  **sin mes** para `pago` (siempre — ver arriba por qué no usa `datos.mes`),
+  `#/compras/gastos` (gastoFijo) o `#/rendimientos` (rendimiento), y marca
   `estatus: 'procesada'` con el mismo `update('notificaciones', n.id, ...)`
   que ya usa el flujo de compra. Nota: para `corte` y `pago`, el auto-resuelto
   que hace Apps Script (ver arriba) es el mecanismo principal; el tap solo
@@ -243,10 +298,10 @@ mentira.
 
 ## Documentación
 - Este archivo reemplaza la sección "Pendiente de definir" de
-  `docs/NOTIFICACIONES-PUSH.md` — falta cruzar la referencia ahí una vez
-  implementado.
-- `docs/DOCUMENTACION.md`: ampliar el modelo de `notificaciones` (los 5 tipos y
-  la forma de `datos` por tipo) cuando se implemente.
+  `docs/NOTIFICACIONES-PUSH.md` — ya cruzada ahí.
+- `docs/DOCUMENTACION.md`: modelo de `notificaciones` ya ampliado (los 5
+  tipos y la forma de `datos` por tipo, incluida la cadencia de reenvío por
+  tipo y la dependencia de `resumenPendientes()` para la limpieza).
 
 ## Verificación (al implementar)
 - Apps Script no tiene test runner: correr desde el editor, en este orden,

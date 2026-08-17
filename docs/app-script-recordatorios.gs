@@ -22,8 +22,8 @@
  *   procesarRecordatorios() — una vez al día, trigger de tiempo propio
  *   (independiente de los dos de `app-script.gs`, para que un bug acá no
  *   afecte la detección de compras). Corre las cuatro rutinas de abajo y
- *   manda UN solo push agrupando lo que se haya creado/reenviado en la
- *   corrida.
+ *   manda **un push por categoría** (no uno mezclando las cuatro) — solo si
+ *   esa rutina encontró algo.
  *
  * Requiere: los mismos scopes y la misma propiedad de script `UID` que ya
  * pide `app-script.gs` — no se agrega ninguno nuevo.
@@ -38,34 +38,47 @@ const FS_FESTIVOS    = FS_DOCS + '/users/' + UID + '/festivosMX';
 
 // ---------- Trigger diario único ----------
 
+/**
+ * Un push **por categoría**, no uno combinando las cuatro: cada rutina se
+ * evalúa y, si encontró algo, manda su propio aviso ahí mismo — nunca uno
+ * genérico "4 recordatorios pendientes" mezclando corte con gasto fijo. Una
+ * categoría vacía no manda nada.
+ */
 function procesarRecordatorios() {
   const hoy       = fmt(new Date(), 'yyyy-MM-dd');
   const mesActual = hoy.slice(0, 7);
 
-  let creados = [];
-  try {
-    creados = creados.concat(revisarCortes(mesActual, hoy));
-  } catch (e) { console.log('CORTES — ' + e.message); }
-  try {
-    creados = creados.concat(revisarGastosFijos(mesActual, hoy));
-  } catch (e) { console.log('GASTOS FIJOS — ' + e.message); }
-  try {
-    creados = creados.concat(revisarCierreMes(mesActual, hoy));
-  } catch (e) { console.log('CIERRE MES — ' + e.message); }
-  try {
-    creados = creados.concat(revisarPagosPendientes(hoy));
-  } catch (e) { console.log('PAGOS — ' + e.message); }
+  const rutinas = [
+    { nombre: 'CORTES',       fn: function () { return revisarCortes(mesActual, hoy); } },
+    { nombre: 'GASTOS FIJOS', fn: function () { return revisarGastosFijos(mesActual, hoy); } },
+    { nombre: 'CIERRE MES',   fn: function () { return revisarCierreMes(mesActual, hoy); } },
+    { nombre: 'PAGOS',        fn: function () { return revisarPagosPendientes(hoy); } },
+  ];
 
-  // Mismo patrón que `procesarCompras`: el push va al final y en su propio
-  // try — si falla, los documentos ya están en Firestore y se ven al abrir
-  // la app, así que no debe tumbar la corrida ni provocar un reintento.
-  if (creados.length) {
+  let total = 0;
+
+  rutinas.forEach(function (r) {
+    let items = [];
     try {
-      enviarPushRecordatorios(creados, mesActual);
-    } catch (e) { console.log('PUSH — ' + e.message); }
-  }
+      items = r.fn();
+    } catch (e) {
+      console.log(r.nombre + ' — ' + e.message);
+      return;
+    }
+    if (!items.length) return;
+    total += items.length;
 
-  console.log('Recordatorios: ' + creados.length);
+    // Mismo patrón que `procesarCompras`: el push va en su propio try — si
+    // falla, los documentos ya están en Firestore y se ven al abrir la app,
+    // así que no debe tumbar la corrida ni bloquear a las demás categorías.
+    try {
+      enviarPushRecordatorios(items, mesActual);
+    } catch (e) {
+      console.log('PUSH ' + r.nombre + ' — ' + e.message);
+    }
+  });
+
+  console.log('Recordatorios: ' + total);
 }
 
 // ---------- 1. Corte de tarjeta ----------
@@ -79,7 +92,7 @@ function procesarRecordatorios() {
  * Tres subtipos posibles, marcados en `datos.subtipo`:
  *   - faltaImpacto — mes calendario actual sin doc.
  *   - sinConfirmar — por cada `impacto` activo, por cada tarjeta con
- *     `fechaCorte` y `confirmado !== true`.
+ *     `fechaCorte` y `montoAPagar == null` (sin confirmar todavía).
  *   - sinCerrar — por cada `impacto` activo con `mes < mesActual` (un mes ya
  *     terminado que se quedó abierto).
  *
@@ -113,7 +126,10 @@ function revisarCortes(mesActual, hoy, soloLectura) {
     const mes = imp._id;
 
     (imp.tarjetas || []).forEach(function (t) {
-      if (!t.fechaCorte || t.confirmado === true) return;
+      // `confirmado` nunca lo pone en `true` ningún flujo de la app (revisar
+      // js/modules/impacto.js) — la confirmación real es campo por campo, y
+      // el que importa acá es `montoAPagar` (el mismo que muestra el push).
+      if (!t.fechaCorte || t.montoAPagar != null) return;
       candidatos['sinConfirmar-' + t.tarjetaId + '-' + mes] = {
         datos: {
           subtipo: 'sinConfirmar', tarjetaId: t.tarjetaId, nombre: t.nombre, mes: mes,
@@ -147,12 +163,16 @@ function revisarCortes(mesActual, hoy, soloLectura) {
  *     la descarte (o el tap la marque `procesada`), no se manda otro aviso
  *     aunque pasen varias corridas.
  *   - Clave vigente sin doc `pendiente` (nunca existió, o el último se
- *     descartó/procesó) → si ya pasó al menos 1 día desde `fechaDisparo`, se
- *     crea uno nuevo y entra al push.
+ *     descartó/procesó) → si ya pasaron `minDias` desde `fechaDisparo`, se
+ *     crea uno nuevo y entra al push. `corte` usa el default (`1`: "el día
+ *     después" de `fechaCorte`/del día 1 del mes); `pago` pasa `0` porque su
+ *     recordatorio es "a partir de" `fechaNomina`, el mismo día, no al
+ *     siguiente.
  *   - Doc pendiente cuya clave ya no es vigente → la condición se cumplió:
  *     pasa a `estatus: 'procesada'`, sin que el usuario tenga que tocarlo.
  */
-function _procesarCandidatos(tipo, candidatos, pendientes, hoy, soloLectura) {
+function _procesarCandidatos(tipo, candidatos, pendientes, hoy, soloLectura, minDias) {
+  if (minDias == null) minDias = 1;
   const resultado = [];
   const vistos = {};
 
@@ -170,7 +190,7 @@ function _procesarCandidatos(tipo, candidatos, pendientes, hoy, soloLectura) {
   Object.keys(candidatos).forEach(function (key) {
     if (vistos[key]) return;   // ya hay un aviso pendiente para esta clave
     const c = candidatos[key];
-    if (_diasDesde(c.fechaDisparo, hoy) < 1) return;
+    if (_diasDesde(c.fechaDisparo, hoy) < minDias) return;
 
     if (!soloLectura) {
       fsFetch(FS_NOTIS + '/' + key, 'patch', {
@@ -350,7 +370,10 @@ function revisarCierreMes(mesActual, hoy, soloLectura) {
  * Misma regla de "sin reintento por tiempo" que `corte` (`_procesarCandidatos`):
  * mientras el grupo siga con un aviso `pendiente`, no se reenvía aunque pasen
  * varias corridas; si el usuario lo descarta y todavía queda alguna tarjeta
- * sin pagar en ese grupo, la siguiente corrida lo vuelve a crear.
+ * sin pagar en ese grupo, la siguiente corrida lo vuelve a crear. A
+ * diferencia de `corte` (que espera 1 día después de `fechaCorte`/del día 1
+ * del mes), acá se pasa `minDias: 0` — el recordatorio es "a partir de"
+ * `fechaNomina`, el mismo día, no al siguiente.
  */
 function revisarPagosPendientes(hoy, soloLectura) {
   const impactos = listarColeccion(FS_IMPACTO);
@@ -384,7 +407,7 @@ function revisarPagosPendientes(hoy, soloLectura) {
     return n.tipo === 'pago' && n.estatus === 'pendiente';
   });
 
-  return _procesarCandidatos('pago', candidatos, pendientes, hoy, soloLectura);
+  return _procesarCandidatos('pago', candidatos, pendientes, hoy, soloLectura, 0);
 }
 
 // ---------- Web Push (FCM) ----------
@@ -447,13 +470,22 @@ function _rutaRecordatorio(item) {
   return '/notificaciones';
 }
 
-/** Texto de varios recordatorios mezclados: el detalle no cabe, la lista sí lo tiene. */
+/**
+ * Texto de varios recordatorios de la misma categoría: el detalle de cada
+ * uno no cabe, la lista sí lo tiene. Como `procesarRecordatorios` manda un
+ * push por rutina (no uno mezclando las cuatro), `items` siempre comparte
+ * `tipo` — se usa para un título algo más concreto que el genérico, y para
+ * que el `tag` no choque con el de otra categoría de la misma corrida.
+ */
 function _textoRecordatorioVarios(items) {
+  const ETIQUETAS = { corte: ' de corte', gastoFijo: ' de gasto fijo', pago: ' de pago', rendimiento: '' };
+  const tipo      = items[0].tipo;
   return {
-    titulo: items.length + ' recordatorios pendientes',
+    titulo: items.length + ' recordatorios' + (ETIQUETAS[tipo] || '') + ' pendientes',
     cuerpo: 'toca para revisarlos en Notificaciones',
-    // Único por corrida, mismo motivo que `textoResumen` en app-script.gs.
-    tag: 'recordatorios-' + Date.now(),
+    // Por tipo + hora, no solo hora: dos categorías de la misma corrida no
+    // deben compartir tag y taparse una a la otra.
+    tag: 'recordatorios-' + tipo + '-' + Date.now(),
   };
 }
 
@@ -526,7 +558,7 @@ function listarColeccion(url) {
   do {
     const res = fsFetch(url + '?pageSize=300' + (token ? '&pageToken=' + token : ''), 'get');
     ((res && res.documents) || []).forEach(function (doc) {
-      const d = fsMapa(doc.fields || {});
+      const d = _fsMapaConArrays(doc.fields || {});
       d._id = idDeRuta(doc.name);
       out.push(d);
     });
@@ -534,6 +566,33 @@ function listarColeccion(url) {
   } while (token);
 
   return out;
+}
+
+/**
+ * Como `fsLeer`/`fsMapa` de `app-script.gs`, pero soportando `arrayValue` —
+ * ese decoder no lo maneja (cualquier tipo que no reconoce cae al
+ * `return null` genérico), y por eso `impacto.tarjetas` (un array) llegaba
+ * como `null` en vez de la lista real: `revisarCortes` y
+ * `revisarPagosPendientes` nunca veían ninguna tarjeta, sin importar los
+ * datos reales. Se define acá, sin tocar `app-script.gs`, porque `impacto`
+ * es la primera colección que este archivo lee con un campo tipo lista.
+ */
+function _fsLeerConArrays(valor) {
+  if (!valor) return null;
+  if ('stringValue'    in valor) return valor.stringValue;
+  if ('doubleValue'    in valor) return Number(valor.doubleValue);
+  if ('integerValue'   in valor) return Number(valor.integerValue);
+  if ('booleanValue'   in valor) return valor.booleanValue;
+  if ('timestampValue' in valor) return valor.timestampValue;
+  if ('mapValue'       in valor) return _fsMapaConArrays(valor.mapValue.fields || {});
+  if ('arrayValue'     in valor) return ((valor.arrayValue.values) || []).map(_fsLeerConArrays);
+  return null;   // nullValue y tipos que no usamos
+}
+
+function _fsMapaConArrays(fields) {
+  const o = {};
+  Object.keys(fields).forEach(function (k) { o[k] = _fsLeerConArrays(fields[k]); });
+  return o;
 }
 
 /** Mismo tipado que `fsMap`, pero para un objeto de campos planos (no anidado bajo `datos`). */
