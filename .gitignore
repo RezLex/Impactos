@@ -8,11 +8,12 @@ test/fixtures/firestore.json
 # Bytecode cache de test/serve.py — se regenera solo, nada que versionar
 test/__pycache__/
 
-# Capturas de pantalla y estados de cuenta reales usados para auditar un ajuste
-# puntual (ver test/Ajuste DiDi, test/Ajuste Revolut) — a diferencia de los .xlsx
-# que sí se commitean, estos traen nombre/número de cuenta y no hace falta
-# publicarlos para que el reporte siga siendo útil como historial.
+# Estados de cuenta, capturas de pantalla y reportes .xlsx de auditorías puntuales
+# de rendimiento (ver test/Ajuste DiDi, test/Ajuste Revolut) — traen saldo real de
+# cuentas reales. Con el repo público, ninguno de estos debe entrar al historial;
+# quedan solo de forma local para quien esté auditando ese ajuste puntual.
 test/Ajuste */*.pdf
 test/Ajuste */*.png
 test/Ajuste */*.jpeg
 test/Ajuste */*.jpg
+test/Ajuste */*.xlsx
