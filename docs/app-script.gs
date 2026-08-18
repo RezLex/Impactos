@@ -46,7 +46,7 @@ const FS_NOTIS    = FS_DOCS + '/users/' + UID + '/notificaciones';
 const FS_DISPOS   = FS_DOCS + '/users/' + UID + '/dispositivos';
 const FCM_SEND    = 'https://fcm.googleapis.com/v1/projects/' + PROJECT_ID + '/messages:send';
 
-const APP_NOTIS   = 'https://rezlex.github.io/Impactos/#/notificaciones';
+const APP_NOTIS   = 'https://impactos.rez-lex.com/#/notificaciones';
 const DESTINO     = Session.getActiveUser().getEmail();
 const VENTANA     = '3d';
 const MAX_MEMORIA = 300;

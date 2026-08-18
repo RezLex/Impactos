@@ -149,7 +149,10 @@ const firebaseConfig = {
 **Dominios autorizados en Firebase Auth:**
 - `localhost` — para desarrollo local
 - `127.0.0.1` — para Live Server de VS Code
-- `TU_USUARIO.github.io` — para producción en GitHub Pages
+- `TU_USUARIO.github.io` — dominio por defecto de GitHub Pages
+- `impactos.rez-lex.com` — **dominio personalizado en producción** (archivo `CNAME` en la raíz
+  del repo, configurado en GitHub → Settings → Pages → Custom domain). Sin agregarlo también acá,
+  el login con Google falla con `auth/unauthorized-domain` al entrar desde ese dominio.
 
 ---
 
