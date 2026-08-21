@@ -4,6 +4,6 @@
   "type": "module",
   "description": "Declara los .js como ESM para Node. No hay build step: la app se sirve estática y el navegador ya los carga así.",
   "scripts": {
-    "test": "node test/rendimiento.test.mjs && node test/prefill-compra.test.mjs && node test/push-payload.test.mjs && node test/acumular.test.mjs && node test/app-script.test.mjs"
+    "test": "node test/rendimiento.test.mjs && node test/prefill-compra.test.mjs && node test/push-payload.test.mjs && node test/acumular.test.mjs && node test/app-script.test.mjs && node test/impacto-calc.test.mjs"
   }
 }

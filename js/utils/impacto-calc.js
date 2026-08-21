@@ -129,14 +129,21 @@ export function getPagosDiferidosMes(pagosDiferidos, tarjetaId, ciclo, mes, fest
     if (p.tarjetaId !== tarjetaId) return false;
     const compra = diferidoMap[p.compraId];
     if (!compra) return false;
-    const mesesPag = Number(p.mesesPagados) || 0;
-    // mesesTotal || 1: contado diferido pagos are single-occurrence; they retire after cerrarMes.
-    if (mesesPag >= (Number(compra.mesesTotal) || 1)) return false;
+
     const pc = _primerCiclo(ciclo, p.fecha, festivosMX);
     if (!pc) return false;
-    const nx = new Date(pc.cicloYear, pc.cicloMonth + mesesPag, 1);
-    const pp = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
-    return _enMes(pp.fechaPago, mes, festivosMX);
+
+    // Mismo fix que getPlazosMes: recorre las cuotas por fecha en vez de usar
+    // `mesesPagados` para ubicar la vigente — ese conteo avanza con el tiempo
+    // y un mes ya cerrado deja de encontrar la suya.
+    // mesesTotal || 1: contado diferido pagos are single-occurrence; they retire after cerrarMes.
+    const mesesTotal = Number(compra.mesesTotal) || 1;
+    for (let i = 0; i < mesesTotal; i++) {
+      const nx = new Date(pc.cicloYear, pc.cicloMonth + i, 1);
+      const pp = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+      if (_enMes(pp.fechaPago, mes, festivosMX)) return true;
+    }
+    return false;
   });
 }
 
@@ -146,12 +153,25 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   return msiItems.filter(m => {
     if (m.tarjetaId !== tarjetaId || m.liquidado) return false;
     if (m.diferido && (Number(m.total) || 0) < 0.005) return false; // ya todo registrado en pagos
-    if (Number(m.mesesPagados) >= Number(m.mesesTotal)) return false;
+
     const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
     if (!pc) return false;
-    const nx = new Date(pc.cicloYear, pc.cicloMonth + (Number(m.mesesPagados) || 0), 1);
-    const p  = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
-    return _enMes(p.fechaPago, mes, festivosMX);
+
+    // Recorre las mesesTotal cuotas (índice 0..mesesTotal-1) buscando cuál cae
+    // en `mes`, en vez de asumir que la cuota vigente es siempre la número
+    // `mesesPagados`. Esa suposición se rompe apenas se registra un pago: el
+    // mismo `mes` que se está cerrando deja de encontrar su cuota porque
+    // `mesesPagados` ya avanzó, y un mes ya cerrado nunca vuelve a encontrar
+    // la suya porque `mesesPagados` sigue avanzando después. El resultado no
+    // debe depender de cuántas cuotas ya se pagaron — eso es un hecho fijo de
+    // la fecha de compra y el ciclo, no del estado actual del pago.
+    const mesesTotal = Number(m.mesesTotal) || 0;
+    for (let i = 0; i < mesesTotal; i++) {
+      const nx = new Date(pc.cicloYear, pc.cicloMonth + i, 1);
+      const p  = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+      if (_enMes(p.fechaPago, mes, festivosMX)) return true;
+    }
+    return false;
   });
 }
 

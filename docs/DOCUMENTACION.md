@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T14`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T15`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -1219,8 +1219,14 @@ calcularCicloParaMes(ciclo, mes, festivosMX) → { fechaCorte, fechaPago } | nul
 // Compras de contado para una tarjeta cuya anteriorNomina(fechaPago_ciclo) cae en mes
 getContadoMes(contado, tarjetaId, ciclo, mes, festivosMX) → items[]
 
-// Mensualidades A Plazos cuyo próximo pago (anteriorNomina) cae en mes
+// Mensualidades A Plazos con alguna cuota (de las mesesTotal, pagada o no)
+// cuya anteriorNomina cae en mes — recorre las mesesTotal fechas, no asume
+// que la cuota vigente es la número `mesesPagados` (ver nota de bugfix abajo)
 getPlazosMes(msi, tarjetaId, ciclo, mes, festivosMX) → items[]
+
+// Mismo criterio que getPlazosMes, para pagos diferidos (contado o MSI
+// repartidos entre tarjetas) en vez de mensualidades A Plazos directas
+getPagosDiferidosMes(pagosDiferidos, tarjetaId, ciclo, mes, festivosMX, diferidoMap) → items[]
 
 // Gastos crédito confirmados cuya anteriorNomina(fechaPago_ciclo) cae en mes
 getGastosCreditoMes(gastos, tarjetaId, ciclo, mes, festivosMX) → items[]
@@ -1246,6 +1252,17 @@ proyectarMes(mes, currentMes, msi, contado, gastos, tarjetasCredito, nominaAprox
 ```
 
 **Criterio clave de asignación al mes**: una compra/gasto pertenece al Impacto del mes `M` si `anteriorNomina(fechaPago_del_ciclo_que_contiene_la_fecha_de_compra)` cae dentro del mes `M`.
+
+> **Bugfix (2026-08-18):** `getPlazosMes` y `getPagosDiferidosMes` ubicaban la cuota vigente
+> calculando la fecha a partir de `mesesPagados` (`cicloMonth + mesesPagados`) en vez de recorrer
+> las `mesesTotal` fechas reales. Como `mesesPagados` avanza con cada pago, el mes que se estaba
+> cerrando dejaba de encontrar su propia cuota apenas se registraba el pago — el estimado de A
+> Plazos se iba a $0 justo al pagar, y ese valor quedaba congelado para siempre al cerrar el mes
+> (los meses cerrados no se recalculan). Ahora ambas funciones recorren las `mesesTotal` cuotas por
+> fecha; el resultado para un `mes` dado ya no depende de cuántas cuotas se hayan pagado desde
+> entonces. Cubierto en `test/impacto-calc.test.mjs`. **No corrige retroactivamente** los meses ya
+> cerrados que quedaron con el estimado congelado en $0 — esos se corrigen a mano desde el lápiz de
+> "Monto a pagar" en `#/impacto`.
 
 ---
 
