@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T15`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T16`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -608,8 +608,11 @@ Vista principal rediseñada con datos en tiempo real del mes actual:
 
 > **Por qué las metric cards usan `col-xxl-4` y no `col-lg-4`:** con tres tarjetas en una fila, cada una necesita ~313px para que el importe no se corte con elipsis. Descontando el sidebar eso solo se cumple desde ~1400px de viewport. Por debajo de `xxl` la tercera baja a su propio renglón (`col-lg-6`) en vez de estrujar a las tres. Sin cuentas de inversión la fila vuelve a ser de dos tarjetas a `col-lg-6` y el layout es idéntico al original.
 - **Últimas compras** — hasta 20 compras recientes unificando De Contado y A Plazos, ordenadas por fecha:
-  - Badge `Contado` (gris) para compras de contado
-  - Badge `X/Y msi` (azul) con mensualidad/mes y total subtexto para A Plazos en curso
+  - Badge `Contado` (gris) para compras de contado; si además es `diferido`, se agrega el badge
+    `Diferido` (amarillo) y el monto mostrado usa `totalDiferido` (el total original de la compra)
+    en vez de `total`, que en una compra diferida guarda el saldo pendiente y llega a $0.00 una vez
+    liquidada — mismo criterio de fallback que ya usan Tarjetas e Impacto del Mes
+  - Badge `A N meses` (azul) con mensualidad/mes y total subtexto para A Plazos en curso
   - Enlace directo al comprobante si la compra tiene `enlaceCompra`
 - **Gastos Fijos del mes** — lista con estado (Registrado/Pendiente/Sin registrar) y montos
 - **Tarjetas del mes** — estado de cada tarjeta de crédito (pagada/pendiente/espera corte) con badge 1Q/2Q

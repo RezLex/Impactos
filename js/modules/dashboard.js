@@ -267,21 +267,22 @@ export async function render(container) {
                     const tarjeta = tc?.nombre || '—';
 
                     if (item._tipo === 'contado') {
+                      const montoContado = item.diferido ? (Number(item.totalDiferido) || Number(item.total) || 0) : item.total;
                       return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
                         <div class="flex-grow-1 min-width-0">
                           <div class="fw-500 text-truncate">${titulo}</div>
                           <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:var(--fs-nano);vertical-align:middle">Contado</span>${tarjeta}${fecha}
+                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:var(--fs-nano);vertical-align:middle">Contado</span>${item.diferido ? '<span class="badge bg-warning text-dark me-1" style="font-size:var(--fs-nano);vertical-align:middle">Diferido</span>' : ''}${tarjeta}${fecha}
                           </div>
                         </div>
-                        <div class="fw-semibold text-end flex-shrink-0">${currency(item.total)}</div>
+                        <div class="fw-semibold text-end flex-shrink-0">${currency(montoContado)}</div>
                       </div>`;
                     } else {
                       return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
                         <div class="flex-grow-1 min-width-0">
                           <div class="fw-500 text-truncate">${titulo}</div>
                           <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:var(--fs-nano);vertical-align:middle">${item.mesesPagados}/${item.mesesTotal} msi</span>${tarjeta}${fecha}
+                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:var(--fs-nano);vertical-align:middle">A ${item.mesesTotal} meses</span>${tarjeta}${fecha}
                           </div>
                         </div>
                         <div class="text-end flex-shrink-0">
