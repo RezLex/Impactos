@@ -1389,6 +1389,15 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
   const filaHoy        = filasHastaHoy[filasHastaHoy.length - 1] || null;
   const saldoActual    = filaHoy ? filaHoy.saldoFinal : capital;
   const pendiente      = filaHoy ? (filaHoy.pendiente || 0) : 0;
+  // En calendario hábil, "Último" tiene que ser lo mismo que ve el usuario en el
+  // renglón más reciente del historial (modal de detalle): el abono plegado, que
+  // junta el interés de fin de semana/festivo con el día hábil que lo acredita.
+  // Usar `filaHoy` sin plegar reportaría solo el devengo propio de ESE día,
+  // ignorando el puente que se le sumó — más chico que lo que la institución
+  // realmente abonó.
+  const filaAyer = cfg.abonaSoloHabil
+    ? plegarDiasInhabiles(filasHastaHoy, cfg).filas.slice(-1)[0] || null
+    : filaHoy;
   const brutoHastaHoy  = filasHastaHoy.reduce((s, f) => s + f.bruto, 0);
   const isrHastaHoy    = filasHastaHoy.reduce((s, f) => s + f.isr,   0);
   // Suma lo ABONADO (ya redondeado a centavos y encadenado), no el `neto`
@@ -1443,11 +1452,13 @@ export function resumenCuenta(cuenta, hoy = hoyISO()) {
     mensual: proyMensual.rendimiento,
     anual:   proyAnual.rendimiento,
     diarioBruto, isrDiario: isrDia,
-    // Lo generado el día consultado (`hoy` ya trae el corte de las 7am CDMX
-    // aplicado) — es lo que la institución abonó esa madrugada. Viene del
-    // mismo renglón que pinta el historial (neto + ajuste de ese día), así
-    // nunca puede desalinearse de lo que ahí se ve.
-    ayer: filaHoy ? filaHoy.neto + (filaHoy.ajuste || 0) : 0,
+    // Lo que la institución abonó la última vez que acreditó interés. En
+    // calendario natural es lo devengado el día consultado (`hoy` ya trae el
+    // corte de las 7am CDMX aplicado); en calendario hábil es el renglón
+    // plegado más reciente, que junta el puente inhábil con el día que lo
+    // abona — mismo criterio que pinta el historial, así nunca se desalinea
+    // de lo que ahí se ve.
+    ayer: filaAyer ? (filaAyer.abonado ?? filaAyer.neto) + (filaAyer.ajuste || 0) : 0,
     desglose: desgloseTramos(saldoActual, cfg),
     // La tasa ponderada y el GAT son brutos — es como los publica la institución
     tasaNominal: tasaNominal(saldoActual, cfg),

@@ -935,6 +935,19 @@ test('resumenCuenta reporta la bolsa y cuándo se acredita', () => {
   assert.equal(resumenCuenta(cuentaPlana(), '2026-01-04').pendiente, 0, 'natural nunca acumula');
 });
 
+test('"Último" en calendario hábil reporta el puente completo, no solo el día', () => {
+  const cuenta = cuentaPlana({ calendarioAbono: ABONO_HABIL_ACUMULA });
+  const [, vie, sab, dom, lun] = historialDiario(cuenta, '2026-01-05');
+
+  const rLunes = resumenCuenta(cuenta, '2026-01-05');
+  cerca(rLunes.ayer, sab.neto + dom.neto + lun.neto,
+        'el lunes "Último" junta sábado + domingo + lunes, como en el historial');
+
+  const rDomingo = resumenCuenta(cuenta, '2026-01-04');
+  cerca(rDomingo.ayer, vie.neto,
+        'un domingo (nada abonado aún) "Último" sigue mostrando el último día que sí acreditó');
+});
+
 test('un movimiento en fin de semana no despierta el abono', () => {
   const cuenta = cuentaPlana({
     calendarioAbono: ABONO_HABIL_ACUMULA,

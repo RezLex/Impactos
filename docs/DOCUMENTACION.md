@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T16`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T17`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -834,7 +834,7 @@ Las tarjetas se centran cuando la última fila no se llena (`justify-content-cen
 | Encabezado | Color de la institución, institución arriba y alias abajo (si no hay alias, la institución ocupa la línea principal) y las acciones |
 | Saldo | **Saldo actual estimado**, el importe protagonista |
 | Tasa | **Rendimiento anual** con la tasa del saldo actual, y una **ⓘ** que abre el desglose por tramos |
-| Ganado | Línea descriptiva `Hasta hoy $X · Último $Y` con un botón 🕐 que abre el historial diario |
+| Ganado | Línea descriptiva `Hasta hoy $X · Último $Y` con un botón 🕐 que abre el historial diario. En cuentas con `calendarioAbono` hábil, `Último` es el renglón plegado más reciente (el puente inhábil junto con el día que lo acredita), no solo el devengo propio de ese día — mismo criterio que pinta la primera fila del historial |
 | Rendimientos | **Diario · Mensual (30 d) · Anual (365 d)**, netos de ISR, en una fila con divisores |
 | Pie | Botón **Ver detalle** |
 
