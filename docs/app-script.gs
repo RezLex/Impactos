@@ -3,8 +3,12 @@
  * Firestore, para que la app (sección "Notificaciones") las liste y registre.
  *
  * Fuentes: Santander MX, PayPal MX (recibo), PayPal MX (autorización),
- *          Mercado Pago, Mi Saldo
- * Campos:  desc, total, fecha, hora, tarjeta, asunto, msgId [, meses, mensualidad]
+ *          Mercado Pago, Mi Saldo, Amazon MX (pedido)
+ * Campos:  desc, total, fecha, hora, tarjeta, asunto, msgId [, meses, mensualidad] [, pedido, articulo]
+ *
+ * Un correo puede generar VARIAS notificaciones: Amazon manda varios pedidos
+ * en un mismo correo, así que sus parsers pueden devolver un objeto, un
+ * arreglo de objetos, o null (`normalizarSalida`).
  *
  * Triggers:
  *   procesarCompras()   — cada 15 minutos. Escribe una notificación por compra
@@ -146,6 +150,13 @@ const FUENTES = [
     nombre: 'misaldo',
     query: 'from:receipt@api-sfinx.com subject:"Has comprado saldo"',
     parse: parseMiSaldo
+  },
+  {
+    // Confirmación de pedido, no de cobro: ver nota en parseAmazon sobre el
+    // riesgo de un pedido cancelado que ya quedó registrado.
+    nombre: 'amazon',
+    query: 'from:auto-confirm@amazon.com.mx subject:"Pedido"',
+    parse: parseAmazon
   }
 ];
 
@@ -181,18 +192,25 @@ function procesarCompras() {
         if (vistos.indexOf(id) !== -1) return;
 
         try {
-          const datos = fuente.parse(msg.getPlainBody(), msg);
-          if (!datos) {
+          const registros = normalizarSalida(fuente.parse(msg.getPlainBody(), msg));
+          if (!registros.length) {
             fallos.push(fuente.nombre + ' — sin match — ' + msg.getSubject());
           } else {
-            if (!datos.fecha) datos.fecha = fmt(msg.getDate(), 'yyyy-MM-dd');
-            if (!datos.hora)  datos.hora  = fmt(msg.getDate(), 'HH:mm');
-            datos.msgId = id;
-            // El asunto se toma aquí y no en cada parser: la lista de
-            // notificaciones lo muestra junto al comercio para dar contexto
-            // cuando el diccionario no reconoció la tienda.
-            datos.asunto = msg.getSubject();
-            creadas.push(crearNotificacion(datos));
+            registros.forEach(function (datos) {
+              if (!datos.fecha) datos.fecha = fmt(msg.getDate(), 'yyyy-MM-dd');
+              if (!datos.hora)  datos.hora  = fmt(msg.getDate(), 'HH:mm');
+              // Un mensaje con varios registros (Amazon: varios pedidos en un
+              // mismo correo) necesita una llave de idempotencia distinta por
+              // registro — msgId es también el criterio de deduplicación que
+              // usa la app, así que no puede repetirse entre ellos.
+              datos.msgId = datos.sufijo ? id + '-' + datos.sufijo : id;
+              delete datos.sufijo;
+              // El asunto se toma aquí y no en cada parser: la lista de
+              // notificaciones lo muestra junto al comercio para dar contexto
+              // cuando el diccionario no reconoció la tienda.
+              datos.asunto = msg.getSubject();
+              creadas.push(crearNotificacion(datos));
+            });
           }
           // Marcar visto solo si no hubo excepción. Un fallo de escritura en
           // Firestore antes perdía nada más un aviso; ahora perdería la compra
@@ -231,6 +249,12 @@ function procesarCompras() {
   }
 
   console.log('Nuevos: ' + creadas.length + ' | Fallos: ' + fallos.length);
+}
+
+/** Los parsers pueden devolver null, un objeto o un arreglo de objetos. */
+function normalizarSalida(r) {
+  if (!r) return [];
+  return Object.prototype.toString.call(r) === '[object Array]' ? r : [r];
 }
 
 // ---------- Trigger B: una vez al día ----------
@@ -384,25 +408,131 @@ function parseMiSaldo(cuerpo) {
   };
 }
 
+/** Recorta a las primeras `n` palabras, sin puntuación colgante al final. */
+function primerasPalabras(texto, n) {
+  return String(texto)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .slice(0, n)
+    .join(' ')
+    .replace(/[\s.,;:\-|]+$/, '');
+}
+
+/**
+ * Amazon manda VARIOS pedidos en un mismo correo, y un mismo pedido puede
+ * venir partido en varios bloques de envío. El "Total" aparece una sola vez
+ * por pedido, al final de su último bloque — por eso se recorre el cuerpo en
+ * orden y cada Total cierra el pedido abierto más reciente; partir el texto
+ * por bloques de envío da resultados incorrectos.
+ *
+ * De paso se guarda el primer artículo (línea "* ...") de cada pedido: sin
+ * esto, varios pedidos del mismo correo generan avisos idénticos ("Amazon"
+ * a secas, sin nada que los distinga). Un pedido partido REPITE su número
+ * en el segundo bloque de envío — el artículo solo se reinicia cuando el
+ * número CAMBIA, si no se quedaría con el primer artículo del segundo
+ * bloque en vez del primero real.
+ *
+ * Amazon confirma al ordenar, no al cobrar: un pedido cancelado queda
+ * registrado igual. No hay una segunda fuente para cruzar (Santander no
+ * manda alerta de compras en Amazon), así que el estado `pendiente` en
+ * Firestore es donde se descarta.
+ *
+ * Devuelve un registro por pedido — nunca un objeto suelto — para que
+ * `normalizarSalida` lo trate igual con uno o con varios.
+ */
+function parseAmazon(cuerpo) {
+  const marcas = [];
+  // El número de pedido es 3-7-7 dígitos. El de la URL del botón "Ver o
+  // editar pedido" viene mutilado en el texto plano ("orderIDp2-...") y por
+  // eso no cae en este patrón — revisar si Amazon cambia el formato.
+  // El Total va anclado a inicio de línea: sin eso, nombres de producto con
+  // medidas ("1.5 kg", "4.8 L") generan falsos positivos. Los artículos son
+  // líneas que empiezan con "* ".
+  const re = /(\d{3}-\d{7}-\d{7})|^\*\s+(.+)$|^Total\s*\n\s*([\d.,]+)\s*MXN/gm;
+  let m;
+  while ((m = re.exec(cuerpo)) !== null) {
+    if (m[1])      marcas.push({ t: 'pedido',   v: m[1] });
+    else if (m[2]) marcas.push({ t: 'articulo', v: m[2] });
+    else           marcas.push({ t: 'total',    v: m[3] });
+  }
+
+  const pedidos = [];
+  let abierto  = null;
+  let articulo = null;
+  marcas.forEach(function (mk) {
+    if (mk.t === 'pedido') {
+      if (mk.v !== abierto) { abierto = mk.v; articulo = null; }
+      return;
+    }
+    if (!abierto) return;
+    if (mk.t === 'articulo') {
+      if (!articulo) articulo = mk.v;   // solo el primero del pedido
+      return;
+    }
+    // El Total no es la suma de los productos: puede traer descuentos
+    // aplicados al cierre. Se usa el Total, que es lo que efectivamente se
+    // cobra.
+    pedidos.push({ pedido: abierto, total: normalizarMonto(mk.v), articulo: articulo });
+    abierto = null;
+    articulo = null;
+  });
+
+  if (!pedidos.length) return null;
+
+  const d = describir('AMAZON');
+
+  return pedidos.map(function (p) {
+    const registro = {
+      tarjeta: TARJETA_NA,   // el correo de confirmación no dice la tarjeta
+      total:   p.total,
+      fecha:   '',
+      hora:    '',
+      desc:    d.desc,
+      match:   d.match,
+      pedido:  p.pedido,
+      // Los últimos 7 dígitos del pedido, para componer un msgId distinto
+      // por registro cuando el correo trae varios (ver procesarCompras).
+      sufijo:  p.pedido.slice(-7)
+    };
+    // Se omite si el pedido no tenía artículos parseables: crearNotificacion
+    // ya descarta campos vacíos/nulos, así que basta con no ponerlo.
+    if (p.articulo) registro.articulo = primerasPalabras(p.articulo, 3);
+    return registro;
+  });
+}
+
 // ---------- Montos ----------
 
 /**
- * Normaliza a formato con punto decimal y sin separador de millares.
- * Maneja los dos formatos que llegan:
- *   "271.00"    -> "271.00"   (Santander, PayPal)
- *   "1.372,23"  -> "1372.23"  (Mercado Pago)
- * Regla: el último separador es el decimal si le siguen 2 dígitos.
+ * Normaliza a punto decimal, sin separador de millares, con 2 decimales.
+ * Formatos que llegan:
+ *   "271.00"   -> "271.00"    Santander, PayPal
+ *   "201.6"    -> "201.60"    Amazon (a veces manda un solo decimal)
+ *   "1.372,23" -> "1372.23"   Mercado Pago (formato europeo)
+ *   "1,250.50" -> "1250.50"
+ *   "1.500"    -> "1500.00"   separador de millares, sin decimales
+ * Regla: si hay dos separadores, el último es el decimal. Si hay uno solo,
+ * es decimal salvo que lo sigan exactamente 3 dígitos (millares).
  */
 function normalizarMonto(s) {
   const t = String(s).trim();
-  const sep = Math.max(t.lastIndexOf('.'), t.lastIndexOf(','));
-  if (sep === -1) return t;
+  const punto = t.lastIndexOf('.');
+  const coma  = t.lastIndexOf(',');
+  const sep   = Math.max(punto, coma);
+
+  if (sep === -1) return t + '.00';
 
   const decimales = t.length - sep - 1;
-  if (decimales === 2) {
-    return t.slice(0, sep).replace(/[.,]/g, '') + '.' + t.slice(sep + 1);
+  const ambos     = punto !== -1 && coma !== -1;
+
+  if (!ambos && decimales === 3) {
+    return t.replace(/[.,]/g, '') + '.00';   // separador de millares
   }
-  return t.replace(/[.,]/g, '');   // todos eran de millares
+
+  const entera = t.slice(0, sep).replace(/[.,]/g, '');
+  const frac   = (t.slice(sep + 1) + '00').slice(0, 2);
+  return entera + '.' + frac;
 }
 
 // ---------- Diccionario ----------
@@ -438,7 +568,7 @@ function crearNotificacion(datos) {
   if (!UID) throw new Error('Falta la propiedad de script UID');
 
   const CAMPOS = ['desc', 'total', 'fecha', 'hora', 'tarjeta',
-                  'meses', 'mensualidad', 'msgId', 'asunto'];
+                  'meses', 'mensualidad', 'articulo', 'pedido', 'msgId', 'asunto'];
   const NUMEROS = { total: true, meses: true, mensualidad: true };
 
   const d = {};
@@ -561,7 +691,10 @@ function textoCompra(c) {
   const d = c.datos;
   const aPlazos = d.meses != null && d.meses !== '';
   return {
-    titulo: pesos(d.total) + ' — ' + d.desc + (aPlazos ? ' (' + d.meses + ' MSI)' : ''),
+    // El artículo distingue compras que si no se verían idénticas: varios
+    // pedidos de Amazon en un mismo correo comparten `desc = 'Amazon'`.
+    titulo: pesos(d.total) + ' — ' + d.desc + (d.articulo ? ' · ' + d.articulo : '') +
+            (aPlazos ? ' (' + d.meses + ' MSI)' : ''),
     // Con match, la terminación basta de contexto. Sin match, el comercio del
     // título no dice nada y el asunto crudo es lo único que orienta.
     cuerpo: !d.match && d.asunto
@@ -578,7 +711,12 @@ function textoCompra(c) {
  */
 function textoResumen(compras) {
   const total = compras.reduce(function (s, c) { return s + (Number(c.datos.total) || 0); }, 0);
-  const nombres = compras.map(function (c) { return c.datos.desc; });
+  // Con artículo cuando lo hay: varios pedidos de Amazon en la misma corrida
+  // comparten `desc`, y sin esto la lista saldría "Amazon, Amazon y N más".
+  const nombres = compras.map(function (c) {
+    const d = c.datos;
+    return d.articulo ? d.desc + ' · ' + d.articulo : d.desc;
+  });
   const resto = nombres.length - 2;
 
   return {
@@ -695,6 +833,9 @@ function enviarResumen(pendientes) {
         'background:#e0e0e0;border-radius:20px;padding:2px 8px;margin-left:8px;">' +
         'sin match</span>') +
       '</div>' +
+
+      (d.articulo ? '<div style="font-size:12px;color:#9aa4b2;padding-top:3px;">' +
+                    escapar(d.articulo) + '</div>' : '') +
 
       (d.asunto ? '<div style="font-size:12px;color:#9aa4b2;padding-top:3px;">' +
                   escapar(d.asunto) + '</div>' : '') +

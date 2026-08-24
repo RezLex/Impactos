@@ -76,6 +76,32 @@ test('compra de contado: mapa de Firestore y query string dan lo mismo', () => {
   assert.deepEqual(prefillDesdeDatos(url,       TARJETAS, [], []), esperado);
 });
 
+test('con articulo (Amazon) la descripción precargada combina desc + articulo', () => {
+  const raw = { desc: 'Amazon', total: 1002.23, fecha: '2026-08-20', tarjeta: 'NA',
+                msgId: 'm3', articulo: 'Colgate Enjuague Bucal' };
+  const r = prefillDesdeDatos(raw, TARJETAS, [], []);
+  assert.equal(r.datos.compra, 'Amazon Colgate Enjuague Bucal');
+});
+
+test('sin articulo la descripción precargada es el desc crudo, como antes', () => {
+  const raw = { desc: 'Amazon', total: 1002.23, fecha: '2026-08-20', tarjeta: 'NA', msgId: 'm4' };
+  const r = prefillDesdeDatos(raw, TARJETAS, [], []);
+  assert.equal(r.datos.compra, 'Amazon');
+});
+
+test('con pedido (Amazon) se precarga "Pagos diferidos" marcado', () => {
+  const raw = { desc: 'Amazon', total: 1002.23, fecha: '2026-08-20', tarjeta: 'NA',
+                msgId: 'm5', pedido: '702-4694837-5698660' };
+  const r = prefillDesdeDatos(raw, TARJETAS, [], []);
+  assert.equal(r.datos.diferido, true);
+});
+
+test('sin pedido no se toca "diferido" (queda desmarcado, como antes)', () => {
+  const raw = { desc: 'Uber', total: 195.7, fecha: '2026-08-20', tarjeta: '4321', msgId: 'm6' };
+  const r = prefillDesdeDatos(raw, TARJETAS, [], []);
+  assert.equal('diferido' in r.datos, false);
+});
+
 test('compra a plazos: `meses` decide el tipo, en number y en string', () => {
   const firestore = { desc: 'API Global', total: 1372.23, fecha: '2026-08-07', hora: '11:04',
                       tarjeta: '6734', meses: 6, mensualidad: 228.71, msgId: 'm2' };

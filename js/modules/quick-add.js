@@ -26,6 +26,7 @@ const _leerFormulario = (formId, base = {}) => {
     // Se relee del campo, no de `base`: si el usuario la editó (o la borró)
     // antes de cambiar de modal, debe viajar el valor actual
     hora:          d.fechaCompraTime || undefined,
+    diferido:      d.diferido === '1',
   };
 };
 
@@ -187,10 +188,19 @@ function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
         const sel = item?.tarjetaId === t.id && !item?.numeroTarjeta ? 'selected' : '';
         return [`<option value="${t.id}::" ${sel}>${instPrefix}${t.nombre}</option>`];
       }
+      // Física y digital pueden guardar el MISMO número (p.ej. una tarjeta
+      // física dada de alta también como digital para un wallet). En ese caso
+      // dos <option> calificarían como "selected" — y el HTML solo respeta el
+      // ÚLTIMO cuando hay varios, así que sin esta guarda ganaría la digital
+      // (va después en `all`) aunque matchTarjetaPorTerminacion haya elegido
+      // la física. Se marca nada más la primera coincidencia.
+      let yaMarcado = false;
       return all.map(n => {
         const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
         const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
-        const sel   = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero ? 'selected' : '';
+        const coincide = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero;
+        const sel = coincide && !yaMarcado ? 'selected' : '';
+        if (coincide) yaMarcado = true;
         return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
       });
     }).join('');
@@ -547,11 +557,21 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
               </div>
             </div>
           </div>
+          <div class="col-12">
+            <div class="form-check form-switch mb-1">
+              <input class="form-check-input" type="checkbox" id="qa-chk-diferido-contado" name="diferido" value="1" ${p.diferido ? 'checked' : ''}>
+              <label class="form-check-label" for="qa-chk-diferido-contado">Pagos diferidos</label>
+              <small class="text-muted ms-2">El total se irá cubriendo con pagos posteriores</small>
+            </div>
+          </div>
           <div class="col-md-6">
             <label class="form-label">Total *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
               <input type="number" class="form-control" name="total" value="${p.total ?? ''}" required min="0" step="0.01">
+            </div>
+            <div id="qa-hint-diferido-contado" class="form-text" style="display:${p.diferido ? 'block' : 'none'}">
+              Este monto total afecta al límite disponible. Los pagos registrados lo reducirán.
             </div>
           </div>
           <div class="col-md-6">
@@ -578,6 +598,12 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   _wireBonifQA();
   _wireTimeToggle();
   _wireTimePicker();
+
+  const chkDifContado  = document.getElementById('qa-chk-diferido-contado');
+  const hintDifContado = document.getElementById('qa-hint-diferido-contado');
+  chkDifContado?.addEventListener('change', () => {
+    hintDifContado.style.display = chkDifContado.checked ? 'block' : 'none';
+  });
 
   // Se cablean en este orden y con el indirecto de `refrescarPreview` porque se
   // necesitan mutuamente: la vista previa tiene que sumar lo acumulado, y
@@ -608,9 +634,19 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     const [tarjetaId, numeroTarjeta] = (data.tarjetaId || '').split('::');
     data.tarjetaId = tarjetaId;
     data.numeroTarjeta = numeroTarjeta || '';
-    data.total = Number(data.total);
+    let totalVal = Number(data.total);
     const acum = acumElegido();
-    if (acum) data.total = totalAcumulado(data.total, acum);
+    if (acum) totalVal = totalAcumulado(totalVal, acum);
+    if (data.diferido === '1') {
+      // Alta nueva: nada se ha pagado todavía, así que el total pendiente y
+      // el total diferido arrancan iguales (mismo criterio que msi.js).
+      data.diferido      = true;
+      data.totalDiferido = totalVal;
+      data.total         = totalVal;
+    } else {
+      delete data.diferido;
+      data.total = totalVal;
+    }
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
@@ -656,11 +692,21 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
               </div>
             </div>
           </div>
+          <div class="col-12">
+            <div class="form-check form-switch mb-1">
+              <input class="form-check-input" type="checkbox" id="qa-chk-diferido-plazos" name="diferido" value="1" ${p.diferido ? 'checked' : ''}>
+              <label class="form-check-label" for="qa-chk-diferido-plazos">Pagos diferidos</label>
+              <small class="text-muted ms-2">El total se irá cubriendo con pagos posteriores</small>
+            </div>
+          </div>
           <div class="col-md-6">
             <label class="form-label">Total *</label>
             <div class="input-group">
               <span class="input-group-text">$</span>
               <input type="number" class="form-control" name="total" id="qa-total" value="${p.total ?? ''}" required min="0" step="0.01">
+            </div>
+            <div id="qa-hint-diferido-plazos" class="form-text" style="display:${p.diferido ? 'block' : 'none'}">
+              Este monto total afecta al límite disponible. Los pagos registrados lo reducirán.
             </div>
           </div>
           <div class="col-md-3">
@@ -709,6 +755,12 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
     form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos);
 
+  const chkDifPlazos  = document.getElementById('qa-chk-diferido-plazos');
+  const hintDifPlazos = document.getElementById('qa-hint-diferido-plazos');
+  chkDifPlazos?.addEventListener('change', () => {
+    hintDifPlazos.style.display = chkDifPlazos.checked ? 'block' : 'none';
+  });
+
   // Solo derivar total/meses si el enlace no trajo la mensualidad del banco,
   // que puede no cuadrar exactamente con la división por redondeos.
   if (p.mensualidad == null) recalc();
@@ -734,6 +786,14 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     data.mensualidad   = Number(data.mensualidad);
     data.mesesTotal    = Number(data.mesesTotal);
     data.mesesPagados  = 0;
+    if (data.diferido === '1') {
+      // Alta nueva: nada se ha pagado todavía, así que el total pendiente y
+      // el total diferido arrancan iguales (mismo criterio que msi.js).
+      data.diferido      = true;
+      data.totalDiferido = data.total;
+    } else {
+      delete data.diferido;
+    }
     data.restante      = r2(Math.max(0, data.total - data.mensualidad * data.mesesPagados));
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;

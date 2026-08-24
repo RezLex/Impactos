@@ -144,10 +144,18 @@ function showModal(fijo, instituciones, tarjetas, container) {
         const sel = fijo?.tarjetaId === t.id && !fijo?.numeroTarjeta ? 'selected' : '';
         return [`<option value="${t.id}::" ${sel}>${instPrefix}${t.nombre}</option>`];
       }
+      // Física y digital pueden guardar el MISMO número (p.ej. una tarjeta
+      // física dada de alta también como digital para un wallet). En ese caso
+      // dos <option> calificarían como "selected" — y el HTML solo respeta el
+      // ÚLTIMO cuando hay varios, así que sin esta guarda ganaría la digital
+      // (va después en `all`). Se marca nada más la primera coincidencia.
+      let yaMarcado = false;
       return all.map(n => {
         const last4 = String(n.numero).replace(/\s/g, '').slice(-4);
         const tipo  = n.formato === 'fisica' ? 'Física' : 'Digital';
-        const sel   = fijo?.tarjetaId === t.id && fijo?.numeroTarjeta === n.numero ? 'selected' : '';
+        const coincide = fijo?.tarjetaId === t.id && fijo?.numeroTarjeta === n.numero;
+        const sel = coincide && !yaMarcado ? 'selected' : '';
+        if (coincide) yaMarcado = true;
         return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
       });
     }).join('');

@@ -155,6 +155,12 @@ test('sin terminación conocida no se inventa el "···NA"', () => {
   assert.equal(m.opciones.body, 'toca para registrarla');
 });
 
+test('el artículo distingue una compra de Amazon en el título', () => {
+  const m = mostrar([compra('n', { total: 1002.23, desc: 'Amazon', tarjeta: 'NA', match: true,
+                                    articulo: 'Colgate Enjuague Bucal' })]);
+  assert.equal(m.titulo, '$1,002.23 — Amazon · Colgate Enjuague Bucal');
+});
+
 // ── Un solo aviso por corrida ────────────────────────────────────────────────
 
 test('varias compras van en UN solo envío, no uno por compra', () => {
@@ -175,6 +181,15 @@ test('el resumen dice cuántas, de dónde y por cuánto', () => {
   ]);
   assert.equal(m.titulo, '3 compras detectadas');
   assert.equal(m.opciones.body, 'Uber, Amazon y 1 más · $1,654.93 en total');
+});
+
+test('el resumen usa el artículo: sin él, varios pedidos de Amazon se verían idénticos', () => {
+  const m = mostrar([
+    compra('n1', { total: 1002.23, desc: 'Amazon', match: true, articulo: 'Colgate Enjuague Bucal' }),
+    compra('n2', { total: 485.51,  desc: 'Amazon', match: true, articulo: 'Fresh Step Multi-Cat' }),
+  ]);
+  assert.equal(m.opciones.body,
+    'Amazon · Colgate Enjuague Bucal, Amazon · Fresh Step Multi-Cat · $1,487.74 en total');
 });
 
 test('con dos no sobra el "y N más"', () => {

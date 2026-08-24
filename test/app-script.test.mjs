@@ -112,11 +112,121 @@ test('misaldo · cobra el Total, no el saldo abonado', () => {
 
 // ── Montos ───────────────────────────────────────────────────────────────────
 
-test('normalizarMonto · los dos formatos que llegan', () => {
+test('normalizarMonto · los formatos que llegan', () => {
   assert.equal(ctx.normalizarMonto('271.00'),   '271.00');    // Santander, PayPal
-  assert.equal(ctx.normalizarMonto('1.372,23'), '1372.23');   // Mercado Pago
+  assert.equal(ctx.normalizarMonto('201.6'),    '201.60');    // Amazon: a veces un solo decimal
+  assert.equal(ctx.normalizarMonto('1.372,23'), '1372.23');   // Mercado Pago, formato europeo
   assert.equal(ctx.normalizarMonto('1,499.00'), '1499.00');
-  assert.equal(ctx.normalizarMonto('1.500'),    '1500');      // sin decimales: todo era millares
+  assert.equal(ctx.normalizarMonto('1.500'),    '1500.00');   // sin decimales: todo era millares
+});
+
+// ── Amazon ───────────────────────────────────────────────────────────────────
+
+const CUERPO_AMAZON_UN_PEDIDO = `Hola Gabriel,
+
+Pedido n.º 702-1111111-1111111
+Producto A x1
+
+Total
+201.6 MXN
+`;
+
+const CUERPO_AMAZON_VARIOS = `Hola Gabriel,
+
+Pedido n.º 702-2435325-1682668
+Producto B x1
+
+Pedido n.º 702-2435325-1682668
+Producto C x1
+
+Total
+1465.99 MXN
+
+Pedido n.º 702-4694837-5698660
+Producto D x2
+
+Total
+1002.23 MXN
+`;
+
+test('amazon · un pedido, monto de un solo decimal', () => {
+  igual(ctx.parseAmazon(CUERPO_AMAZON_UN_PEDIDO), [
+    { tarjeta: 'NA', total: '201.60', fecha: '', hora: '', desc: 'Amazon', match: true,
+      pedido: '702-1111111-1111111', sufijo: '1111111' }
+  ]);
+});
+
+test('amazon · un correo con dos pedidos, uno partido en dos bloques de envío', () => {
+  igual(ctx.parseAmazon(CUERPO_AMAZON_VARIOS), [
+    { tarjeta: 'NA', total: '1465.99', fecha: '', hora: '', desc: 'Amazon', match: true,
+      pedido: '702-2435325-1682668', sufijo: '1682668' },
+    { tarjeta: 'NA', total: '1002.23', fecha: '', hora: '', desc: 'Amazon', match: true,
+      pedido: '702-4694837-5698660', sufijo: '5698660' }
+  ]);
+});
+
+test('amazon · sin Total no devuelve nada', () => {
+  assert.equal(ctx.parseAmazon('Pedido n.º 702-1111111-1111111\nProducto A x1\n'), null);
+});
+
+// ── Amazon · artículo ────────────────────────────────────────────────────────
+
+test('amazon · el artículo son las primeras 3 palabras de la primera línea "* "', () => {
+  const cuerpo = `Pedido n.º 702-1111111-1111111
+* Colgate Enjuague Bucal Plax Ice Infinity 500ml
+* Otro producto secundario
+
+Total
+201.6 MXN
+`;
+  igual(ctx.parseAmazon(cuerpo), [
+    { tarjeta: 'NA', total: '201.60', fecha: '', hora: '', desc: 'Amazon', match: true,
+      pedido: '702-1111111-1111111', sufijo: '1111111', articulo: 'Colgate Enjuague Bucal' }
+  ]);
+});
+
+test('amazon · un pedido partido en envíos no reinicia el artículo en el segundo bloque', () => {
+  // El número de pedido se repite en el segundo bloque de envío: el artículo
+  // debe quedarse con el del PRIMER bloque, no con el del segundo.
+  const cuerpo = `Pedido n.º 702-2435325-1682668
+* Cepillo de Vapor Multiusos
+
+Pedido n.º 702-2435325-1682668
+* Repuesto Adicional Otro
+
+Total
+1465.99 MXN
+`;
+  igual(ctx.parseAmazon(cuerpo), [
+    { tarjeta: 'NA', total: '1465.99', fecha: '', hora: '', desc: 'Amazon', match: true,
+      pedido: '702-2435325-1682668', sufijo: '1682668', articulo: 'Cepillo de Vapor' }
+  ]);
+});
+
+test('amazon · sin líneas "* " el registro no trae articulo', () => {
+  const r = ctx.parseAmazon(CUERPO_AMAZON_UN_PEDIDO);
+  assert.equal('articulo' in r[0], false);
+});
+
+test('primerasPalabras · corta a n tokens y limpia puntuación colgante', () => {
+  assert.equal(ctx.primerasPalabras('Colgate Enjuague Bucal Plax Ice Infinity 500ml', 3),
+    'Colgate Enjuague Bucal');
+  assert.equal(ctx.primerasPalabras('Fresh Step Multi-Cat con el Poder de Febreze', 3),
+    'Fresh Step Multi-Cat');
+  assert.equal(ctx.primerasPalabras('Truper A-31-90, Aceite multiusos, protección', 3),
+    'Truper A-31-90, Aceite');
+  // El guión suelto cuenta como token: se prefiere que queden 2 palabras a
+  // arrastrar un "-" colgando.
+  assert.equal(ctx.primerasPalabras("Nature's Miracle - Polvo antiolor Just for Cats", 3),
+    "Nature's Miracle");
+});
+
+// ── normalizarSalida ─────────────────────────────────────────────────────────
+
+test('normalizarSalida · null, un objeto o un arreglo quedan siempre en arreglo', () => {
+  igual(ctx.normalizarSalida(null), []);
+  igual(ctx.normalizarSalida({ a: 1 }), [{ a: 1 }]);
+  igual(ctx.normalizarSalida([{ a: 1 }, { a: 2 }]), [{ a: 1 }, { a: 2 }]);
 });
 
 test('pesos · formatea el number en que se guarda el importe', () => {

@@ -41,17 +41,22 @@ export function matchTarjetaPorTerminacion(terminacion, tarjetas) {
 
 /**
  * @param {object} raw  { desc, total, fecha, hora, tarjeta, msgId, asunto,
- *                        match, meses?, mensualidad? }. `meses` y `mensualidad`
- *                        solo vienen en compras a plazos; los campos que no
- *                        aplican se omiten, nunca llegan vacíos. Los números
- *                        pueden llegar como string (URL) o como number
- *                        (Firestore).
+ *                        match, meses?, mensualidad?, articulo?, pedido? }.
+ *                        `meses` y `mensualidad` solo vienen en compras a
+ *                        plazos; `articulo` y `pedido` solo en Amazon —
+ *                        `pedido` no se usa para mostrar nada, solo como señal
+ *                        de que la fuente es Amazon (ver `diferido` abajo).
+ *                        Los campos que no aplican se omiten, nunca llegan
+ *                        vacíos. Los números pueden llegar como string (URL)
+ *                        o como number (Firestore).
  * @returns {'duplicado'|null|{tipo: 'contado'|'msi', datos: object}}
  */
 export function prefillDesdeDatos(raw, tarjetas, contadoItems, msiItems) {
-  const desc  = raw.desc;
   const total = parseFloat(raw.total);
-  if (!desc || !Number.isFinite(total)) return null;
+  if (!raw.desc || !Number.isFinite(total)) return null;
+  // El artículo (solo Amazon) distingue pedidos que si no compartirían la
+  // misma descripción cruda: los tres quedarían como "Amazon" a secas.
+  const desc = raw.articulo ? `${raw.desc} ${raw.articulo}` : raw.desc;
 
   // El tipo lo decide la PRESENCIA de `meses`, no un campo aparte
   const meses = parseInt(raw.meses, 10);
@@ -78,6 +83,10 @@ export function prefillDesdeDatos(raw, tarjetas, contadoItems, msiItems) {
     tarjetaId: match?.tarjetaId || '',
     numeroTarjeta: match?.numero || '',
     ...(msgId ? { msgId } : {}),
+    // Amazon confirma al ordenar, no al cobrar, y el cargo real puede tardar
+    // días: se preselecciona "Pagos diferidos" para no inflar de inmediato el
+    // saldo usado con un cargo que todavía no llega al estado de cuenta.
+    ...(raw.pedido ? { diferido: true } : {}),
   };
   if (esMsi) {
     datos.mesesTotal = meses;

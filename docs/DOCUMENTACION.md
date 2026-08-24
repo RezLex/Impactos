@@ -256,6 +256,15 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `numero` | string? | Número completo de la tarjeta |
 | `fechaVencimiento` | string? | Vencimiento en formato `MM/AA` |
 
+> Física y digital pueden guardar el **mismo** `numero` (p.ej. una tarjeta física dada de alta
+> también como digital para un wallet, con la misma terminación). Al resolver una compra por
+> terminación (`matchTarjetaPorTerminacion` en `js/utils/prefill-compra.js`), gana la física. Los
+> `<select>` de tarjeta (`msi.js`, `quick-add.js`, `fijos.js`) tienen que respetar ese mismo
+> desempate al armar las `<option>`: si los dos números coinciden, ambas opciones calificarían
+> como `selected`, y el HTML solo respeta la **última** `<option selected>` cuando hay varias —
+> sin una guarda explícita (`yaMarcado`, primera coincidencia gana) el `<select>` terminaba
+> mostrando la digital aunque la lógica hubiera elegido la física.
+
 ### `contado/{id}`
 Compras de contado (sin meses) con cualquier tipo de tarjeta.
 
@@ -367,7 +376,9 @@ entradas comparten la traducción de `js/utils/prefill-compra.js`.
 | `tarjeta` | string | **Terminación** de 4 dígitos, o `NA` si el correo no la revela. No es un `tarjetaId`: el mapeo lo hace la app con `matchTarjetaPorTerminacion` |
 | `meses` | number? | Solo en compras a plazos — su presencia es lo que decide el tipo |
 | `mensualidad` | number? | Solo en compras a plazos; manda sobre `total / meses` |
-| `msgId` | string | Id del mensaje de Gmail — sirve para detectar que la compra ya se registró |
+| `pedido` | string? | Solo en Amazon — número de pedido completo (`NNN-NNNNNNN-NNNNNNN`), para conciliar contra el historial de Amazon |
+| `articulo` | string? | Solo en Amazon — primeras 3 palabras del primer artículo del pedido, para distinguir varios pedidos del mismo correo que si no compartirían `desc = 'Amazon'`. Ausente si el pedido no tenía artículos parseables. `js/utils/prefill-compra.js` lo combina con `desc` (`"Amazon Colgate Enjuague Bucal"`) al precargar el modal — el registro final queda con esa descripción, no con `desc` a secas |
+| `msgId` | string | Id del mensaje de Gmail — sirve para detectar que la compra ya se registró. Un correo de Amazon puede traer varios pedidos: en ese caso cada registro usa `{msgId del correo}-{últimos 7 dígitos del pedido}` para no pisarse entre sí |
 | `asunto` | string | Asunto crudo del correo, el contexto que salva la fila cuando no hubo match |
 | `match` | boolean | Si el diccionario reconoció el comercio |
 
@@ -700,6 +711,11 @@ al correo individual por compra que se mandaba antes; ver `docs/NOTIFICACIONES-P
     `openQuickAdd`), el mismo del FAB, con su vista previa de ciclo, disponible e impacto. Al
     guardar, la notificación pasa a `estatus: procesada`. Si el modal se cambia de contado a
     plazos (o al revés), la notificación se cierra igual: `onSaved` viaja con el cambio.
+  - **Amazon** (`datos.pedido` presente): el modal abre con **"Pagos diferidos"** premarcado —
+    Amazon confirma al ordenar, no al cobrar, así que el cargo real puede tardar en llegar al
+    estado de cuenta. El checkbox (con su campo `totalDiferido`) vivía solo en el modal completo
+    de `js/modules/msi.js`; `js/modules/quick-add.js` (Registro Rápido) tiene su propia copia
+    portada de esa lógica. El usuario puede desmarcarlo antes de guardar.
   - Si el `msgId` ya está en `contado` o `msi`, la compra se registró antes: no se abre el modal,
     la notificación se marca `procesada` directamente.
 - **Fila de recordatorio** (`tipo: corte` \| `gastoFijo` \| `rendimiento` \| `pago`): plantilla
