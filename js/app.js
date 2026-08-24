@@ -2,7 +2,7 @@ import { initAuth }   from './auth.js';
 import { initRouter, register, navigate } from './router.js';
 import { clearCache } from './utils/db.js';
 
-const APP_VERSION = '1.9.3-T17';
+const APP_VERSION = '1.9.3-T18';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -58,6 +58,10 @@ function setupRouter() {
   register('/eventos',   (p, pts) => {
     if (pts[1]) load('evento-detalle', pts[1]);
     else        load('eventos');
+  });
+  register('/articulos', (p, pts) => {
+    if (pts[1]) load('articulo-detalle', pts[1]);
+    else        load('articulos');
   });
   register('/ajustes',   ()       => load('ajustes'));
   register('/exportar',  ()       => navigate('/ajustes'));   // la vista se absorbió en Ajustes

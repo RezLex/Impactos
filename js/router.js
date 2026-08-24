@@ -46,6 +46,7 @@ function _updateNav(base) {
     '/impacto':   'Impacto Mensual',
     '/rendimientos': 'Rendimientos',
     '/eventos':   'Eventos de Ofertas',
+    '/articulos': 'Artículos Recurrentes',
     '/ajustes':   'Ajustes',
     '/festivos':  'Días Festivos',
     '/admin':     'Instituciones y Tarjetas',
