@@ -24,6 +24,23 @@ function colorCategoria(categoria) {
 
 const unidadDefault = tipo => tipo === 'volumen' ? 'L' : tipo === 'masa' ? 'kg' : 'pza';
 
+// Se recuerda entre navegaciones dentro de la misma sesión (variable de módulo, no por render).
+let ordenActual = 'categoria'; // 'categoria' | 'compras'
+
+function comparadorArticulos(orden) {
+  if (orden === 'compras') {
+    return (a, b) => {
+      const ca = (a.registros || []).length;
+      const cb = (b.registros || []).length;
+      return cb - ca || (a.nombre || '').localeCompare(b.nombre || '', 'es');
+    };
+  }
+  return (a, b) => {
+    const co = (a.categoria || '').localeCompare(b.categoria || '', 'es');
+    return co !== 0 ? co : (a.nombre || '').localeCompare(b.nombre || '', 'es');
+  };
+}
+
 export async function render(container) {
   await renderList(container);
 }
@@ -31,7 +48,7 @@ export async function render(container) {
 async function renderList(container) {
   try {
     const articulos = (await getAll(COL)).filter(a => a.activo !== false);
-    articulos.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+    const categorias = [...new Set(articulos.map(a => a.categoria).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
 
     container.innerHTML = `
       <div class="page-header">
@@ -39,38 +56,50 @@ async function renderList(container) {
           <h2>Artículos Recurrentes</h2>
           <p>${articulos.length} artículos en control</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="btn-nuevo-articulo">
-          <i class="bi bi-plus-lg me-1"></i>Nuevo Artículo
-        </button>
+        <div class="d-flex gap-2">
+          <select class="form-select form-select-sm" id="sel-orden-articulos" style="width:auto">
+            <option value="categoria" ${ordenActual === 'categoria' ? 'selected' : ''}>Ordenar por categoría</option>
+            <option value="compras"   ${ordenActual === 'compras'   ? 'selected' : ''}>Más comprado primero</option>
+          </select>
+          <button class="btn btn-primary btn-sm" id="btn-nuevo-articulo">
+            <i class="bi bi-plus-lg me-1"></i>Nuevo Artículo
+          </button>
+        </div>
       </div>
 
-      ${articulos.length === 0
+      <div id="articulos-grid"></div>`;
+
+    const renderGrid = () => {
+      const ordenados = [...articulos].sort(comparadorArticulos(ordenActual));
+      document.getElementById('articulos-grid').innerHTML = ordenados.length === 0
         ? `<div class="empty-state"><i class="bi bi-basket"></i><p>Sin artículos registrados.<br>Agrega uno para empezar a llevar su inventario.</p></div>`
-        : `<div class="row g-3">
-            ${articulos.map(a => renderArticuloCard(a)).join('')}
-          </div>`
-      }`;
+        : `<div class="row g-3">${ordenados.map(a => renderArticuloCard(a)).join('')}</div>`;
 
-    const categorias = [...new Set(articulos.map(a => a.categoria).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+      document.querySelectorAll('.btn-abrir-articulo').forEach(btn =>
+        btn.addEventListener('click', () => navigate('/articulos/' + btn.dataset.id)));
+      document.querySelectorAll('.btn-edit-articulo').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          showArticuloModal(articulos.find(a => a.id === btn.dataset.id), container, categorias);
+        }));
+      document.querySelectorAll('.btn-del-articulo').forEach(btn =>
+        btn.addEventListener('click', async e => {
+          e.stopPropagation();
+          const a = articulos.find(x => x.id === btn.dataset.id);
+          if (!confirmDelete(a.nombre)) return;
+          await remove(COL, a.id);
+          toast('Artículo eliminado');
+          renderList(container);
+        }));
+    };
+    renderGrid();
 
+    document.getElementById('sel-orden-articulos').addEventListener('change', e => {
+      ordenActual = e.target.value;
+      renderGrid();
+    });
     document.getElementById('btn-nuevo-articulo').addEventListener('click', () =>
       showArticuloModal(null, container, categorias));
-    document.querySelectorAll('.btn-abrir-articulo').forEach(btn =>
-      btn.addEventListener('click', () => navigate('/articulos/' + btn.dataset.id)));
-    document.querySelectorAll('.btn-edit-articulo').forEach(btn =>
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        showArticuloModal(articulos.find(a => a.id === btn.dataset.id), container, categorias);
-      }));
-    document.querySelectorAll('.btn-del-articulo').forEach(btn =>
-      btn.addEventListener('click', async e => {
-        e.stopPropagation();
-        const a = articulos.find(x => x.id === btn.dataset.id);
-        if (!confirmDelete(a.nombre)) return;
-        await remove(COL, a.id);
-        toast('Artículo eliminado');
-        renderList(container);
-      }));
   } catch (e) {
     container.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
   }

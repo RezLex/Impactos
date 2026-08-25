@@ -27,6 +27,9 @@ test('descuento porcentaje', () => {
 test('descuento cantidad', () => {
   cerca(precioNeto({ precio: 100, descuento: { tipo: 'cantidad', valor: 15 } }), 85, '$15 de 100');
 });
+test('descuento tipo final: el valor YA es el precio neto, sin restar', () => {
+  cerca(precioNeto({ precio: 549, descuento: { tipo: 'final', valor: 510.36 } }), 510.36, 'precio final capturado directo');
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 grupo('precioPorUnidad');
@@ -59,8 +62,8 @@ test('con descuento sí lo aplica, a diferencia de precioPorUnidad', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 grupo('duracionDias / duracionPorUnidad');
 
-test('null si no está terminado', () => {
-  assert.equal(duracionDias({ estatus: 'enUso', fechaEnUso: '2026-01-01' }), null);
+test('null en otro estatus (comprado)', () => {
+  assert.equal(duracionDias({ estatus: 'comprado', fechaEnUso: '2026-01-01' }), null);
 });
 test('null si falta fechaEnUso', () => {
   assert.equal(duracionDias({ estatus: 'terminado', fechaTerminado: '2026-01-20' }), null);
@@ -75,6 +78,25 @@ test('duración por litro', () => {
     contenidoValor: 1, contenidoUnidad: 'L',
   };
   cerca(duracionPorUnidad(r, 'L'), 10, '10 días / 1L');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('duracionDias en uso (hasta hoy)');
+
+const haceDias = n => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+test('en uso se cuenta desde fechaEnUso hasta hoy', () => {
+  assert.equal(duracionDias({ estatus: 'enUso', fechaEnUso: haceDias(5) }), 5);
+});
+test('en uso sin fechaEnUso es null', () => {
+  assert.equal(duracionDias({ estatus: 'enUso' }), null);
+});
+test('en uso marcado hoy mismo da 0 días', () => {
+  assert.equal(duracionDias({ estatus: 'enUso', fechaEnUso: haceDias(0) }), 0);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +122,26 @@ test('estatus se ignora cuando sinSeguimiento es true', () => {
   const r1 = { sinSeguimiento: true, estatus: 'comprado', fechaComprado: '2026-01-01' };
   const r2 = { fechaComprado: '2026-01-16' };
   assert.equal(duracionDias(r1, [r1, r2]), 15);
+});
+test('si el siguiente ya está en uso, se usa su fechaEnUso (no su fechaComprado)', () => {
+  const r1 = { sinSeguimiento: true, fechaComprado: '2026-01-01' };
+  const r2 = { estatus: 'enUso', fechaComprado: '2026-01-10', fechaEnUso: '2026-01-16' };
+  assert.equal(duracionDias(r1, [r1, r2]), 15); // hasta el 16, no hasta el 10
+});
+test('si el siguiente ya está terminado, también se usa su fechaEnUso', () => {
+  const r1 = { sinSeguimiento: true, fechaComprado: '2026-01-01' };
+  const r2 = { estatus: 'terminado', fechaComprado: '2026-01-10', fechaEnUso: '2026-01-16', fechaTerminado: '2026-01-30' };
+  assert.equal(duracionDias(r1, [r1, r2]), 15);
+});
+test('si el siguiente sigue comprado (sin fechaEnUso), se usa su fechaComprado', () => {
+  const r1 = { sinSeguimiento: true, fechaComprado: '2026-01-01' };
+  const r2 = { estatus: 'comprado', fechaComprado: '2026-01-10' };
+  assert.equal(duracionDias(r1, [r1, r2]), 9);
+});
+test('si el siguiente es sinSeguimiento, se usa su fechaComprado aunque arrastre una fechaEnUso vieja', () => {
+  const r1 = { sinSeguimiento: true, fechaComprado: '2026-01-01' };
+  const r2 = { sinSeguimiento: true, fechaComprado: '2026-01-10', fechaEnUso: '2026-01-05' }; // fecha vieja, de antes de marcarse sin seguimiento
+  assert.equal(duracionDias(r1, [r1, r2]), 9); // usa el 10, no el 5
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

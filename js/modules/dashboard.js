@@ -8,6 +8,10 @@ import {
   recalcTotalesImpacto,
 } from '../utils/impacto-calc.js';
 import { resumenCuenta, totalizarResumenes, registrarInhabiles } from '../utils/rendimiento.js';
+import { showAvanceModal } from './articulo-detalle.js';
+
+const ARTICULOS_ESTATUS_LABEL = { comprado: 'Comprado', enUso: 'En uso' };
+const ARTICULOS_ESTATUS_CLS   = { comprado: 'bg-secondary-subtle text-secondary', enUso: 'bg-info-subtle text-info-emphasis' };
 
 export async function render(container) {
   container.innerHTML = `<div class="loading-overlay"><div class="spinner-border text-primary" role="status"></div></div>`;
@@ -38,7 +42,7 @@ export async function render(container) {
   try {
     const mes = currentYYYYMM();
 
-    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, inversiones] =
+    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, inversiones, articulosRecurrentes] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -51,6 +55,7 @@ export async function render(container) {
         getById('config', 'general'),
         getAll('pagosDiferidos'),
         getAll('inversiones'),
+        getAll('articulosRecurrentes'),
       ]);
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -162,6 +167,25 @@ export async function render(container) {
     const gastosFijosPendientes = gastosDebMes
       .filter(g => g.estado !== 'registrado' && g.estado !== 'descartado')
       .slice(0, 5);
+
+    // ── Artículos Recurrentes: comprado/en uso de todos los artículos ────────
+    // Los `sinSeguimiento` no traen estatus accionable (su avanzar está oculto
+    // en el propio módulo), así que no aportan nada aquí.
+    const articulosMap = new Map(articulosRecurrentes.map(a => [a.id, a]));
+    const articulosPendientes = [];
+    articulosRecurrentes.forEach(a => {
+      (a.registros || []).forEach((r, idx) => {
+        if (r.sinSeguimiento || (r.estatus !== 'comprado' && r.estatus !== 'enUso')) return;
+        articulosPendientes.push({ articuloId: a.id, articuloNombre: a.nombre, idx, ...r });
+      });
+    });
+    articulosPendientes.sort((a, b) => {
+      const go = (a.estatus === 'enUso' ? 0 : 1) - (b.estatus === 'enUso' ? 0 : 1);
+      if (go !== 0) return go;
+      const fa = a.estatus === 'enUso' ? a.fechaEnUso : a.fechaComprado;
+      const fb = b.estatus === 'enUso' ? b.fechaEnUso : b.fechaComprado;
+      return (fa || '').localeCompare(fb || '');
+    });
 
     // ── Render ───────────────────────────────────────────────────────────────
     container.innerHTML = `
@@ -330,9 +354,9 @@ export async function render(container) {
         </div>
       </div>
 
-      <!-- ── Row 2: Tarjetas ── -->
+      <!-- ── Row 2: Tarjetas + Artículos Recurrentes ── -->
       <div class="row g-3 mb-3">
-        <div class="col-lg-12">
+        <div class="${articulosPendientes.length > 0 ? 'col-lg-6' : 'col-lg-12'}">
           <div class="data-card h-100">
             <div class="data-card-header">
               <span><i class="bi bi-credit-card me-2"></i>Tarjetas — ${fmtMonth(mes)}</span>
@@ -379,7 +403,42 @@ export async function render(container) {
             </div>
           </div>
         </div>
+
+        ${articulosPendientes.length > 0 ? `
+        <div class="col-lg-6">
+          <div class="data-card h-100">
+            <div class="data-card-header">
+              <span><i class="bi bi-basket me-2"></i>Artículos Recurrentes — Comprado / En uso</span>
+              <a href="#/articulos" class="text-white" style="font-size:0.78rem">Ver todo →</a>
+            </div>
+            <div class="table-wrapper dash-panel-content" style="max-height:260px;overflow-y:auto">
+              <table class="table table-sm mb-0" style="font-size:0.82rem">
+                <tbody>
+                  ${articulosPendientes.map(r => {
+                    const fecha = r.estatus === 'enUso' ? r.fechaEnUso : r.fechaComprado;
+                    return `<tr class="dash-articulo-row" data-articulo-id="${r.articuloId}" data-idx="${r.idx}" style="cursor:pointer">
+                      <td style="padding:4px 8px">
+                        <div class="fw-500">${r.articuloNombre}</div>
+                        <div class="text-muted" style="font-size:0.72rem">${r.marca ? r.marca + ' · ' : ''}${r.contenidoValor} ${r.contenidoUnidad}</div>
+                      </td>
+                      <td style="padding:4px 8px;white-space:nowrap">
+                        <span class="badge ${ARTICULOS_ESTATUS_CLS[r.estatus] || 'bg-secondary-subtle text-secondary'}" style="font-size:var(--fs-tiny)">${ARTICULOS_ESTATUS_LABEL[r.estatus] || r.estatus}</span>
+                      </td>
+                      <td class="text-end text-muted" style="padding:4px 8px;white-space:nowrap;font-size:0.75rem">${fecha ? fmtShortDate(fecha) : '—'}</td>
+                    </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>` : ''}
       </div>`;
+
+    document.querySelectorAll('.dash-articulo-row').forEach(tr =>
+      tr.addEventListener('click', () => {
+        const articulo = articulosMap.get(tr.dataset.articuloId);
+        showAvanceModal(articulo, Number(tr.dataset.idx), () => render(container));
+      }));
 
   } catch (e) {
     container.innerHTML = `<div class="alert alert-danger">Error al cargar el dashboard: ${e.message}</div>`;

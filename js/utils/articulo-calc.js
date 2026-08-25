@@ -5,11 +5,16 @@
 import { convertir } from './unidades.js';
 import { diasEntre } from './rendimiento.js';
 
-/** Precio neto de un registro tras aplicar su descuento (mismo criterio que `bonificacion` en compras). */
+/**
+ * Precio neto de un registro tras aplicar su descuento (mismo criterio que `bonificacion`
+ * en compras, más `tipo: 'final'` — cuando el usuario capturó directamente el precio ya
+ * neto en vez de un porcentaje o monto de descuento, `valor` YA es el precio final).
+ */
 export function precioNeto(registro) {
   const precio = Number(registro?.precio) || 0;
   const d = registro?.descuento;
   if (!d || !d.tipo) return precio;
+  if (d.tipo === 'final') return Number(d.valor) || 0;
   const monto = d.tipo === 'porcentaje' ? precio * (Number(d.valor) / 100) : Number(d.valor) || 0;
   return precio - monto;
 }
@@ -49,14 +54,33 @@ function siguienteCompra(registros, registro) {
 }
 
 /**
- * Días que duró el registro.
+ * Fecha en que se estima que empezó a usarse `siguiente` — el momento más cercano a
+ * cuándo dejó de necesitarse el registro anterior. Usa su `fechaEnUso` si de verdad lo
+ * están rastreando (no es `sinSeguimiento` y ya tiene esa fecha, o sea está `enUso` o
+ * `terminado`); si sigue `comprado` (sin abrir) o también es `sinSeguimiento`, esa fecha
+ * no existe o no es confiable, así que se usa su `fechaComprado`.
+ */
+function fechaInicioUso(siguiente) {
+  if (!siguiente.sinSeguimiento && siguiente.fechaEnUso) return siguiente.fechaEnUso;
+  return siguiente.fechaComprado;
+}
+
+/** Fecha de hoy en hora local, `YYYY-MM-DD`. */
+function hoyISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Días que duró (o lleva durando) el registro.
  *
- * Con seguimiento normal: `fechaEnUso` → `fechaTerminado`, `null` si no está `terminado`
- * o le falta alguna fecha.
+ * Con seguimiento normal: `fechaEnUso` → `fechaTerminado` si ya está `terminado`;
+ * `fechaEnUso` → hoy si sigue `enUso` (duración parcial, todavía en curso); `null` en
+ * cualquier otro estatus o si falta alguna fecha.
  *
  * Sin seguimiento (`registro.sinSeguimiento`): se estima como `fechaComprado` de este
- * registro → `fechaComprado` del siguiente registro comprado del mismo artículo (los
- * demás elementos de `registros`) — `null` si es el más reciente, porque todavía no hay
+ * registro → la fecha en que se empezó a usar el siguiente registro comprado del mismo
+ * artículo (ver `fechaInicioUso`) — `null` si es el más reciente, porque todavía no hay
  * un "siguiente" con quién compararlo.
  */
 export function duracionDias(registro, registros = []) {
@@ -64,7 +88,12 @@ export function duracionDias(registro, registros = []) {
     if (!registro.fechaComprado) return null;
     const siguiente = siguienteCompra(registros, registro);
     if (!siguiente) return null;
-    const dias = diasEntre(registro.fechaComprado, siguiente.fechaComprado);
+    const dias = diasEntre(registro.fechaComprado, fechaInicioUso(siguiente));
+    return dias >= 0 ? dias : null;
+  }
+  if (registro?.estatus === 'enUso') {
+    if (!registro.fechaEnUso) return null;
+    const dias = diasEntre(registro.fechaEnUso, hoyISO());
     return dias >= 0 ? dias : null;
   }
   if (registro?.estatus !== 'terminado' || !registro?.fechaEnUso || !registro?.fechaTerminado) return null;
@@ -92,17 +121,20 @@ function promedio(valores) {
  * y el conteo de registros por estatus.
  *
  * El promedio de precio toma TODOS los registros (precio/contenido se conocen desde
- * la compra) y es sin descuento (ver `precioPorUnidad`). El promedio de duración toma
- * los registros `terminado` con `fechaEnUso`, más los `sinSeguimiento` que ya tengan un
- * "siguiente" registro con quién compararse (ver `duracionDias`) — `duracionPorUnidad`
- * devuelve `null` para el resto y `promedio()` los ignora.
+ * la compra) y es sin descuento (ver `precioPorUnidad`). El promedio de duración solo
+ * toma registros con una duración YA CERRADA — `terminado` con `fechaEnUso`, o
+ * `sinSeguimiento` con un "siguiente" registro con quién compararse (ver `duracionDias`).
+ * Los `enUso` quedan fuera: su duración todavía corre día a día y metería un número
+ * parcial y cambiante en el promedio.
  */
 export function resumenArticulo(articulo) {
   const registros = Array.isArray(articulo?.registros) ? articulo.registros : [];
   const unidad = articulo?.unidadPreferida;
 
+  const registrosConDuracionCerrada = registros.filter(r => r.sinSeguimiento || r.estatus === 'terminado');
+
   const promedioPrecioPorUnidad = promedio(registros.map(r => precioPorUnidad(r, unidad)));
-  const promedioDuracionPorUnidad = promedio(registros.map(r => duracionPorUnidad(r, unidad, registros)));
+  const promedioDuracionPorUnidad = promedio(registrosConDuracionCerrada.map(r => duracionPorUnidad(r, unidad, registros)));
 
   const stock = { comprado: 0, enUso: 0, terminado: 0, sinSeguimiento: 0 };
   registros.forEach(r => {

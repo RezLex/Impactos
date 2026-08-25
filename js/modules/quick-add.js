@@ -154,6 +154,7 @@ import { toast, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
 import { proyectarMes, getGastosDebitoCompleto } from '../utils/impacto-calc.js';
+import { showRegistroModal } from './articulo-detalle.js';
 
 async function _loadData() {
   const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos] = await Promise.all([
@@ -523,10 +524,27 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
 // `prefill` precarga el formulario (lo usa el pre-registro por URL de msi.js).
 // `onSaved` permite al llamante refrescar su vista tras guardar.
 export async function openQuickAdd(action, prefill = null, onSaved = null) {
+  if (action === 'articulo') { await _showArticuloPicker(onSaved); return; }
   const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos } = await _loadData();
   if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
   else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
   else if (action === 'gasto')  _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
+}
+
+// ── Artículo (Artículos Recurrentes) ───────────────────────────────────────────
+// El selector de artículo vive dentro del propio modal de registro (modo "elegir
+// artículo" de showRegistroModal, articulo === null) — no hay modal intermedio.
+async function _showArticuloPicker(onSaved) {
+  const articulos = (await getAll('articulosRecurrentes'))
+    .filter(a => a.activo !== false)
+    .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+
+  if (!articulos.length) {
+    toast('No hay artículos recurrentes registrados — créalo primero en Artículos Recurrentes.', 'warning');
+    return;
+  }
+
+  showRegistroModal(null, null, [], onSaved, articulos);
 }
 
 // ── De Contado ────────────────────────────────────────────────────────────────
