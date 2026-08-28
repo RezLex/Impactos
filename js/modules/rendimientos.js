@@ -3,7 +3,7 @@ import { currency, fmtDate, r2, textoLegibleSobre, rgbLegibleSobre } from '../ut
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import {
   resumenCuenta, totalizarResumenes, rendimientoEntre, eventosCuenta,
-  historialDiario, timelineCuenta, configCuenta, hoyISO, isoDay, diasEntre, sumarDias,
+  historialDiario, timelineCuenta, configCuenta, hoyISO, hoyDeCuenta, CORTE_RENDIMIENTOS, isoDay, diasEntre, sumarDias,
   conciliar, recalcularAjustes, capturasDescartadas, historialConsistente,
   movimientosTransferencia, validarTransferencia, esTransferencia,
   conTransferencia, sinTransferencia, plegarDiasInhabiles,
@@ -368,6 +368,19 @@ const AYUDA = {
          cargado en <strong>Días Festivos</strong>. Sin festivos registrados solo se toman
          en cuenta los fines de semana.</p>`,
   },
+  horaCorte: {
+    titulo: 'Hora de corte',
+    cuerpo: `
+      <p>La app necesita decidir a qué hora del día "hoy" empieza a contar para esta cuenta
+         — no es a medianoche, porque antes de que la institución abone la madrugada, contar
+         ya el día de hoy mostraría un rendimiento que todavía nadie acreditó.</p>
+      <p>Por default son las <strong>7:00am</strong> (hora CDMX): antes de esa hora "Diario" y
+         "Hasta hoy" siguen mostrando el día anterior. Si esta institución acredita en otro
+         momento del día, ajusta la hora aquí para que la tarjeta cuadre con lo que ves en su
+         app.</p>
+      <p class="inv-ayuda-ej">Es hora, no minuto — de 0 (medianoche) a 23. Solo afecta a esta
+         cuenta; las demás siguen con su propio corte (7am si no lo tocaste).</p>`,
+  },
 };
 
 /** Botón "i" que abre la ayuda de un campo. */
@@ -523,7 +536,7 @@ async function renderView(container) {
       instNombre(a).localeCompare(instNombre(b), 'es') ||
       (a.nombre || '').localeCompare(b.nombre || '', 'es'));
 
-    const resumenes = new Map(cuentas.map(c => [c.id, resumenCuenta(c, hoy)]));
+    const resumenes = new Map(cuentas.map(c => [c.id, resumenCuenta(c)]));
     const tot       = totalizarResumenes([...resumenes.values()]);
 
     if (!_calc.desde) _calc.desde = hoy.slice(0, 8) + '01';
@@ -963,7 +976,7 @@ function bloqueFormula(r) {
 }
 
 function showDetalleModal(container, cuenta, inst, refrescar) {
-  const r         = resumenCuenta(cuenta, hoyISO());
+  const r         = resumenCuenta(cuenta);
   const esUnico   = r.modo === MODO_UNICO;
   const fmtTasa   = cuenta.redondeoTasa === 'redondear' ? pct : pctTrunc;
   const conAporte = r.desglose.filter(t => t.monto > 0);
@@ -1064,7 +1077,7 @@ function showDetalleModal(container, cuenta, inst, refrescar) {
 // ── Modal: cómo se compone la tasa ponderada ──────────────────────────────────
 
 function showTramosModal(cuenta, inst) {
-  const r       = resumenCuenta(cuenta, hoyISO());
+  const r       = resumenCuenta(cuenta);
   const fmtTasa = cuenta.redondeoTasa === 'redondear' ? pct : pctTrunc;
 
   openModal({
@@ -1258,10 +1271,11 @@ function showHistorialModal(container, cuenta, etiqueta) {
 
   /** Reconstruye `filas`/`r` desde la cuenta actual y repinta el cuerpo del modal. */
   function pintarHistorial() {
-    r = resumenCuenta(cuenta, hoyISO());
+    const hoy = hoyDeCuenta(cuenta);
+    r = resumenCuenta(cuenta, hoy);
     const conCal = r.abono !== ABONO_NATURAL;
 
-    const asc = historialDiario(cuenta, hoyISO());
+    const asc = historialDiario(cuenta, hoy);
     filas = [...asc].reverse();  // completo y más reciente primero — es lo que va al reporte
 
     // La tabla, en cambio, pliega los inhábiles sobre el día que los abona
@@ -1595,7 +1609,7 @@ function showHistorialModal(container, cuenta, etiqueta) {
  * transferencia descuadraría los dos lados a la vez.
  */
 function showMovimientosModal(container, cuenta, cuentas, instMap) {
-  const hoy      = hoyISO();
+  const hoy      = hoyDeCuenta(cuenta);
   const otras    = cuentas.filter(c => c.id !== cuenta.id);
   const nombreDe = c => nombreCuenta(c, instMap[c.institucionId]?.nombre);
   const etiqueta = nombreDe(cuenta);
@@ -1819,7 +1833,7 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
   // Desde la vista Detalle hay que repintar el detalle, no la lista
   const refrescar = () => onSaved ? onSaved() : renderView(container);
   const isEdit = !!cuenta;
-  const hoy    = hoyISO();
+  const hoy    = hoyDeCuenta(cuenta);
   // El calendario ya lo cargó `renderView`; aquí solo se avisa si viene vacío
   const hayFestivos = inhabilesRegistrados().size > 0;
   const tramos = isEdit && Array.isArray(cuenta.tramos) && cuenta.tramos.length
@@ -1922,7 +1936,8 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
             || [REDONDEO_CENTAVOS, REDONDEO_ACUMULADO].includes(cuenta?.redondeoDiario)
             || (cuenta?.calendarioAbono && cuenta.calendarioAbono !== ABONO_NATURAL)
             || (cuenta?.baseAnual && cuenta.baseAnual !== BASE_ANUAL_DEFAULT)
-            || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT) ? 'show' : ''}" id="inv-adv">
+            || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT)
+            || (cuenta?.horaCorte != null && cuenta.horaCorte !== CORTE_RENDIMIENTOS) ? 'show' : ''}" id="inv-adv">
             <div class="row g-2 mt-1">
               <div class="col-12"><div class="inv-adv-sep">Retención de ISR</div></div>
               <div class="col-12 col-sm-5">
@@ -1982,6 +1997,14 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
                   <option value="${ABONO_HABIL_SOLO}" ${cuenta?.calendarioAbono === ABONO_HABIL_SOLO ? 'selected' : ''}>Solo días hábiles — los inhábiles no generan interés</option>
                 </select>
                 <div class="form-text" id="inv-calendario-nota"></div>
+              </div>
+              <div class="col-12 col-sm-6">
+                <label class="form-label">Hora de corte${btnAyuda('horaCorte')}</label>
+                <div class="input-group">
+                  <input type="number" class="form-control" name="horaCorte" min="0" max="23" step="1"
+                         value="${cuenta?.horaCorte ?? ''}" placeholder="${CORTE_RENDIMIENTOS}">
+                  <span class="input-group-text">hrs (0-23, CDMX)</span>
+                </div>
               </div>
 
             </div>
@@ -2122,6 +2145,10 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
                             ? raw.redondeoDiario : REDONDEO_CONTINUO,
       calendarioAbono:    [ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO].includes(raw.calendarioAbono)
                             ? raw.calendarioAbono : ABONO_NATURAL,
+      // `0` (medianoche) es un valor válido, así que no sirve `Number(raw.horaCorte) || DEFAULT`
+      // (0 es falsy) — solo el campo vacío cae al default.
+      horaCorte:          raw.horaCorte === '' ? CORTE_RENDIMIENTOS
+                            : Math.min(23, Math.max(0, Math.round(Number(raw.horaCorte)) || CORTE_RENDIMIENTOS)),
       tasaDesde:          raw.tasaDesde || null,
     };
 
@@ -2321,7 +2348,7 @@ function bloqueConciliacion(c) {
  * la misma foto de la cuenta.
  */
 function showAjusteModal(container, cuenta, r, etiqueta) {
-  const hoy           = hoyISO();
+  const hoy           = hoyDeCuenta(cuenta);
   const estimadoMonto = r2(r.saldoActual);
   const cfg           = configCuenta(cuenta);
 

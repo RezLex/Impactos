@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T19`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T20`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -526,6 +526,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
 | `redondeoDiario` | string? | Cómo se capitalizan el interés y el ISR de cada día: `continuo` (default, exactos), `centavos` (redondeados por separado antes de sumarse) o `acumulado` (remanente fraccionario que se paga cuando completa un centavo — ver *Redondeo diario*) |
 | `calendarioAbono` | string? | Qué días abona la institución: `natural` (default, todos los días), `habilAcumula` (devenga siempre pero solo abona en día hábil) o `habilSolo` (los inhábiles no devengan). Ver *Calendario de abono* |
+| `horaCorte` | number? | Hora CDMX (0-23) en la que "hoy" empieza a contar para esta cuenta — `7` (default) si está ausente. Ver *Hora de corte por cuenta* |
 | `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `movimientos` | array? | Aportes, retiros y traspasos — no son rendimiento (ver estructura abajo) |
 | `ajustes` | array? | Correcciones al rendimiento que el modelo no predijo (ver estructura abajo) |
@@ -1462,7 +1463,7 @@ La regla que lo ordena todo es una sola:
 fecha de abono del devengo del día D = siguiente día hábil desde D
 ```
 
-Va sobre el propio día `D`, no sobre `D+1`, porque así presenta la app el dato en todos lados: el renglón de `historialDiario` de un día es lo que la institución movió **ese** día (de ahí el corte de las 7am de `hoyISO`, que espera a que la madrugada haya abonado antes de contar el día como propio). Bajo esa convención un sábado muestra `$0` de abono y el lunes el acumulado del puente — literalmente lo que se ve en la app del banco.
+Va sobre el propio día `D`, no sobre `D+1`, porque así presenta la app el dato en todos lados: el renglón de `historialDiario` de un día es lo que la institución movió **ese** día (de ahí el corte de las 7am por default de `hoyISO`/`hoyDeCuenta`, que espera a que la madrugada haya abonado antes de contar el día como propio — ver *Hora de corte por cuenta*). Bajo esa convención un sábado muestra `$0` de abono y el lunes el acumulado del puente — literalmente lo que se ve en la app del banco.
 
 Lo devengado y todavía sin acreditar vive en **`pendiente`**, fuera del saldo, que es exactamente donde lo tiene la institución. Es lo que arregla el residuo espurio de fin de semana: antes, conciliar un domingo comparaba el saldo real (congelado desde el viernes) contra un saldo proyectado que ya había compuesto sábado y domingo, y la diferencia se reportaba como deriva del cálculo. Ahora `saldoEsperado` excluye lo pendiente y `conciliar` lo devuelve por separado.
 
@@ -1479,6 +1480,16 @@ Distinguir `habilAcumula` de `habilSolo` importa porque el costo de confundirlas
 Un detalle que importa para no reintroducir deriva: la bolsa `pendiente` NO se redondea mientras sigue pendiente — solo cuando se convierte en `abonado` al acreditarse. Redondearla en cada día que queda en el limbo (un puente largo) compone el error de redondeo una vez por día en vez de una sola vez, y ese fue exactamente el bug que motivó esta nota (una cuenta con capital + ajuste + varios días de interés mostraba el `saldoFinal` un par de centavos corrido de lo que daba sumar a mano las cifras de la tabla). `historialDiario` mantiene por eso dos variables por separado: `cierreSaldo` (encadenado ya redondeado, porque es dinero que se movió) y `cierrePendienteExacta` (encadenado sin redondear, porque todavía no es dinero acreditado — el campo `pendiente` que se *devuelve* en cada fila sí va redondeado, solo para mostrar).
 
 `componer()` (usado por `mensual`/`anual`/`gat`/`proyBruta`, que proyectan hacia adelante desde un `saldoActual` ya congelado) no cambió: sigue exacto o redondeado según `cfg.redondeo`, sin este ajuste — por eso `historialDiario(...).saldoFinal` y `componer(capital, dias, cfg).saldoFinal` ya no son exactamente iguales para una cuenta `continuo` (divergen por un par de centavos sobre periodos largos, un ruido acotado que no crece linealmente — verificado hasta 2 años de simulación). Es la diferencia correcta: uno es "lo que ya pasó, en centavos reales"; el otro, "una proyección matemática hacia un periodo que todavía no ocurrió".
+
+### Hora de corte por cuenta
+
+`hoyISO(corteHora = 7)` decide qué día natural es "hoy" para el motor de rendimientos con un corte a media madrugada en vez de a medianoche — antes de esa hora la institución todavía no abonó lo de la noche, así que contar ya el nuevo día mostraría un rendimiento que nadie acreditó. Ese corte **es configurable por cuenta**, campo `horaCorte` (0-23, hora CDMX; ausente = 7am): dos instituciones no tienen por qué abonar a la misma hora del día.
+
+`horaCorteCuenta(cuenta)` resuelve la hora efectiva (`cuenta.horaCorte` si es un número válido 0-23, si no `CORTE_RENDIMIENTOS`) y `hoyDeCuenta(cuenta)` es el atajo `hoyISO(horaCorteCuenta(cuenta))` que usan los módulos en vez de llamar `hoyISO()` a secas. `conciliar`, `historialDiario` y `resumenCuenta` ya resuelven su propio `hoy` así por default — solo hace falta pasar un `hoy` explícito cuando de verdad se necesita otra fecha (un reporte de periodo, por ejemplo).
+
+**Dónde se edita.** Campo "Hora de corte" en la sección Avanzado del modal Editar cuenta (`js/modules/rendimientos.js`), junto a "Calendario de abono" — mismo bloque conceptual, cuándo se considera cerrado el día. `0` (medianoche) es un valor legítimo y distinto de "sin configurar": `horaCorteCuenta` cuida esa diferencia explícitamente, porque `Number(null)` da `0` en JavaScript y confundirlos silenciosamente pisotearía el default de cualquier cuenta sin este campo.
+
+**Qué NO usa el corte por cuenta.** La calculadora de periodo (`showCalculadoraModal`/`calcularPeriodo`, que puede comparar varias cuentas a la vez) sigue usando el corte global de las 7am para el rango de fechas por default — es un límite de UI para no capturar fechas futuras, no la cifra de rendimiento de una cuenta puntual.
 
 ### Vigencias de tasa
 
@@ -1500,10 +1511,12 @@ Sin `fecha` (las proyecciones abstractas de `componer()` cuando se les omite `de
 
 ```javascript
 // Fechas
-isoDay(dateOStringISO) → 'YYYY-MM-DD'
-hoyISO()               → 'YYYY-MM-DD'   // hora CDMX (UTC-6 fijo); el día rueda a las 7am, no a medianoche
-diasEntre(inicio, fin) → number     // días calendario completos, negativo si fin < inicio
-sumarDias(iso, n)      → 'YYYY-MM-DD'
+isoDay(dateOStringISO)  → 'YYYY-MM-DD'
+hoyISO(corteHora = 7)   → 'YYYY-MM-DD'   // hora CDMX (UTC-6 fijo); el día rueda a `corteHora`, no a medianoche
+horaCorteCuenta(cuenta) → number         // hora de corte efectiva de la cuenta (0-23), o 7 si no está configurada
+hoyDeCuenta(cuenta)     → 'YYYY-MM-DD'   // hoyISO(horaCorteCuenta(cuenta)) — ver Hora de corte por cuenta
+diasEntre(inicio, fin)  → number     // días calendario completos, negativo si fin < inicio
+sumarDias(iso, n)       → 'YYYY-MM-DD'
 
 // Días inhábiles — ver Calendario de abono arriba. Registro de módulo: la vista
 // lo llena una vez y configCuenta lo fotografía en la cfg.

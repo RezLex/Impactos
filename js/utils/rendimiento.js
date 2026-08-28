@@ -220,20 +220,36 @@ export function isoDay(v) {
 }
 
 const CDMX_OFFSET_MS   = -6 * 60 * 60000; // CDMX es UTC-6 fijo: México quitó el horario de verano en 2022
-const CORTE_RENDIMIENTOS = 7;             // hora CDMX en la que "hoy" empieza a contar
+export const CORTE_RENDIMIENTOS = 7;      // hora CDMX en la que "hoy" empieza a contar, por default
 
 /**
  * "Hoy" para efectos de rendimientos: hora de Ciudad de México, pero el día
- * natural rueda a las 7am en vez de a medianoche. Antes de esa hora ya se
- * sabe qué generaron/abonaron las instituciones la madrugada anterior (ver
- * `historialDiario`) — contarlo como "hoy" desde las 00:00 mostraría un día
- * de más que todavía nadie abonó. No depende de la zona horaria del
- * dispositivo: se calcula la hora CDMX explícitamente.
+ * natural rueda a la `corteHora` indicada (7am por default) en vez de a
+ * medianoche. Antes de esa hora ya se sabe qué generaron/abonaron las
+ * instituciones la madrugada anterior (ver `historialDiario`) — contarlo
+ * como "hoy" desde las 00:00 mostraría un día de más que todavía nadie
+ * abonó. No depende de la zona horaria del dispositivo: se calcula la hora
+ * CDMX explícitamente. La hora de corte es configurable por cuenta (ver
+ * `horaCorteCuenta`/`hoyDeCuenta`) porque no todas las instituciones abonan
+ * a la misma hora.
  */
-export function hoyISO() {
+export function hoyISO(corteHora = CORTE_RENDIMIENTOS) {
   const cdmx = new Date(Date.now() + CDMX_OFFSET_MS);
-  if (cdmx.getUTCHours() < CORTE_RENDIMIENTOS) cdmx.setUTCDate(cdmx.getUTCDate() - 1);
+  if (cdmx.getUTCHours() < corteHora) cdmx.setUTCDate(cdmx.getUTCDate() - 1);
   return `${cdmx.getUTCFullYear()}-${String(cdmx.getUTCMonth() + 1).padStart(2, '0')}-${String(cdmx.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Hora de corte efectiva de una cuenta: `cuenta.horaCorte` si es válida (0-23), si no el default. */
+export function horaCorteCuenta(cuenta) {
+  const raw = cuenta?.horaCorte;
+  if (raw == null) return CORTE_RENDIMIENTOS; // sin configurar — Number(null) da 0, no confundir con medianoche
+  const h = Number(raw);
+  return Number.isFinite(h) && h >= 0 && h <= 23 ? h : CORTE_RENDIMIENTOS;
+}
+
+/** "Hoy" según el corte propio de `cuenta` — lo que usan los módulos en vez de `hoyISO()` a secas. */
+export function hoyDeCuenta(cuenta) {
+  return hoyISO(horaCorteCuenta(cuenta));
 }
 
 function utcMs(iso) {
@@ -1068,7 +1084,7 @@ export function conTransferencia(movimientos, pata) {
  * @returns {{desde, hasta, dias, saldoAnterior, rendimientoProyectado, movimientos,
  *            ajustes, saldoEsperado, saldoReal, residuo, pendiente, derivaAnual, cuadra}|null}
  */
-export function conciliar(cuenta, saldoReal, fecha = hoyISO(), cfg = configCuenta(cuenta)) {
+export function conciliar(cuenta, saldoReal, fecha = hoyDeCuenta(cuenta), cfg = configCuenta(cuenta)) {
   const dia  = isoDay(fecha);
   const real = Number(saldoReal);
   if (!dia || !isFinite(real)) return null;
@@ -1195,7 +1211,7 @@ export function recalcularAjustes(cuenta, cfg = configCuenta(cuenta)) {
  * @returns {Array<{fecha, saldoInicial, bruto, isr, neto, abonado, pendiente,
  *                  saldoFinal, movimiento, ajuste}>} ascendente
  */
-export function historialDiario(cuenta, hoy = hoyISO(), maxDias = 400, cfg = configCuenta(cuenta)) {
+export function historialDiario(cuenta, hoy = hoyDeCuenta(cuenta), maxDias = 400, cfg = configCuenta(cuenta)) {
   const eventos  = eventosCuenta(cuenta);
   const timeline = timelineCuenta(cuenta);
   const primero  = timeline[0];
@@ -1356,7 +1372,7 @@ export function plegarDiasInhabiles(filas, cfg) {
  * @param {object} cuenta - documento de `inversiones`
  * @param {string} [hoy]  - fecha de corte 'YYYY-MM-DD'
  */
-export function resumenCuenta(cuenta, hoy = hoyISO()) {
+export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
   const cfg      = configCuenta(cuenta);
   const timeline = timelineCuenta(cuenta);
   const eventos  = eventosCuenta(cuenta);

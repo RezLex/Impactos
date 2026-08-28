@@ -17,6 +17,7 @@ import {
   EVENTO_ANCLA, EVENTO_MOVIMIENTO, EVENTO_AJUSTE, MOV_APORTE, MOV_RETIRO,
   TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
   REDONDEO_CENTAVOS, REDONDEO_ACUMULADO,
+  hoyISO, hoyDeCuenta, horaCorteCuenta, CORTE_RENDIMIENTOS,
 } from '../js/utils/rendimiento.js';
 
 let pasadas = 0, fallidas = 0;
@@ -1141,6 +1142,36 @@ test('un cambio de interpretación de tasa (nominal → efectiva) también respe
   // sobre el mismo saldo — el cambio de interpretación se nota en el interés
   assert.ok(despues.neto / despues.saldoInicial < antes.neto / antes.saldoInicial,
     'la interpretación efectiva rinde menos que la nominal a igual tasa publicada');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('Hora de corte por cuenta');
+
+test('horaCorteCuenta usa el valor de la cuenta si es válido (0-23)', () => {
+  assert.equal(horaCorteCuenta({ horaCorte: 10 }), 10);
+  assert.equal(horaCorteCuenta({ horaCorte: 0 }), 0, 'medianoche es un valor válido, no debe caer al default');
+  assert.equal(horaCorteCuenta({ horaCorte: 23 }), 23);
+});
+test('horaCorteCuenta cae al default (7) sin valor o fuera de rango', () => {
+  assert.equal(horaCorteCuenta({}), CORTE_RENDIMIENTOS);
+  assert.equal(horaCorteCuenta({ horaCorte: null }), CORTE_RENDIMIENTOS);
+  assert.equal(horaCorteCuenta(null), CORTE_RENDIMIENTOS);
+  assert.equal(horaCorteCuenta({ horaCorte: -1 }), CORTE_RENDIMIENTOS);
+  assert.equal(horaCorteCuenta({ horaCorte: 24 }), CORTE_RENDIMIENTOS);
+  assert.equal(horaCorteCuenta({ horaCorte: 'abc' }), CORTE_RENDIMIENTOS);
+});
+test('hoyISO(corteHora) acepta la hora de corte como parámetro y sigue dando YYYY-MM-DD', () => {
+  assert.match(hoyISO(), /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(hoyISO(0), /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(hoyISO(23), /^\d{4}-\d{2}-\d{2}$/);
+});
+test('hoyDeCuenta coincide con hoyISO(horaCorteCuenta(cuenta))', () => {
+  const cuenta = { horaCorte: 15 };
+  assert.equal(hoyDeCuenta(cuenta), hoyISO(horaCorteCuenta(cuenta)));
+});
+test('hoyDeCuenta sin cuenta configurada coincide con el corte global (7am)', () => {
+  assert.equal(hoyDeCuenta({}), hoyISO(CORTE_RENDIMIENTOS));
+  assert.equal(hoyDeCuenta({}), hoyISO());
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

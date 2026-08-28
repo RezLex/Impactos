@@ -82,7 +82,10 @@ export async function render(container) {
     // Los festivos van antes del cálculo: las cuentas que solo abonan en días
     // hábiles los necesitan para saber cuándo se acredita el interés.
     registrarInhabiles(festivosMX);
-    const rend = totalizarResumenes(inversiones.map(c => resumenCuenta(c, hoy)));
+    // Cada cuenta con su propio corte (`resumenCuenta` lo resuelve internamente vía
+    // `hoyDeCuenta`) — antes se pasaba el `hoy` de medianoche del dispositivo, que ni
+    // siquiera coincidía con el corte de las 7am que usa /rendimientos para la misma cuenta.
+    const rend = totalizarResumenes(inversiones.map(c => resumenCuenta(c)));
     // Con 3 tarjetas hacen falta ~313px cada una para que el importe no se
     // corte; con el sidebar eso solo se cumple desde xxl. Debajo, la tercera
     // baja a su propio renglón en vez de estrujar a las tres.
