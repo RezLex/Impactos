@@ -1,6 +1,7 @@
 import { getAll, getById, create, update, remove, batchUpdate } from '../utils/db.js';
 import { currency, fmtDate, r2, textoLegibleSobre, rgbLegibleSobre } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
+import { toISODate } from '../utils/ciclo.js';
 import {
   resumenCuenta, totalizarResumenes, rendimientoEntre, eventosCuenta,
   historialDiario, timelineCuenta, configCuenta, hoyISO, hoyDeCuenta, CORTE_RENDIMIENTOS, isoDay, diasEntre, sumarDias,
@@ -1609,7 +1610,10 @@ function showHistorialModal(container, cuenta, etiqueta) {
  * transferencia descuadraría los dos lados a la vez.
  */
 function showMovimientosModal(container, cuenta, cuentas, instMap) {
-  const hoy      = hoyDeCuenta(cuenta);
+  // Fecha real de calendario, no la "hoy" con corte de la cuenta: un movimiento de
+  // hoy es de hoy aunque la institución todavía no haya cerrado el día para efectos
+  // de interés — el corte decide cuándo compone, no cuándo puedes capturar.
+  const hoy      = toISODate(new Date());
   const otras    = cuentas.filter(c => c.id !== cuenta.id);
   const nombreDe = c => nombreCuenta(c, instMap[c.institucionId]?.nombre);
   const etiqueta = nombreDe(cuenta);
@@ -1833,7 +1837,9 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
   // Desde la vista Detalle hay que repintar el detalle, no la lista
   const refrescar = () => onSaved ? onSaved() : renderView(container);
   const isEdit = !!cuenta;
-  const hoy    = hoyDeCuenta(cuenta);
+  // Fecha real de calendario — mismo criterio que showMovimientosModal: el corte de
+  // la cuenta no debe bloquear capturar "hoy" como fecha de inversión/vigencia.
+  const hoy    = toISODate(new Date());
   // El calendario ya lo cargó `renderView`; aquí solo se avisa si viene vacío
   const hayFestivos = inhabilesRegistrados().size > 0;
   const tramos = isEdit && Array.isArray(cuenta.tramos) && cuenta.tramos.length
@@ -2348,7 +2354,8 @@ function bloqueConciliacion(c) {
  * la misma foto de la cuenta.
  */
 function showAjusteModal(container, cuenta, r, etiqueta) {
-  const hoy           = hoyDeCuenta(cuenta);
+  // Fecha real de calendario — mismo criterio que showMovimientosModal.
+  const hoy           = toISODate(new Date());
   const estimadoMonto = r2(r.saldoActual);
   const cfg           = configCuenta(cuenta);
 
