@@ -14,7 +14,7 @@ import {
   MODO_PROGRESIVO, MODO_UNICO, ISR_CAPITAL, ISR_INTERES,
   TASA_NOMINAL, TASA_EFECTIVA, REDONDEO_CONTINUO, REDONDEO_CENTAVOS, REDONDEO_ACUMULADO,
   ABONO_NATURAL, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
-  MOV_APORTE, MOV_RETIRO,
+  MOV_APORTE, MOV_RETIRO, MOV_RINDE_SALDO_VIEJO, MOV_RINDE_SALDO_NUEVO,
 } from '../utils/rendimiento.js';
 
 const COL = 'inversiones';
@@ -381,6 +381,24 @@ const AYUDA = {
          app.</p>
       <p class="inv-ayuda-ej">Es hora, no minuto — de 0 (medianoche) a 23. Solo afecta a esta
          cuenta; las demás siguen con su propio corte (7am si no lo tocaste).</p>`,
+  },
+  movimientoRinde: {
+    titulo: 'Cuándo rinde un movimiento',
+    cuerpo: `
+      <p>Un aporte o retiro puede o no generar interés el mismo día que llega.</p>
+      <p><strong>Al día siguiente</strong> (default) — el día que el dinero entra o sale
+         rinde sobre el saldo que había <em>antes</em> de ese movimiento; el saldo nuevo
+         recién empieza a componer desde el día siguiente. Es lo normal: el dinero que
+         entra a mediodía no generó interés esa madrugada.</p>
+      <p><strong>El mismo día</strong> — el día del movimiento ya rinde sobre el saldo
+         con el movimiento aplicado. Algunas instituciones calculan así.</p>
+      <h6>Cómo afecta al cálculo</h6>
+      <p>Solo cambia el día exacto del movimiento — todos los demás días componen igual.
+         Con "El mismo día", ese renglón del historial muestra más rendimiento (o menos,
+         si es un retiro grande) que con la opción default.</p>
+      <p class="inv-ayuda-ej">Dos movimientos el mismo día: solo el primero en aplicarse
+         compone ese día ya con su monto; el segundo se suma al cierre sin generar interés
+         extra ese mismo día — no son retroactivos entre sí.</p>`,
   },
 };
 
@@ -1943,7 +1961,8 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
             || (cuenta?.calendarioAbono && cuenta.calendarioAbono !== ABONO_NATURAL)
             || (cuenta?.baseAnual && cuenta.baseAnual !== BASE_ANUAL_DEFAULT)
             || (cuenta?.baseIsr   && cuenta.baseIsr   !== BASE_ANUAL_DEFAULT)
-            || (cuenta?.horaCorte != null && cuenta.horaCorte !== CORTE_RENDIMIENTOS) ? 'show' : ''}" id="inv-adv">
+            || (cuenta?.horaCorte != null && cuenta.horaCorte !== CORTE_RENDIMIENTOS)
+            || cuenta?.movimientoRinde === MOV_RINDE_SALDO_NUEVO ? 'show' : ''}" id="inv-adv">
             <div class="row g-2 mt-1">
               <div class="col-12"><div class="inv-adv-sep">Retención de ISR</div></div>
               <div class="col-12 col-sm-5">
@@ -2011,6 +2030,13 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
                          value="${cuenta?.horaCorte ?? ''}" placeholder="${CORTE_RENDIMIENTOS}">
                   <span class="input-group-text">hrs (0-23, CDMX)</span>
                 </div>
+              </div>
+              <div class="col-12 col-sm-6">
+                <label class="form-label">Cuándo rinde un movimiento${btnAyuda('movimientoRinde')}</label>
+                <select class="form-select" name="movimientoRinde">
+                  <option value="${MOV_RINDE_SALDO_VIEJO}" ${cuenta?.movimientoRinde !== MOV_RINDE_SALDO_NUEVO ? 'selected' : ''}>Al día siguiente — sobre el saldo con el que llegó</option>
+                  <option value="${MOV_RINDE_SALDO_NUEVO}" ${cuenta?.movimientoRinde === MOV_RINDE_SALDO_NUEVO ? 'selected' : ''}>El mismo día — ya con el movimiento aplicado</option>
+                </select>
               </div>
 
             </div>
@@ -2155,6 +2181,8 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
       // (0 es falsy) — solo el campo vacío cae al default.
       horaCorte:          raw.horaCorte === '' ? CORTE_RENDIMIENTOS
                             : Math.min(23, Math.max(0, Math.round(Number(raw.horaCorte)) || CORTE_RENDIMIENTOS)),
+      movimientoRinde:    raw.movimientoRinde === MOV_RINDE_SALDO_NUEVO
+                            ? MOV_RINDE_SALDO_NUEVO : MOV_RINDE_SALDO_VIEJO,
       tasaDesde:          raw.tasaDesde || null,
     };
 
@@ -2164,10 +2192,11 @@ function showCuentaModal(container, instituciones, cuenta, onSaved = null) {
     //
     // El monto no se guarda como ancla directa: se registra como un ABONO
     // (movimiento tipo aporte) fechado el día de la inversión, para que rinda
-    // igual que cualquier otro depósito — sobre el saldo VIEJO ese mismo día
-    // (aquí, $0) y componiendo sobre el nuevo apenas desde el día siguiente,
-    // en vez de aparecer ya "ganando" desde su propio primer día. La ancla de
-    // la cuenta arranca entonces un día antes, en $0 — el estado real de la
+    // igual que cualquier otro depósito — sujeto al mismo `movimientoRinde`
+    // de la cuenta (por default, sobre el saldo VIEJO ese mismo día, aquí
+    // $0, componiendo sobre el nuevo apenas desde el día siguiente, en vez
+    // de aparecer ya "ganando" desde su propio primer día). La ancla de la
+    // cuenta arranca entonces un día antes, en $0 — el estado real de la
     // cuenta antes de que existiera ese primer abono.
     if (!isEdit) {
       const fechaInversion = raw.fechaInversion;

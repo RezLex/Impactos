@@ -18,6 +18,7 @@ import {
   TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
   REDONDEO_CENTAVOS, REDONDEO_ACUMULADO,
   hoyISO, hoyDeCuenta, horaCorteCuenta, CORTE_RENDIMIENTOS,
+  MOV_RINDE_SALDO_VIEJO, MOV_RINDE_SALDO_NUEVO,
 } from '../js/utils/rendimiento.js';
 
 let pasadas = 0, fallidas = 0;
@@ -1172,6 +1173,50 @@ test('hoyDeCuenta coincide con hoyISO(horaCorteCuenta(cuenta))', () => {
 test('hoyDeCuenta sin cuenta configurada coincide con el corte global (7am)', () => {
   assert.equal(hoyDeCuenta({}), hoyISO(CORTE_RENDIMIENTOS));
   assert.equal(hoyDeCuenta({}), hoyISO());
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('movimientoRinde: saldoNuevo');
+
+test('con saldoNuevo, ese día rinde más que con el default (saldoViejo)', () => {
+  const base = { movimientos: [{ fecha: '2026-01-11', tipo: MOV_APORTE, monto: 5000 }] };
+  const diaViejo = historialDiario(cuentaPlana(base), '2026-01-21').find(f => f.fecha === '2026-01-11');
+  const diaNuevo = historialDiario(cuentaPlana({ ...base, movimientoRinde: MOV_RINDE_SALDO_NUEVO }), '2026-01-21')
+    .find(f => f.fecha === '2026-01-11');
+  assert.ok(diaNuevo.neto > diaViejo.neto,
+    'el mismo día rinde más porque ya compone sobre el saldo con el aporte aplicado');
+});
+
+test('sin movimientoRinde configurado, se comporta igual que "saldoViejo" explícito', () => {
+  const base = { movimientos: [{ fecha: '2026-01-11', tipo: MOV_APORTE, monto: 5000 }] };
+  const sinConfigurar = historialDiario(cuentaPlana(base), '2026-01-21').find(f => f.fecha === '2026-01-11');
+  const explicito = historialDiario(cuentaPlana({ ...base, movimientoRinde: MOV_RINDE_SALDO_VIEJO }), '2026-01-21')
+    .find(f => f.fecha === '2026-01-11');
+  cerca(sinConfigurar.neto, explicito.neto, 'el default implícito es idéntico a "saldoViejo" explícito');
+});
+
+test('dos movimientos el mismo día con saldoNuevo: el segundo no compone retroactivo ese día', () => {
+  const cuenta = cuentaPlana({
+    movimientoRinde: MOV_RINDE_SALDO_NUEVO,
+    movimientos: [
+      { fecha: '2026-01-11', tipo: MOV_APORTE, monto: 3000 },
+      { fecha: '2026-01-11', tipo: MOV_APORTE, monto: 2000 },
+    ],
+  });
+  const soloElPrimero = { ...cuenta, movimientos: [cuenta.movimientos[0]] };
+  const cfg = configCuenta(cuenta);
+
+  const rendimientoAmbos = rendimientoEntre(eventosCuenta(cuenta), '2026-01-10', '2026-01-11', cfg).rendimiento;
+  const rendimientoUno   = rendimientoEntre(eventosCuenta(soloElPrimero), '2026-01-10', '2026-01-11', cfg).rendimiento;
+  cerca(rendimientoAmbos, rendimientoUno,
+    'el segundo aporte del mismo día no vuelve a componer el día, solo se suma al cierre');
+
+  // El segundo aporte se suma tal cual al cierre, sin generar ni perder
+  // interés ese día — la diferencia entre tener uno y tener ambos debe ser
+  // exactamente su monto, ni un centavo de más ni de menos.
+  const saldoConUno   = saldoEnFecha(eventosCuenta(soloElPrimero), '2026-01-11', cfg);
+  const saldoConAmbos = saldoEnFecha(eventosCuenta(cuenta), '2026-01-11', cfg);
+  cerca(saldoConAmbos - saldoConUno, 2000, 'el segundo aporte se refleja completo en el cierre, sin componer');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

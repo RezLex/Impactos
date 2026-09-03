@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v39';
+const CACHE = 'impactos-v40';
 
 const SHELL = [
   './',

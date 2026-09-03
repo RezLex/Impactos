@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T21`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T22`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -527,6 +527,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `redondeoDiario` | string? | Cómo se capitalizan el interés y el ISR de cada día: `continuo` (default, exactos), `centavos` (redondeados por separado antes de sumarse) o `acumulado` (remanente fraccionario que se paga cuando completa un centavo — ver *Redondeo diario*) |
 | `calendarioAbono` | string? | Qué días abona la institución: `natural` (default, todos los días), `habilAcumula` (devenga siempre pero solo abona en día hábil) o `habilSolo` (los inhábiles no devengan). Ver *Calendario de abono* |
 | `horaCorte` | number? | Hora CDMX (0-23) en la que "hoy" empieza a contar para esta cuenta — `7` (default) si está ausente. Ver *Hora de corte por cuenta* |
+| `movimientoRinde` | string? | Sobre qué saldo rinde un movimiento su propio día de llegada: `saldoViejo` (default/ausente) o `saldoNuevo`. Ver *Cuándo rinde un movimiento* |
 | `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
 | `movimientos` | array? | Aportes, retiros y traspasos — no son rendimiento (ver estructura abajo) |
 | `ajustes` | array? | Correcciones al rendimiento que el modelo no predijo (ver estructura abajo) |
@@ -1428,7 +1429,7 @@ El motor no calcula solo a partir de dos puntos observados: cada cuenta es una l
 | Evento | De dónde sale | Qué hace |
 |---|---|---|
 | **Ancla** | `montoInvertido`/`fechaActualizacion` + `historial[]` (vía `timelineCuenta`) | Un saldo real observado. Lo observado manda: reemplaza el saldo proyectado y absorbe en silencio cualquier residuo, salvo que ese residuo ya tenga un ajuste explícito ese día |
-| **Movimiento** | `movimientos[]` | Un aporte o retiro. Su propio día de llegada rinde sobre el saldo **viejo** (el que había antes de sumarlo) — el saldo nuevo recién empieza a componer desde el día siguiente, igual que en la realidad: el dinero que entra a mediodía no generó interés esa madrugada |
+| **Movimiento** | `movimientos[]` | Un aporte o retiro. Por default, su propio día de llegada rinde sobre el saldo **viejo** (el que había antes de sumarlo) — el saldo nuevo recién empieza a componer desde el día siguiente, igual que en la realidad: el dinero que entra a mediodía no generó interés esa madrugada. Configurable por cuenta (`movimientoRinde`), ver *Cuándo rinde un movimiento* |
 | **Ajuste** | `ajustes[]` | Una corrección al rendimiento que el modelo no supo predecir. A diferencia del movimiento, sí compone ese mismo día sobre el saldo ya con la corrección incluida |
 
 Dentro de una misma fecha el orden de aplicación es siempre **movimiento → ajuste → ancla** (`ORDEN_EVENTO`): la ancla cierra el día porque es el dato observado, y debe ganarle a cualquier proyección previa.
@@ -1491,6 +1492,16 @@ Un detalle que importa para no reintroducir deriva: la bolsa `pendiente` NO se r
 
 **Qué NO usa el corte por cuenta.** La calculadora de periodo (`showCalculadoraModal`/`calcularPeriodo`, que puede comparar varias cuentas a la vez) sigue usando el corte global de las 7am para el rango de fechas por default — es un límite de UI para no capturar fechas futuras, no la cifra de rendimiento de una cuenta puntual.
 
+### Cuándo rinde un movimiento
+
+Por default, un aporte o retiro rinde su propio día de llegada sobre el saldo **viejo** (el que había antes de sumarlo) — el saldo nuevo recién empieza a componer desde el día siguiente (ver *Modelo de eventos* arriba). Algunas instituciones sí calculan el rendimiento del día ya con el movimiento aplicado — configurable por cuenta, campo `movimientoRinde`: `saldoViejo` (`MOV_RINDE_SALDO_VIEJO`, default/ausente) o `saldoNuevo` (`MOV_RINDE_SALDO_NUEVO`).
+
+**Dónde vive en el motor.** Único lugar de todo `rendimiento.js` donde se aplica un movimiento al saldo: `recorrer()`. Con `saldoNuevo`, en vez de componer el día del evento y sumar el movimiento después (el orden default), se cierra el día **anterior** con el saldo viejo (si hace falta), se suma el movimiento, y se compone el día del evento aparte, ya sobre el saldo actualizado — partiendo un solo `avanzar()` en dos, exactamente como el bucle ya hace entre cualquier par de eventos consecutivos. Con `saldoViejo` (el default de toda cuenta existente) el código toma la rama original sin ningún cambio.
+
+**Dos movimientos el mismo día, en modo `saldoNuevo`.** No son retroactivos entre sí: el primero en aplicarse compone el día ya con su monto incluido; el segundo se suma al cierre sin volver a abrir el día. El saldo de cierre sí incluye ambos montos completos — solo el rendimiento de ese día puntual no compone sobre el segundo.
+
+**Dónde se edita.** Campo "Cuándo rinde un movimiento" en la sección Avanzado del modal Editar cuenta, junto a "Hora de corte" — mismo bloque conceptual de timing.
+
 ### Vigencias de tasa
 
 Las instituciones cambian la tasa que publican de vez en cuando. El saldo que ya estaba invertido siguió ganando la tasa **vieja** hasta el día del cambio — recalcular todo el historial con la tasa nueva falsearía lo ganado antes. Por eso una cuenta no tiene una sola tasa: tiene una línea de tiempo de **vigencias**, cada una con sus propios tramos, `modoTramos` y `modoTasa` (ver [`inversiones/{id}`](#inversionesid)).
@@ -1541,6 +1552,7 @@ ABONO_NATURAL 'natural' · ABONO_HABIL_ACUMULA 'habilAcumula' · ABONO_HABIL_SOL
 // Tipo de evento y dirección de un movimiento — ver Modelo de eventos arriba
 EVENTO_ANCLA 'ancla' · EVENTO_MOVIMIENTO 'movimiento' · EVENTO_AJUSTE 'ajuste'
 MOV_APORTE   'aporte' · MOV_RETIRO 'retiro'
+MOV_RINDE_SALDO_VIEJO 'saldoViejo' · MOV_RINDE_SALDO_NUEVO 'saldoNuevo' — ver Cuándo rinde un movimiento
 
 // Valores por omisión
 BASE_ANUAL_DEFAULT  365          // base del interés y del ISR

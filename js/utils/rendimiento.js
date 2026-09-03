@@ -134,10 +134,11 @@
  *                 NO es rendimiento: se reporta aparte para no inflar lo ganado.
  *                 Si va de una cuenta del módulo a otra, es una transferencia y
  *                 se guarda como dos movimientos espejo — ver más abajo.
- *                 Su propio día de llegada rinde sobre el saldo VIEJO, no sobre
- *                 el nuevo — el saldo ya actualizado recién empieza a generar
- *                 interés desde el día siguiente (`recorrer` compone ese día con
- *                 lo que había antes de sumar el movimiento).
+ *                 Por default, su propio día de llegada rinde sobre el saldo
+ *                 VIEJO, no sobre el nuevo — el saldo ya actualizado recién
+ *                 empieza a generar interés desde el día siguiente (`recorrer`
+ *                 compone ese día con lo que había antes de sumar el
+ *                 movimiento). Configurable por cuenta — ver `MOV_RINDE_SALDO_NUEVO`.
  *
  *   `ajuste`      Deriva del cálculo que el usuario reconoce al conciliar. SÍ es
  *                 rendimiento: si la institución pagó más de lo que el modelo
@@ -191,6 +192,16 @@ export const EVENTO_AJUSTE     = 'ajuste';
 /** Dirección de un movimiento de efectivo. */
 export const MOV_APORTE = 'aporte';
 export const MOV_RETIRO = 'retiro';
+
+/**
+ * Sobre qué saldo rinde un movimiento su propio día de llegada. Por default
+ * (`saldoViejo`) es el saldo que había antes de sumarlo — como en la mayoría
+ * de las instituciones, el dinero que entra a mediodía no generó interés esa
+ * madrugada. Algunas cuentas sí calculan el rendimiento del día ya con el
+ * movimiento aplicado (`saldoNuevo`) — configurable por cuenta.
+ */
+export const MOV_RINDE_SALDO_VIEJO = 'saldoViejo';
+export const MOV_RINDE_SALDO_NUEVO = 'saldoNuevo';
 
 /** Diferencia por debajo de la cual dos importes se consideran el mismo. */
 const EPS = 0.005; // medio centavo
@@ -461,6 +472,10 @@ export function configCuenta(cuenta = {}, inhabiles) {
     redondeo: cuenta.redondeoDiario === REDONDEO_CENTAVOS  ? REDONDEO_CENTAVOS
             : cuenta.redondeoDiario === REDONDEO_ACUMULADO ? REDONDEO_ACUMULADO
             : REDONDEO_CONTINUO,
+    movimientoRinde: cuenta.movimientoRinde === MOV_RINDE_SALDO_NUEVO
+                        ? MOV_RINDE_SALDO_NUEVO : MOV_RINDE_SALDO_VIEJO,
+    // Derivado, mismo criterio que devengaInhabil/abonaSoloHabil arriba.
+    rindeSaldoNuevo: cuenta.movimientoRinde === MOV_RINDE_SALDO_NUEVO,
   };
 }
 
@@ -844,32 +859,50 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0
 
   for (const e of eventos) {
     if (e.fecha <= desde || e.fecha > hasta) continue;
-    // `avanzar(e.fecha)` ya compone el propio día del evento sobre el saldo
-    // ACTUAL (el viejo, si es un movimiento) — es donde vive la regla "el día
-    // de llegada rinde sobre el saldo viejo". Si `e.fecha` no es posterior a
-    // `cursor` es porque ese día ya se cerró (coincide con `desde`, o con otro
-    // evento de la misma fecha) y no hay nada más que componer para él.
-    if (e.fecha > cursor) avanzar(e.fecha);
 
-    if (e.tipo === EVENTO_MOVIMIENTO) {
-      // El saldo nuevo empieza a generar interés desde MAÑANA — que es
-      // exactamente lo que hace el próximo `avanzar()`, al arrancar un día
-      // después de `cursor` (que ya quedó en `e.fecha`) sobre el saldo que se
-      // suma aquí.
+    if (e.tipo === EVENTO_MOVIMIENTO && cfg.rindeSaldoNuevo) {
+      // `movimientoRinde: saldoNuevo` — este movimiento debe componer SU
+      // PROPIO día ya con el monto aplicado, al revés del default. Se cierra
+      // el día ANTERIOR con el saldo viejo (si falta alguno por componer), se
+      // suma el movimiento, y recién entonces se compone el día del evento —
+      // aparte, ya sobre el saldo actualizado. Dos movimientos el mismo día:
+      // el primero compone el día con su monto incluido; el segundo se suma
+      // después sin volver a abrir el día (ya cerrado) — no son retroactivos
+      // entre sí.
+      const diaAntes = sumarDias(e.fecha, -1);
+      if (diaAntes > cursor) avanzar(diaAntes);
       acc.saldo       += e.monto;
       acc.movimientos += e.monto;
-    } else if (e.tipo === EVENTO_AJUSTE) {
-      // Un ajuste es rendimiento que el modelo no supo predecir
-      acc.saldo       += e.monto;
-      acc.ajustes     += e.monto;
-      acc.rendimiento += e.monto;
+      if (e.fecha > cursor) avanzar(e.fecha);
     } else {
-      // Ancla: lo observado manda, y lo que nadie explicó queda a la vista.
-      // El remanente sub-centavo tampoco es observable, así que también se
-      // reinicia — mismo criterio que el residuo: no se acumula entre anclas.
-      acc.residuo   += e.monto - acc.saldo;
-      acc.saldo      = e.monto;
-      acc.remanente  = { bruto: 0, isr: 0 };
+      // `avanzar(e.fecha)` ya compone el propio día del evento sobre el saldo
+      // ACTUAL (el viejo, si es un movimiento) — es donde vive la regla
+      // default "el día de llegada rinde sobre el saldo viejo". Si `e.fecha`
+      // no es posterior a `cursor` es porque ese día ya se cerró (coincide
+      // con `desde`, o con otro evento de la misma fecha) y no hay nada más
+      // que componer para él.
+      if (e.fecha > cursor) avanzar(e.fecha);
+
+      if (e.tipo === EVENTO_MOVIMIENTO) {
+        // El saldo nuevo empieza a generar interés desde MAÑANA — que es
+        // exactamente lo que hace el próximo `avanzar()`, al arrancar un día
+        // después de `cursor` (que ya quedó en `e.fecha`) sobre el saldo que
+        // se suma aquí.
+        acc.saldo       += e.monto;
+        acc.movimientos += e.monto;
+      } else if (e.tipo === EVENTO_AJUSTE) {
+        // Un ajuste es rendimiento que el modelo no supo predecir
+        acc.saldo       += e.monto;
+        acc.ajustes     += e.monto;
+        acc.rendimiento += e.monto;
+      } else {
+        // Ancla: lo observado manda, y lo que nadie explicó queda a la vista.
+        // El remanente sub-centavo tampoco es observable, así que también se
+        // reinicia — mismo criterio que el residuo: no se acumula entre anclas.
+        acc.residuo   += e.monto - acc.saldo;
+        acc.saldo      = e.monto;
+        acc.remanente  = { bruto: 0, isr: 0 };
+      }
     }
     acc.saldo = Math.max(0, acc.saldo);
   }
@@ -1183,8 +1216,9 @@ export function recalcularAjustes(cuenta, cfg = configCuenta(cuenta)) {
  *
  * Los movimientos y ajustes del periodo se aplican al inicio de su día. Un
  * ajuste ya compone ese mismo día sobre el saldo con la corrección incluida; un
- * movimiento en cambio rinde ese día sobre el saldo VIEJO —el que había antes de
- * sumarlo— y recién compone sobre el saldo nuevo desde el día siguiente.
+ * movimiento, por default, rinde ese día sobre el saldo VIEJO —el que había
+ * antes de sumarlo— y recién compone sobre el saldo nuevo desde el día
+ * siguiente (configurable por cuenta, `movimientoRinde` — ver `recorrer`).
  *
  * El último renglón es el del propio `hoy` — aunque su interés todavía no se
  * haya "cobrado" de verdad (es una proyección, igual que el rendimiento diario
