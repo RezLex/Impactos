@@ -3,7 +3,7 @@
  * Sin framework: `node test/impacto-calc.test.mjs`.
  */
 import assert from 'node:assert/strict';
-import { getPlazosMes, getPagosDiferidosMes } from '../js/utils/impacto-calc.js';
+import { getPlazosMes, getPagosDiferidosMes, getGastosFijosPendientes } from '../js/utils/impacto-calc.js';
 
 let pasadas = 0;
 const test = (nombre, fn) => { fn(); pasadas++; console.log('ok  ' + nombre); };
@@ -72,6 +72,44 @@ test('getPagosDiferidosMes: el resultado para un mes fijo no depende de mesesPag
 test('getPagosDiferidosMes: sin registro de la compra padre no entra', () => {
   const r = getPagosDiferidosMes([pago()], TARJETA_ID, CICLO, '2026-01', FESTIVOS, {});
   assert.equal(r.length, 0);
+});
+
+// ── getGastosFijosPendientes ─────────────────────────────────────────────────
+
+const gastoFijo = (over = {}) => ({
+  id: 'gf1', nombre: 'Netflix', tarjetaId: TARJETA_ID, formaPago: 'transferencia',
+  diaCobro: 20, importe: 199, ...over,
+});
+
+test('getGastosFijosPendientes: sin doc, antes de su fecha → pendiente, id null', () => {
+  const [r] = getGastosFijosPendientes([gastoFijo()], [], '2026-03', FESTIVOS, '2026-03-10');
+  assert.equal(r.id, null);
+  assert.equal(r.estatus, 'pendiente');
+  assert.equal(r.fechaPago, '2026-03-20');
+  assert.equal(r.importe, 199);
+});
+
+test('getGastosFijosPendientes: sin doc, ya disponible → porConfirmar, id null', () => {
+  const [r] = getGastosFijosPendientes([gastoFijo()], [], '2026-03', FESTIVOS, '2026-03-20');
+  assert.equal(r.id, null);
+  assert.equal(r.estatus, 'porConfirmar');
+});
+
+test('getGastosFijosPendientes: doc existente estado pendiente → porConfirmar, reusa su fecha/importe', () => {
+  const doc = { id: 'doc1', gastaFijoId: 'gf1', mes: '2026-03', estado: 'pendiente', fechaPago: '2026-03-22', importe: 250 };
+  const [r] = getGastosFijosPendientes([gastoFijo()], [doc], '2026-03', FESTIVOS, '2026-03-25');
+  assert.equal(r.id, 'doc1');
+  assert.equal(r.estatus, 'porConfirmar');
+  assert.equal(r.fechaPago, '2026-03-22');
+  assert.equal(r.importe, 250);
+});
+
+test('getGastosFijosPendientes: doc registrado o descartado no aparece', () => {
+  const registrado = { id: 'doc1', gastaFijoId: 'gf1', mes: '2026-03', estado: 'registrado', fechaPago: '2026-03-20', importe: 199 };
+  assert.equal(getGastosFijosPendientes([gastoFijo()], [registrado], '2026-03', FESTIVOS, '2026-03-25').length, 0);
+
+  const descartado = { id: 'doc2', gastaFijoId: 'gf1', mes: '2026-03', estado: 'descartado', fechaPago: '2026-03-20', importe: 199 };
+  assert.equal(getGastosFijosPendientes([gastoFijo()], [descartado], '2026-03', FESTIVOS, '2026-03-25').length, 0);
 });
 
 console.log(`\n${pasadas} pruebas ok`);

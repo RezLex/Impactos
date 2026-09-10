@@ -294,7 +294,7 @@ function _renderPage(container, impacto, ctx) {
       btn.addEventListener('click', () => {
         const idx   = Number(btn.dataset.idx);
         const campo = btn.dataset.campo;
-        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, saldoVivoMap);
+        showModalEditCampoTarjeta(impacto.tarjetas[idx], idx, campo, impacto, () => renderView(ctx.container, ctx.mes), saldoVivoMap);
       }));
 
     container.querySelectorAll('.btn-pagar-tarjeta').forEach(btn =>
@@ -312,7 +312,7 @@ function _renderPage(container, impacto, ctx) {
       btn.addEventListener('click', () => {
         const idx   = Number(btn.dataset.idx);
         const campo = btn.dataset.campo;
-        _showModalEditCampo(impacto.tarjetas[idx], idx, campo, impacto, ctx, null, true, gastosDebitoLive);
+        showModalEditCampoTarjeta(impacto.tarjetas[idx], idx, campo, impacto, () => renderView(ctx.container, ctx.mes), null, true, gastosDebitoLive);
       }));
 
     container.querySelectorAll('.btn-edit-gasto').forEach(btn =>
@@ -680,7 +680,7 @@ function _showModalPresupuesto(impacto, totales, isCerrado, ctx) {
   });
 }
 
-function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null, isCerrado = false, gastosDebitoLive = []) {
+export function showModalEditCampoTarjeta(t, idx, campo, impacto, onSaved, saldoVivoMap = null, isCerrado = false, gastosDebitoLive = []) {
   const saldoRef = saldoVivoMap?.[t.tarjetaId] ?? t.saldoDisponible;
   const defs = {
     fechaCorte:  { label: 'Fecha de corte',       ref: t.fechaCorte,      conf: t.fechaCorteConf,   confKey: 'fechaCorteConf',  type: 'date'   },
@@ -715,7 +715,7 @@ function _showModalEditCampo(t, idx, campo, impacto, ctx, saldoVivoMap = null, i
     if (isCerrado) data.totales = _recalcTotalesCerrado(updated, gastosDebitoLive, impacto.presupuesto, impacto.nominaRef, impacto.totales);
     await upsert('impacto', impacto.mes, data);
     closeModal();
-    await renderView(ctx.container, ctx.mes);
+    onSaved();
   };
 
   document.getElementById('btn-save-campo').addEventListener('click', () => {

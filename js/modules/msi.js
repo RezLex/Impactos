@@ -1,4 +1,4 @@
-import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
+import { getAll, create, update, upsert, remove, batchUpdate, recentWhere } from '../utils/db.js';
 import { prefillDesdeDatos } from '../utils/prefill-compra.js';
 
 const _hasRealTime = dt => dt?.length > 10 && !dt.includes('T12:00:00');
@@ -62,9 +62,20 @@ const _addTime = s => {
 };
 import { currency, fmtDate, r2 } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
-import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
+import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from '../utils/ciclo.js';
+import { getGastosFijosPendientes } from '../utils/impacto-calc.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
+
+// Estatus de un gasto fijo del mes — 'pendiente'/'porConfirmar' son calculados
+// (getGastosFijosPendientes), no necesariamente un `estado` guardado en
+// Firestore; 'aplicado' es el `estado: 'registrado'` de siempre.
+const ESTATUS_GASTO_LABEL = { pendiente: 'Pendiente', porConfirmar: 'Por confirmar', aplicado: 'Aplicado' };
+const ESTATUS_GASTO_CLS   = {
+  pendiente:    'bg-secondary-subtle text-secondary',
+  porConfirmar: 'bg-warning-subtle text-warning-emphasis',
+  aplicado:     'bg-success-subtle text-success',
+};
 
 export async function render(container, tab = null, query = null) {
   // La presencia de `meses` es lo que distingue una compra a plazos: los
@@ -190,7 +201,8 @@ async function renderView(container, initialTab = 'contado', query = null) {
         const fecha = calcularFechaGastoMes(gasto, _year, _month, festivosMX);
         if (!fecha) return;
         const fechaISO = toISODate(fecha);
-        if (!fechaISO.startsWith(_mes) || fechaISO > _hoy) return;
+        if (!fechaISO.startsWith(_mes)) return;
+        if (!gastoFijoDisponible(gasto.formaPago, fecha, _hoy, festivosMX)) return;
 
         nuevos.push({
           tipo: 'gastaFijo', estado: 'pendiente', mes: _mes,
@@ -362,7 +374,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
           e.stopPropagation();
           showModalContado(
             contadoItems.find(c => c.id === btn.dataset.id),
-            instituciones, tarjetas,
+            instituciones, tarjetas, pagosDiferidos,
             () => renderView(container, 'contado')
           );
         }));
@@ -714,7 +726,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
           e.stopPropagation();
           showModalMsi(
             msiItems.find(m => m.id === btn.dataset.id),
-            instituciones, tarjetas,
+            instituciones, tarjetas, pagosDiferidos,
             () => renderView(container, 'plazos')
           );
         }));
@@ -908,9 +920,9 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
     document.getElementById('btn-nueva-compra').addEventListener('click', () => {
       if (tabActivo === 'contado')
-        showModalContado(null, instituciones, tarjetas, () => renderView(container, 'contado'));
+        showModalContado(null, instituciones, tarjetas, pagosDiferidos, () => renderView(container, 'contado'));
       else if (tabActivo === 'plazos')
-        showModalMsi(null, instituciones, tarjetas, () => renderView(container, 'plazos'));
+        showModalMsi(null, instituciones, tarjetas, pagosDiferidos, () => renderView(container, 'plazos'));
       else
         showModalNuevoGasto(null, instituciones, tarjetas, () => renderView(container, 'gastos'));
     });
@@ -922,9 +934,15 @@ async function renderView(container, initialTab = 'contado', query = null) {
       const mesActual = toISODate(now).slice(0, 7);
       const hoy       = toISODate(now);
 
-      const pendientes = [...gastosItems]
-        .filter(g => g.mes === mesActual && g.estado === 'pendiente')
-        .sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
+      // Gastos fijos del mes que todavía no se aplican — 'pendiente' (antes de
+      // su fecha/quincena) o 'porConfirmar' (ya disponible; es el mismo
+      // `estado: 'pendiente'` de Firestore de siempre, solo con otra etiqueta).
+      const gastosFijosPendientes = getGastosFijosPendientes(gastosFijosItems, gastosItems, mesActual, festivosMX, hoy);
+      const porConfirmar        = gastosFijosPendientes.filter(g => g.estatus === 'porConfirmar');
+      const pendientesTempranos = gastosFijosPendientes.filter(g => g.estatus === 'pendiente');
+      // Para los botones Confirmar/Descartar de ambas listas y de la tabla —
+      // algunas filas todavía no tienen doc en Firestore (`id: null`).
+      const gastosFijosPendientesPorId = new Map(gastosFijosPendientes.map(g => [g.gastaFijoId, g]));
 
       const registrados = [...gastosItems]
         .filter(g => {
@@ -954,6 +972,31 @@ async function renderView(container, initialTab = 'contado', query = null) {
             const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
             return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
           })();
+
+      const filaListaGasto = (g, { vencido }) => {
+        const tc = cardMap[g.tarjetaId];
+        const lf = lastFourOf(g, tc);
+        return `
+          <div class="list-group-item gasto-pend d-flex align-items-center gap-3 py-2">
+            <div class="gasto-pend-info flex-grow-1">
+              <div class="fw-500">${g.nombre}</div>
+              <small class="text-muted">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''} · ${FORMA_PAGO[g.formaPago] || '—'}</small>
+            </div>
+            <div class="gasto-pend-cobro text-center" style="min-width:76px">
+              <div class="gasto-pend-cobro-lbl" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint)">Cobro</div>
+              <div class="${vencido ? 'text-danger fw-bold' : 'text-muted'}" style="font-size:0.82rem">${fmtDate(g.fechaPago)}</div>
+            </div>
+            <div class="gasto-pend-importe fw-bold text-end" style="min-width:80px">${currency(g.importe)}</div>
+            <div class="gasto-pend-acciones d-flex gap-1">
+              <button class="btn btn-sm btn-outline-primary btn-confirmar-gasto" data-gasta-fijo-id="${g.gastaFijoId}" style="white-space:nowrap">
+                <i class="bi bi-check-lg me-1"></i>Confirmar
+              </button>
+              <button class="btn-icon btn-descartar-gasto" data-gasta-fijo-id="${g.gastaFijoId}" title="Descartar este mes">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+          </div>`;
+      };
 
       document.getElementById('compras-tab-content').innerHTML = `
         <div class="filter-bar d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
@@ -986,62 +1029,57 @@ async function renderView(container, initialTab = 'contado', query = null) {
               </div>
               <div class="metric-info">
                 <div class="metric-value">${registrados.length}</div>
-                <div class="metric-label">Gastos registrados</div>
+                <div class="metric-label">Gastos aplicados</div>
               </div>
             </div>
           </div>
         </div>
 
-        ${pendientes.length > 0 ? `
+        ${porConfirmar.length > 0 ? `
         <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
-          <i class="bi bi-hourglass-split me-1 text-warning"></i>Gastos Fijos — Pendientes de confirmar
+          <i class="bi bi-hourglass-split me-1 text-warning"></i>Gastos Fijos — Por confirmar
         </p>
-        <div class="list-group mb-4" id="gastos-pendientes">
-          ${pendientes.map(g => {
-            const tc = cardMap[g.tarjetaId];
-            const lf = lastFourOf(g, tc);
-            const vencido = g.fechaPago <= hoy;
-            return `
-              <div class="list-group-item gasto-pend d-flex align-items-center gap-3 py-2">
-                <div class="gasto-pend-info flex-grow-1">
-                  <div class="fw-500">${g.nombre}</div>
-                  <small class="text-muted">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''} · ${FORMA_PAGO[g.formaPago] || '—'}</small>
-                </div>
-                <div class="gasto-pend-cobro text-center" style="min-width:76px">
-                  <div class="gasto-pend-cobro-lbl" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint)">Cobro</div>
-                  <div class="${vencido ? 'text-danger fw-bold' : 'text-muted'}" style="font-size:0.82rem">${fmtDate(g.fechaPago)}</div>
-                </div>
-                <div class="gasto-pend-importe fw-bold text-end" style="min-width:80px">${currency(g.importe)}</div>
-                <div class="gasto-pend-acciones d-flex gap-1">
-                  <button class="btn btn-sm btn-outline-primary btn-confirmar-gasto" data-id="${g.id}" style="white-space:nowrap">
-                    <i class="bi bi-check-lg me-1"></i>Confirmar
-                  </button>
-                  <button class="btn-icon btn-descartar-gasto" data-id="${g.id}" title="Descartar este mes">
-                    <i class="bi bi-x-lg"></i>
-                  </button>
-                </div>
-              </div>`;
-          }).join('')}
+        <div class="list-group mb-4">
+          ${porConfirmar.map(g => filaListaGasto(g, { vencido: g.fechaPago <= hoy })).join('')}
+        </div>` : ''}
+
+        ${pendientesTempranos.length > 0 ? `
+        <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
+          <i class="bi bi-calendar3 me-1"></i>Gastos Fijos — Pendientes del mes
+        </p>
+        <div class="list-group mb-4">
+          ${pendientesTempranos.map(g => filaListaGasto(g, { vencido: false })).join('')}
         </div>` : ''}
 
         <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
-          <i class="bi bi-receipt me-1"></i>Gastos registrados
+          <i class="bi bi-receipt me-1"></i>Gastos
         </p>
-        ${registrados.length === 0
-          ? `<div class="empty-state"><i class="bi bi-cash-stack"></i><p>Sin gastos registrados este mes</p></div>`
-          : `<div class="table-wrapper">
+        ${(() => {
+          // Solo en el mes actual tiene sentido mezclar lo aplicado con lo
+          // pendiente/por confirmar — al navegar a otro mes, la tabla vuelve a
+          // ser exactamente lo que ya se aplicó ese mes, como siempre.
+          const filas = filtroGastosMes === mesActual
+            ? [...gastosFijosPendientes, ...registrados.map(g => ({ ...g, estatus: 'aplicado' }))]
+                .sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''))
+            : registrados.map(g => ({ ...g, estatus: 'aplicado' }));
+
+          if (filas.length === 0) {
+            return `<div class="empty-state"><i class="bi bi-cash-stack"></i><p>Sin gastos este mes</p></div>`;
+          }
+          return `<div class="table-wrapper">
               <table class="table">
                 <thead><tr>
-                  <th>Nombre</th><th>Tarjeta</th><th>Forma de Pago</th>
+                  <th>Nombre</th><th>Tarjeta</th><th>Forma de Pago</th><th>Estatus</th>
                   <th>Fecha Gasto</th><th>Fecha Pago</th><th class="text-end">Importe</th><th></th>
                 </tr></thead>
                 <tbody>
-                  ${registrados.map(g => {
+                  ${filas.map(g => {
                     const tc = cardMap[g.tarjetaId];
                     const lf = lastFourOf(g, tc);
+                    const aplicado = g.estatus === 'aplicado';
 
                     let fechaPagoCell = g.fechaPago ? fmtDate(g.fechaPago) : '—';
-                    if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
+                    if (aplicado && tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
                       const base = new Date(String(g.fechaPago).includes('T') ? g.fechaPago : g.fechaPago + 'T12:00:00');
                       let yr = base.getFullYear(), mo = base.getMonth();
                       let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
@@ -1057,6 +1095,12 @@ async function renderView(container, initialTab = 'contado', query = null) {
                       }
                     }
 
+                    const acciones = aplicado
+                      ? `<button class="btn-icon btn-edit-gasto" data-id="${g.id}"><i class="bi bi-pencil"></i></button>
+                         <button class="btn-icon danger btn-del-gasto" data-id="${g.id}"><i class="bi bi-trash3"></i></button>`
+                      : `<button class="btn-icon btn-confirmar-gasto" data-gasta-fijo-id="${g.gastaFijoId}" title="Confirmar"><i class="bi bi-check-lg"></i></button>
+                         <button class="btn-icon btn-descartar-gasto" data-gasta-fijo-id="${g.gastaFijoId}" title="Descartar este mes"><i class="bi bi-x-lg"></i></button>`;
+
                     return `<tr>
                       <td>
                         <div class="fw-500">${g.nombre}</div>
@@ -1064,21 +1108,17 @@ async function renderView(container, initialTab = 'contado', query = null) {
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lf ? ' ···' + lf : ''}</td>
                       <td>${FORMA_PAGO[g.formaPago] || '—'}</td>
+                      <td><span class="badge ${ESTATUS_GASTO_CLS[g.estatus] || 'bg-secondary-subtle text-secondary'}">${ESTATUS_GASTO_LABEL[g.estatus] || g.estatus}</span></td>
                       <td style="white-space:nowrap">${g.fechaPago ? fmtDate(g.fechaPago) : '—'}</td>
                       <td style="white-space:nowrap">${fechaPagoCell}</td>
                       <td class="text-end fw-bold">${currency(g.importe)}</td>
-                      <td>
-                        <div class="d-flex gap-1">
-                          <button class="btn-icon btn-edit-gasto" data-id="${g.id}"><i class="bi bi-pencil"></i></button>
-                          <button class="btn-icon danger btn-del-gasto" data-id="${g.id}"><i class="bi bi-trash3"></i></button>
-                        </div>
-                      </td>
+                      <td><div class="d-flex gap-1">${acciones}</div></td>
                     </tr>`;
                   }).join('')}
                 </tbody>
               </table>
-            </div>`
-        }`;
+            </div>`;
+        })()}`;
 
       const content = document.getElementById('compras-tab-content');
 
@@ -1089,17 +1129,28 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
       content.querySelectorAll('.btn-confirmar-gasto').forEach(btn =>
         btn.addEventListener('click', () => {
-          const g = gastosItems.find(x => x.id === btn.dataset.id);
+          const g = gastosFijosPendientesPorId.get(btn.dataset.gastaFijoId);
           if (!g) return;
           showModalConfirmarGasto(g, instituciones, tarjetas, () => renderView(container, 'gastos'));
         }));
 
       content.querySelectorAll('.btn-descartar-gasto').forEach(btn =>
         btn.addEventListener('click', async () => {
-          const g = gastosItems.find(x => x.id === btn.dataset.id);
+          const g = gastosFijosPendientesPorId.get(btn.dataset.gastaFijoId);
           if (!g) return;
-          await update('gastos', g.id, { estado: 'descartado' });
-          Object.assign(g, { estado: 'descartado' });
+          if (g.id) {
+            await update('gastos', g.id, { estado: 'descartado' });
+            Object.assign(gastosItems.find(x => x.id === g.id) || {}, { estado: 'descartado' });
+          } else {
+            const id = await create('gastos', {
+              tipo: 'gastaFijo', estado: 'descartado', mes: g.mes,
+              gastaFijoId: g.gastaFijoId, nombre: g.nombre,
+              tarjetaId: g.tarjetaId || '',
+              ...(g.numeroTarjeta ? { numeroTarjeta: g.numeroTarjeta } : {}),
+              formaPago: g.formaPago || '', fechaPago: g.fechaPago, importe: g.importe,
+            });
+            gastosItems.push({ id, tipo: 'gastaFijo', estado: 'descartado', mes: g.mes, gastaFijoId: g.gastaFijoId, nombre: g.nombre, tarjetaId: g.tarjetaId || '', formaPago: g.formaPago || '', fechaPago: g.fechaPago, importe: g.importe });
+          }
           renderGastos();
         }));
 
@@ -1807,18 +1858,29 @@ function _bonifTotal(item, totalVal, conIva = false) {
 
 // ── Modal De Contado ────────────────────────────────────────────────────────────
 
-function showModalContado(compra, instituciones, tarjetas, onSaved) {
+export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos, onSaved) {
   // Nota: !!compra?.id (no !!compra) porque un prefill armado desde parámetros de URL
   // (#/compras?desc=...) llega como objeto truthy pero sin id — es un alta, no una edición.
-  const isEdit = !!compra?.id;
+  const isEdit   = !!compra?.id;
+  // Vengo de cambiar el tipo en el otro modal (A Plazos) sin guardar todavía —
+  // `compra._switchFrom` apunta al doc real que hay que mover al guardar.
+  const isSwitch = !!compra?._switchFrom;
 
   openModal({
-    title: isEdit ? 'Editar Compra' : 'Nueva Compra de Contado',
+    title: isSwitch ? 'Cambiar a De Contado' : (isEdit ? 'Editar Compra' : 'Nueva Compra de Contado'),
     size: 'lg',
     body: `
       <form id="contado-form">
         <input type="hidden" name="msgId" value="${compra?.msgId || ''}">
         <div class="row g-3">
+          ${(isEdit || isSwitch) ? `
+          <div class="col-12">
+            <label class="form-label">Tipo de compra</label>
+            <select class="form-select" id="select-tipo-compra">
+              <option value="contado" selected>De Contado</option>
+              <option value="msi">A Plazos (MSI)</option>
+            </select>
+          </div>` : ''}
           <div class="col-12">
             <label class="form-label">Descripción *</label>
             <input type="text" class="form-control" name="compra" value="${compra?.compra || ''}" required placeholder="Ej: Amazon — Auriculares">
@@ -1866,7 +1928,7 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-save-contado">${isEdit ? 'Guardar' : 'Crear'}</button>`
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-contado">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
   _wireBonif();
@@ -1877,6 +1939,19 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
   const hintDif = document.getElementById('diferido-hint-contado');
   chkDif?.addEventListener('change', () => {
     hintDif.style.display = chkDif.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('select-tipo-compra')?.addEventListener('change', e => {
+    if (e.target.value !== 'msi') return;
+    if (isSwitch) {
+      // El original ya es A Plazos — volver a él tal cual, sin arrastrar nada del desvío.
+      closeModal();
+      showModalMsi(compra._original, instituciones, tarjetas, pagosDiferidos, onSaved);
+      return;
+    }
+    const seed = _seedParaOtroTipo('contado-form', compra, 'contado');
+    closeModal();
+    showModalMsi(seed, instituciones, tarjetas, pagosDiferidos, onSaved);
   });
 
   document.getElementById('btn-save-contado').addEventListener('click', async () => {
@@ -1890,8 +1965,8 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
     if (data.diferido === '1') {
       data.diferido      = true;
       data.totalDiferido = totalVal;
-      // total = pending amount; on create = full amount; on edit preserve pending
-      data.total = isEdit && compra.diferido ? Number(compra.total) : totalVal;
+      // total = pending amount; on create/switch = full amount; on edit preserve pending
+      data.total = (isEdit || isSwitch) && compra?.diferido ? Number(compra.total) : totalVal;
     } else {
       delete data.diferido;
       data.total = totalVal;
@@ -1901,29 +1976,84 @@ function showModalContado(compra, instituciones, tarjetas, onSaved) {
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
     try {
-      if (isEdit) await update('contado', compra.id, data);
-      else        await create('contado', data);
+      let savedId;
+      if (isSwitch) {
+        savedId = await _moverEntreColecciones('contado', compra._switchFrom, data, pagosDiferidos);
+      } else if (isEdit) {
+        await update('contado', compra.id, data);
+        savedId = compra.id;
+      } else {
+        savedId = await create('contado', data);
+      }
       closeModal();
-      toast(isEdit ? 'Compra actualizada' : 'Compra creada');
+      toast(isSwitch ? 'Compra movida a De Contado' : (isEdit ? 'Compra actualizada' : 'Compra creada'));
       onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }
 
+// ── Cambio de tipo (De Contado ↔ A Plazos) sin perder historial ────────────────
+
+/** Arma un objeto "semilla" con los campos compartidos del form actual, para
+ *  precargar el modal del otro tipo cuando el usuario cambia el selector de
+ *  Tipo de compra antes de guardar (nada se persiste todavía en este punto). */
+function _seedParaOtroTipo(formId, compraActual, coleccionActual) {
+  const raw  = Object.fromEntries(new FormData(document.getElementById(formId)));
+  const [tarjetaId, numeroTarjeta] = (raw.tarjetaId || '').split('::');
+  const esDiferido = raw.diferido === '1';
+  return {
+    compra: raw.compra, tarjetaId, numeroTarjeta,
+    fechaCompra: _applyTime(raw.fechaCompra, raw.fechaCompraTime),
+    enlaceCompra: raw.enlaceCompra || '',
+    diferido: esDiferido,
+    total: Number(raw.total) || 0,
+    ...(esDiferido ? { totalDiferido: Number(raw.total) || 0 } : {}),
+    bonificacion: compraActual?.bonificacion || null,
+    _switchFrom: { coleccion: coleccionActual, id: compraActual.id },
+    _original: compraActual,
+  };
+}
+
+/** Mueve un documento de una colección (`contado`/`msi`) a otra conservando el
+ *  mismo id — así los `pagosDiferidos` que lo referencian por `compraId` no
+ *  quedan huérfanos; solo se les actualiza `compraColeccion`. */
+async function _moverEntreColecciones(coleccionNueva, switchFrom, data, pagosDiferidos) {
+  const { coleccion: coleccionVieja, id } = switchFrom;
+  await upsert(coleccionNueva, id, data);
+  await remove(coleccionVieja, id);
+  const pagosAfectados = pagosDiferidos.filter(p =>
+    p.compraId === id && (p.compraColeccion || 'contado') === coleccionVieja);
+  if (pagosAfectados.length) {
+    await batchUpdate('pagosDiferidos', pagosAfectados.map(p => ({ id: p.id, data: { compraColeccion: coleccionNueva } })));
+  }
+  return id;
+}
+
 // ── Modal A Plazos ─────────────────────────────────────────────────────────────
 
-function showModalMsi(msi, instituciones, tarjetas, onSaved) {
+export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSaved) {
   // Nota: !!msi?.id (no !!msi) porque un prefill armado desde parámetros de URL
   // (#/compras?desc=...&tipo=msi) llega como objeto truthy pero sin id — es un alta, no una edición.
-  const isEdit = !!msi?.id;
+  const isEdit   = !!msi?.id;
+  // Vengo de cambiar el tipo en el otro modal (De Contado) sin guardar todavía —
+  // `msi._switchFrom` apunta al doc real que hay que mover al guardar.
+  const isSwitch = !!msi?._switchFrom;
 
   openModal({
-    title: isEdit ? 'Editar Compra MSI' : 'Nueva Compra MSI',
+    title: isSwitch ? 'Cambiar a A Plazos (MSI)' : (isEdit ? 'Editar Compra MSI' : 'Nueva Compra MSI'),
     size: 'lg',
     body: `
       <form id="msi-form">
         <input type="hidden" name="msgId" value="${msi?.msgId || ''}">
         <div class="row g-3">
+          ${(isEdit || isSwitch) ? `
+          <div class="col-12">
+            <label class="form-label">Tipo de compra</label>
+            <select class="form-select" id="select-tipo-compra">
+              <option value="contado">De Contado</option>
+              <option value="msi" selected>A Plazos (MSI)</option>
+            </select>
+          </div>` : ''}
           <div class="col-12">
             <label class="form-label">Descripción *</label>
             <input type="text" class="form-control" name="compra" value="${msi?.compra || ''}" required placeholder="Ej: Amazon — Teclado">
@@ -1995,7 +2125,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${isEdit ? 'Guardar' : 'Crear'}</button>`
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
   _wireBonif();
@@ -2006,6 +2136,19 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
   const hintDifMsi = document.getElementById('diferido-hint-msi');
   chkDifMsi?.addEventListener('change', () => {
     hintDifMsi.style.display = chkDifMsi.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('select-tipo-compra')?.addEventListener('change', e => {
+    if (e.target.value !== 'contado') return;
+    if (isSwitch) {
+      // El original ya es De Contado — volver a él tal cual, sin arrastrar nada del desvío.
+      closeModal();
+      showModalContado(msi._original, instituciones, tarjetas, pagosDiferidos, onSaved);
+      return;
+    }
+    const seed = _seedParaOtroTipo('msi-form', msi, 'msi');
+    closeModal();
+    showModalContado(seed, instituciones, tarjetas, pagosDiferidos, onSaved);
   });
 
   const _recalcMsi = () => {
@@ -2044,7 +2187,7 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     if (data.diferido === '1') {
       data.diferido      = true;
       data.totalDiferido = totalVal;
-      data.total         = isEdit && msi.diferido ? Number(msi.total) : totalVal;
+      data.total         = (isEdit || isSwitch) && msi?.diferido ? Number(msi.total) : totalVal;
     } else {
       delete data.diferido;
       data.total = totalVal;
@@ -2056,14 +2199,16 @@ function showModalMsi(msi, instituciones, tarjetas, onSaved) {
     _saveBonif(data);
     try {
       let savedId;
-      if (isEdit) {
+      if (isSwitch) {
+        savedId = await _moverEntreColecciones('msi', msi._switchFrom, data, pagosDiferidos);
+      } else if (isEdit) {
         await update('msi', msi.id, data);
         savedId = msi.id;
       } else {
         savedId = await create('msi', data);
       }
       closeModal();
-      toast(isEdit ? 'MSI actualizado' : 'Compra MSI creada');
+      toast(isSwitch ? 'Compra movida a A Plazos' : (isEdit ? 'MSI actualizado' : 'Compra MSI creada'));
 
       const sugerirLiquidar = data.mesesPagados === data.mesesTotal && !msi?.liquidado;
       if (sugerirLiquidar) {
@@ -2142,15 +2287,12 @@ function calcularFechaGastoMes(gasto, year, month, festivosMX) {
 
 // ── Modal Confirmar Gasto Fijo ──────────────────────────────────────────────────
 
-function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
-  const tc = tarjetas.find(t => t.id === pendiente.tarjetaId);
-  const lastFour = pendiente.numeroTarjeta
-    ? String(pendiente.numeroTarjeta).replace(/\s/g, '').slice(-4)
-    : (() => {
-        const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-        const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
-        return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
-      })();
+export function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
+  // Solo se puede cambiar a otra tarjeta del mismo tipo (Débito/Crédito) que
+  // la configurada en el gasto fijo (/fijos) — cambiar de tipo cambiaría el
+  // criterio de disponibilidad (gastoFijoDisponible) y no tiene sentido aquí.
+  const tipoOriginal = tarjetas.find(t => t.id === pendiente.tarjetaId)?.tipo;
+  const cardPool = tipoOriginal ? tarjetas.filter(t => t.tipo === tipoOriginal) : tarjetas;
 
   openModal({
     title: 'Confirmar Gasto Fijo',
@@ -2159,19 +2301,18 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
         <div class="row g-3">
           <div class="col-12">
             <label class="form-label">Nombre</label>
-            <input type="text" class="form-control" name="nombre" value="${pendiente.nombre}" required>
+            <input type="text" class="form-control" value="${pendiente.nombre}" disabled>
           </div>
           <div class="col-12">
             <label class="form-label">Tarjeta</label>
-            <input type="text" class="form-control" value="${tc ? tc.nombre + (lastFour ? ' ···' + lastFour : '') : '—'}" disabled>
+            <select class="form-select" name="tarjetaId">
+              <option value="">— Seleccionar —</option>
+              ${buildCardOptions(pendiente, instituciones, cardPool, false)}
+            </select>
           </div>
           <div class="col-md-6">
             <label class="form-label">Forma de Pago</label>
-            <select class="form-select" name="formaPago">
-              <option value="automatico"    ${pendiente.formaPago === 'automatico'    ? 'selected' : ''}>Automático</option>
-              <option value="retiro"        ${pendiente.formaPago === 'retiro'        ? 'selected' : ''}>Retiro</option>
-              <option value="transferencia" ${pendiente.formaPago === 'transferencia' ? 'selected' : ''}>Transferencia</option>
-            </select>
+            <input type="text" class="form-control" value="${FORMA_PAGO[pendiente.formaPago] || '—'}" disabled>
           </div>
           <div class="col-md-6">
             <label class="form-label">Fecha de Pago *</label>
@@ -2195,11 +2336,25 @@ function showModalConfirmarGasto(pendiente, instituciones, tarjetas, onSaved) {
     const form = document.getElementById('confirmar-gasto-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const data = Object.fromEntries(new FormData(form));
+    const [tarjetaId, numeroTarjeta] = (data.tarjetaId || '').split('::');
+    data.tarjetaId     = tarjetaId;
+    data.numeroTarjeta = numeroTarjeta || '';
     data.importe = Number(data.importe);
     data.estado  = 'registrado';
     if (data.fechaPago?.length === 10) data.fechaPago = _addTime(data.fechaPago);
     try {
-      await update('gastos', pendiente.id, data);
+      if (pendiente.id) {
+        await update('gastos', pendiente.id, data);
+      } else {
+        // Confirmación anticipada: todavía no existe el doc en Firestore.
+        // Nombre y forma de pago no son editables en este modal — se toman
+        // del gasto fijo original, no del form.
+        await create('gastos', {
+          tipo: 'gastaFijo', mes: pendiente.mes, gastaFijoId: pendiente.gastaFijoId,
+          nombre: pendiente.nombre, formaPago: pendiente.formaPago || '',
+          ...data,
+        });
+      }
       closeModal();
       toast('Gasto registrado');
       onSaved();

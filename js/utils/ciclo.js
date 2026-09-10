@@ -103,6 +103,26 @@ export function anteriorNomina(date, festivosMX = []) {
   return candidates.filter(p => p <= target).sort((a, b) => b - a)[0] || null;
 }
 
+/**
+ * Si un gasto fijo con fecha calculada `fecha` ya se puede registrar hoy,
+ * según su forma de pago:
+ * - `automatico` (tarjeta de crédito): en cuanto se conoce la fecha del mes,
+ *   sin esperar a que llegue — se puede adelantar el registro.
+ * - `retiro` (efectivo): desde la quincena anterior al cobro
+ *   (`anteriorNomina`), no desde el propio día — el retiro normalmente se
+ *   hace apenas cae la nómina.
+ * - cualquier otro caso (`transferencia`, sin especificar): el criterio
+ *   original — disponible hasta que la fecha calculada ya haya llegado.
+ */
+export function gastoFijoDisponible(formaPago, fecha, hoy, festivosMX = []) {
+  if (formaPago === 'automatico') return true;
+  if (formaPago === 'retiro') {
+    const nom = anteriorNomina(fecha, festivosMX);
+    return nom ? toISODate(nom) <= hoy : toISODate(fecha) <= hoy;
+  }
+  return toISODate(fecha) <= hoy;
+}
+
 // ── Private helpers ────────────────────────────────────────────────────────────
 
 /** Clamps day to the last valid day of the month (e.g. day 31 in Feb → 28/29) */

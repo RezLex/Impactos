@@ -47,7 +47,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T22`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T23`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -298,7 +298,7 @@ Gastos registrados por mes. Incluye dos orígenes: gastos fijos confirmados (tar
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `tipo` | string | `gastaFijo` (confirmado desde Gastos Fijos) o `manual` (entrada directa) |
-| `estado` | string | `pendiente` · `registrado` · `descartado` |
+| `estado` | string | `pendiente` · `registrado` · `descartado` — el nombre del campo y sus valores no cambiaron (los usa `docs/app-script-recordatorios.gs` para las notificaciones); en la UI, `pendiente` se muestra como **"Por confirmar"** y `registrado` como **"Aplicado"** (ver *Ciclo de vida de un gasto fijo*) |
 | `mes` | string | Mes al que pertenece el gasto (`YYYY-MM`) |
 | `nombre` | string | Descripción del gasto |
 | `tarjetaId` | string | ID de la tarjeta usada |
@@ -308,11 +308,33 @@ Gastos registrados por mes. Incluye dos orígenes: gastos fijos confirmados (tar
 | `importe` | number | Monto del gasto |
 | `gastaFijoId` | string? | ID del gasto fijo origen (solo cuando `tipo = 'gastaFijo'`) |
 
-**Ciclo de vida de un gasto fijo:**
-1. Al abrir el módulo, los gastos fijos cuya fecha calculada ≤ hoy y sin registro en `gastos` para ese mes se crean con `estado: 'pendiente'`
-2. Al confirmar → `estado: 'registrado'` (el usuario puede ajustar nombre, forma de pago, fecha e importe)
-3. Al descartar → `estado: 'descartado'` (no se muestra ni se recrea)
-4. Entradas manuales se crean directamente con `estado: 'registrado'`
+**Ciclo de vida de un gasto fijo — 3 estatus visibles (Pestaña Gastos y Dashboard):**
+
+- **Pendiente**: el gasto fijo del mes todavía no está disponible según su
+  `formaPago` (`gastoFijoDisponible`, `js/utils/ciclo.js`) — `automatico`
+  (tarjeta de crédito) está disponible en cuanto se conoce la fecha del mes,
+  sin esperar a que llegue, así que en la práctica nunca queda en este
+  estatus; `retiro` (efectivo) está disponible desde la quincena anterior al
+  cobro (`anteriorNomina`, ver *Cálculo de Nómina*); `transferencia`/sin
+  especificar sigue el criterio original, fecha calculada ≤ hoy. Todavía no
+  existe documento en `gastos` — es puramente calculado
+  (`getGastosFijosPendientes`, `js/utils/impacto-calc.js`).
+- **Por confirmar**: ya está disponible. Es el mismo `estado: 'pendiente'`
+  de Firestore de siempre (el auto-crear del tab Gastos lo persiste apenas
+  se vuelve disponible, para que las notificaciones de
+  `docs/app-script-recordatorios.gs` sigan disparando sin cambios) — solo
+  cambió la **etiqueta visible**.
+- **Aplicado**: `estado: 'registrado'` — ya se confirmó y guardó (el usuario
+  puede ajustar nombre, forma de pago, fecha e importe al confirmar).
+
+Tanto en Pendiente como en Por confirmar se puede **confirmar o descartar
+antes de tiempo**, desde la pestaña Gastos o desde el Dashboard — si no
+existe doc todavía, confirmar/descartar lo crea directamente en vez de
+actualizar uno existente.
+
+Al descartar → `estado: 'descartado'` (no se muestra ni se recrea). Las
+entradas manuales se crean directamente con `estado: 'registrado'`
+(Aplicado).
 
 ### `msi/{id}`
 Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no se almacenan** — se calculan dinámicamente a partir del ciclo de la tarjeta y la fecha de compra.
@@ -609,15 +631,27 @@ Vista principal rediseñada con datos en tiempo real del mes actual:
 - **Barra de crédito:** Crédito total, Disponible y Deuda con barra de progreso visual, a todo lo ancho
 
 > **Por qué las metric cards usan `col-xxl-4` y no `col-lg-4`:** con tres tarjetas en una fila, cada una necesita ~313px para que el importe no se corte con elipsis. Descontando el sidebar eso solo se cumple desde ~1400px de viewport. Por debajo de `xxl` la tercera baja a su propio renglón (`col-lg-6`) en vez de estrujar a las tres. Sin cuentas de inversión la fila vuelve a ser de dos tarjetas a `col-lg-6` y el layout es idéntico al original.
+- Las cuatro secciones (Últimas compras, Gastos Fijos del mes, Tarjetas del mes, Artículos
+  Recurrentes) comparten el mismo diseño de tabla (`table table-sm mb-0` dentro de
+  `table-wrapper dash-panel-content`), fila por registro — no tarjetas/listas sueltas
 - **Últimas compras** — hasta 20 compras recientes unificando De Contado y A Plazos, ordenadas por fecha:
   - Badge `Contado` (gris) para compras de contado; si además es `diferido`, se agrega el badge
     `Diferido` (amarillo) y el monto mostrado usa `totalDiferido` (el total original de la compra)
     en vez de `total`, que en una compra diferida guarda el saldo pendiente y llega a $0.00 una vez
     liquidada — mismo criterio de fallback que ya usan Tarjetas e Impacto del Mes
-  - Badge `A N meses` (azul) con mensualidad/mes y total subtexto para A Plazos en curso
-  - Enlace directo al comprobante si la compra tiene `enlaceCompra`
-- **Gastos Fijos del mes** — lista con estado (Registrado/Pendiente/Sin registrar) y montos
-- **Tarjetas del mes** — estado de cada tarjeta de crédito (pagada/pendiente/espera corte) con badge 1Q/2Q
+  - Badge `A N meses` (azul) con mensualidad/mes y total subtexto para A Plazos en curso; también
+    se agrega el badge `Diferido` si el registro A Plazos tiene `diferido: true` (mismo campo que
+    en De Contado)
+  - Enlace directo al comprobante si la compra tiene `enlaceCompra` (clic no abre el modal, `stopPropagation`)
+  - **Cada fila es editable**: clic abre el modal de Compras y Gastos (`showModalContado` /
+    `showModalMsi`, ambas exportadas de `js/modules/msi.js`) con `onSaved` recargando el Dashboard
+- **Gastos Fijos del mes** — lista con los 3 estatus (Pendiente/Por confirmar/Aplicado, ver *Ciclo de vida de un gasto fijo*) y montos, ordenada primero por estatus (**Por confirmar** → **Pendiente** → **Aplicado**) y dentro de cada grupo por fecha de pago; las filas no aplicadas son clicables y abren el mismo modal de confirmación de la pestaña Gastos (`showModalConfirmarGasto`, `js/modules/msi.js`), sin salir del Dashboard
+- **Tarjetas del mes** — estado de cada tarjeta de crédito (pagada/pendiente/espera corte) con badge 1Q/2Q,
+  en columnas separadas para **Fecha de corte** y **Fecha de pago**. Cuando existe un `impacto`
+  guardado para el mes (no en la proyección de solo lectura), esas dos columnas y **Monto a pagar**
+  son clicables directamente (sin botón visible) y abren el mismo modal de confirmación de campo de
+  Impacto (`showModalEditCampoTarjeta`, exportada de `js/modules/impacto.js`), que guarda directo en
+  `impacto.tarjetas[idx]` sin salir del Dashboard
 - En desktop el dashboard no requiere scroll de página (altura dinámica calculada con `100dvh`)
 
 ### Tarjetas (`#/tarjetas`)
@@ -655,6 +689,17 @@ CRUD completo de instituciones y tarjetas:
 
 > Las tarjetas **ocultas** (`oculta: true`) se excluyen automáticamente de `/tarjetas` y de todos los selectores del sistema. Para **De Contado** y **A Plazos** (formulario normal y registro rápido) los selectores muestran únicamente tarjetas de **crédito** (no débito ni préstamo).
 
+> **Cambiar entre De Contado y A Plazos al editar:** los modales de edición de ambas pestañas
+> (`showModalContado` / `showModalMsi`, exportadas de `js/modules/msi.js`) incluyen un selector
+> **Tipo de compra** cuando se está editando un registro existente. Cambiarlo cierra el modal actual
+> y abre el del otro tipo, precargado con los campos compartidos (descripción, tarjeta, fecha,
+> diferido/total, enlace, bonificación) tomados en vivo del formulario — nada se guarda todavía en
+> ese punto. Al confirmar el guardado, el documento se **mueve** de colección (`contado` ↔ `msi`)
+> conservando el **mismo id** (`upsert` en la colección nueva + `remove` en la vieja, función interna
+> `_moverEntreColecciones`) para que los `pagosDiferidos` que lo referencian por `compraId` no queden
+> huérfanos — solo se les actualiza `compraColeccion`. Volver a seleccionar el tipo original antes de
+> guardar descarta el desvío y reabre el documento real sin cambios.
+
 ### Compras y Gastos (`#/compras`)
 Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
 
@@ -684,10 +729,11 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 **Pestaña Gastos** (colección `gastos`)
 - Filtro de período: navegación mes/año + toggle **Fecha Gasto | Fecha Pago**
   - *Fecha Pago*: para crédito filtra por nómina anterior al ciclo; para débito usa la fecha de gasto
-- **Sección "Pendientes de confirmar"** (siempre mes actual): gastos fijos cuya fecha calculada ≤ hoy y no confirmados/descartados este mes. Se persisten en BD con `estado: 'pendiente'` al abrir el módulo
-  - Botón **Confirmar**: modal pre-cargado (nombre, tarjeta solo lectura, forma pago, fecha, importe); guarda con `estado: 'registrado'`
+- **Sección "Gastos Fijos — Por confirmar"** (siempre mes actual): gastos fijos ya **disponibles** según su `formaPago` (ver *Ciclo de vida de un gasto fijo*) y no confirmados/descartados este mes. Se persisten en BD con `estado: 'pendiente'` al abrir el módulo
+  - Botón **Confirmar**: modal pre-cargado (`showModalConfirmarGasto`, `js/modules/msi.js`) con Nombre y Forma de Pago de solo lectura (vienen del gasto fijo configurado en `/fijos`, no son editables aquí), Tarjeta editable — pero restringida a tarjetas del **mismo tipo** (Débito o Crédito) que la configurada en `/fijos`, ya que cambiar de tipo alteraría el criterio de `gastoFijoDisponible` —, Fecha e Importe; guarda con `estado: 'registrado'`
   - Botón **Descartar** (×): guarda `estado: 'descartado'`; no reaparece ni se recrea
-- **Sección "Gastos registrados"**: tabla filtrada por período con Nombre, Tarjeta, Forma de Pago, Fecha Gasto, **Fecha Pago** (ciclo calculado para crédito), Importe
+- **Sección "Gastos Fijos — Pendientes del mes"** (siempre mes actual): gastos fijos del mes que **todavía no llegan a su fecha/quincena disponible** — sin documento en `gastos` todavía. Mismos botones Confirmar/Descartar que la sección anterior; al usarlos, si no existe doc se crea directo con el estado final (`registrado` o `descartado`) en vez de actualizar uno existente
+- **Tabla "Gastos"** (antes "Gastos registrados"): en el mes actual mezcla los `registrados` de siempre con las dos listas de arriba, ordenados por fecha de pago, con una columna **Estatus** (Pendiente / Por confirmar / Aplicado); en otros meses muestra solo lo ya aplicado, igual que siempre. Columnas: Nombre, Tarjeta, Forma de Pago, Estatus, Fecha Gasto, **Fecha Pago** (ciclo calculado para crédito, solo aplica a filas Aplicado), Importe. Acciones: Confirmar/Descartar para no aplicados, Editar/Eliminar para aplicados
 - **Nueva entrada manual**: solo tarjetas de débito; forma de pago Retiro o Transferencia; `estado: 'registrado'`
 
 > **Regla:** registros de tarjeta de crédito en `gastos` provienen únicamente de confirmar un gasto fijo. Las entradas manuales usan solo tarjetas de débito.
@@ -791,7 +837,7 @@ Registro de gastos recurrentes (módulo en la sección **Administración** del n
   - **Texto libre:** campo `diaCobro` (ej. "15", "1ra Quincena")
   - **Intervalo fijo:** "Cada N días desde [fecha]" — se ajusta a siguiente día hábil
   - **Día de semana del mes:** "1er Martes de cada mes" — se ajusta a siguiente día hábil
-- Al abrir el tab Gastos, los gastos fijos con fecha calculada ≤ hoy y sin registro en `gastos` ese mes se crean automáticamente como `pendiente`
+- Al abrir el tab Gastos, los gastos fijos ya disponibles ese mes (según `formaPago` — ver *Ciclo de vida de un gasto fijo*) y sin registro en `gastos` se crean automáticamente como `pendiente`
 - Los gastos fijos con `diaCobro` como texto no numérico no se precargan automáticamente
 
 ### Impacto Mensual (`#/impacto` o `#/impacto/YYYY-MM`)
@@ -1196,6 +1242,11 @@ anteriorNomina(date, festivosMX) → Date
 
 // Convierte Date a string 'YYYY-MM-DD'
 toISODate(date) → string
+
+// Si un gasto fijo con esa fecha calculada ya se puede registrar hoy, según
+// su formaPago ('automatico' | 'retiro' | cualquier otro) — ver Ciclo de
+// vida de un gasto fijo
+gastoFijoDisponible(formaPago, fecha, hoy, festivosMX) → boolean
 ```
 
 ---
@@ -1254,6 +1305,12 @@ getGastosCreditoMes(gastos, tarjetaId, ciclo, mes, festivosMX) → items[]
 
 // Gastos débito del mes (con gastos fijos incluidos por estado)
 getGastosDebitoCompleto(gastos, gastosFijos, mes, debitoIds, tarjetas, festivosMX) → items[]
+
+// Gastos fijos del mes que TODAVÍA NO se aplican (cualquier formaPago) — cada
+// uno con `estatus: 'pendiente' | 'porConfirmar'` y `id: null` cuando no
+// existe doc en `gastos` todavía (confirmar/descartar debe crear, no actualizar).
+// Alimenta las listas y la tabla de la pestaña Gastos y el panel del Dashboard.
+getGastosFijosPendientes(gastosFijos, gastos, mes, festivosMX, hoy?) → items[]
 
 // Estimados de una tarjeta para un mes
 calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes) → { estimadoContado, estimadoPlazos, estimadoGastos, estimadoTotal }
@@ -1686,6 +1743,8 @@ Los depósitos de nómina ocurren los días **15 y 30** de cada mes (en febrero 
 La función `anteriorNomina(date, festivosMX)` devuelve el depósito de nómina más reciente anterior o igual a `date`. Se usa en el módulo MSI para mostrar con qué nómina se cubriría cada pago:
 
 **Ejemplo:** Si el primer pago calculado es el 09/07/2026, se muestra **30/06/2026** (el depósito de nómina de fin de junio es el que precede a ese pago).
+
+`anteriorNomina` también decide cuándo un **gasto fijo de tipo `retiro`** se vuelve disponible para registrar (`gastoFijoDisponible`, ver *Ciclo de vida de un gasto fijo*) — no solo el ciclo de pago de tarjetas de crédito.
 
 ---
 

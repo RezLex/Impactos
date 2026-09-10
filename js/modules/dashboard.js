@@ -5,13 +5,23 @@ import { calcularSaldo } from '../utils/saldo.js';
 import {
   calcularCicloParaMes, calcularEstimadoTarjeta,
   getPlazosMes, getGastosDebitoCompleto, calcularTotalesCredito,
-  recalcTotalesImpacto,
+  recalcTotalesImpacto, getGastosFijosPendientes,
 } from '../utils/impacto-calc.js';
 import { resumenCuenta, totalizarResumenes, registrarInhabiles } from '../utils/rendimiento.js';
 import { showAvanceModal } from './articulo-detalle.js';
+import { showModalConfirmarGasto, showModalContado, showModalMsi } from './msi.js';
+import { showModalEditCampoTarjeta } from './impacto.js';
 
 const ARTICULOS_ESTATUS_LABEL = { comprado: 'Comprado', enUso: 'En uso' };
 const ARTICULOS_ESTATUS_CLS   = { comprado: 'bg-secondary-subtle text-secondary', enUso: 'bg-info-subtle text-info-emphasis' };
+
+// Mismas etiquetas/colores que en la pestaña Gastos (js/modules/msi.js).
+const ESTATUS_GASTO_LABEL = { pendiente: 'Pendiente', porConfirmar: 'Por confirmar', aplicado: 'Aplicado' };
+const ESTATUS_GASTO_CLS   = {
+  pendiente:    'bg-secondary-subtle text-secondary',
+  porConfirmar: 'bg-warning-subtle text-warning-emphasis',
+  aplicado:     'bg-success-subtle text-success',
+};
 
 export async function render(container) {
   container.innerHTML = `<div class="loading-overlay"><div class="spinner-border text-primary" role="status"></div></div>`;
@@ -166,10 +176,24 @@ export async function render(container) {
     ].sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
      .slice(0, 20);
 
-    // ── Gastos fijos pendientes del mes ──────────────────────────────────────
-    const gastosFijosPendientes = gastosDebMes
-      .filter(g => g.estado !== 'registrado' && g.estado !== 'descartado')
-      .slice(0, 5);
+    // ── Gastos fijos del mes: pendiente / por confirmar / aplicado ──────────
+    // El total a pagar (`gastoDebito`) sigue viniendo de `gastosDebMes` sin
+    // tocar — esto solo alimenta la lista del panel, que se puede confirmar
+    // directo desde aquí, antes o después de que llegue la fecha de cobro.
+    const gastosFijosPendientesMes = getGastosFijosPendientes(gastosFijos, gastos, mes, festivosMX, hoy);
+    const gastosAplicadosMes = gastos
+      .filter(g => g.mes === mes && g.estado === 'registrado')
+      .map(g => ({ ...g, estatus: 'aplicado' }));
+    // Orden: Por confirmar (accionables ya disponibles) primero, luego
+    // Pendiente (todavía no disponibles) y al final lo ya Aplicado.
+    const ESTATUS_ORDEN_DASH = { porConfirmar: 0, pendiente: 1, aplicado: 2 };
+    const panelGastosFijos = [...gastosFijosPendientesMes, ...gastosAplicadosMes]
+      .sort((a, b) => {
+        const orden = ESTATUS_ORDEN_DASH[a.estatus] - ESTATUS_ORDEN_DASH[b.estatus];
+        return orden !== 0 ? orden : (a.fechaPago || '').localeCompare(b.fechaPago || '');
+      })
+      .slice(0, 8);
+    const panelGastosFijosPorId = new Map(gastosFijosPendientesMes.map(g => [g.gastaFijoId, g]));
 
     // ── Artículos Recurrentes: comprado/en uso de todos los artículos ────────
     // Los `sinSeguimiento` no traen estatus accionable (su avanzar está oculto
@@ -281,44 +305,39 @@ export async function render(container) {
               <span><i class="bi bi-bag me-2"></i>Últimas compras</span>
               <a href="#/compras" class="text-white" style="font-size:0.78rem">Ver todo →</a>
             </div>
-            <div class="dash-panel-content" style="max-height:260px;overflow-y:auto">
+            <div class="table-wrapper dash-panel-content" style="max-height:260px;overflow-y:auto">
               ${ultimasCompras.length === 0
                 ? `<div class="empty-state" style="padding:24px 0"><i class="bi bi-bag-x"></i><p>Sin compras registradas</p></div>`
-                : ultimasCompras.map(item => {
-                    const tc     = cardMap[item.tarjetaId];
-                    const enlace = item.enlaceCompra;
-                    const titulo = enlace
-                      ? `<a href="${enlace}" target="_blank" rel="noopener" class="text-reset text-decoration-none">${item.compra}<i class="bi bi-box-arrow-up-right ms-1" style="font-size:var(--fs-nano);opacity:.5"></i></a>`
-                      : item.compra;
-                    const fecha  = item.fechaCompra ? ' · ' + fmtShortDate(item.fechaCompra) : '';
-                    const tarjeta = tc?.nombre || '—';
+                : `<table class="table table-sm mb-0" style="font-size:0.82rem">
+                    <tbody>
+                      ${ultimasCompras.map(item => {
+                        const tc     = cardMap[item.tarjetaId];
+                        const enlace = item.enlaceCompra;
+                        const titulo = enlace
+                          ? `<a href="${enlace}" target="_blank" rel="noopener" class="text-reset text-decoration-none" onclick="event.stopPropagation()">${item.compra}<i class="bi bi-box-arrow-up-right ms-1" style="font-size:var(--fs-nano);opacity:.5"></i></a>`
+                          : item.compra;
+                        const fecha  = item.fechaCompra ? ' · ' + fmtShortDate(item.fechaCompra) : '';
+                        const tarjeta = tc?.nombre || '—';
 
-                    if (item._tipo === 'contado') {
-                      const montoContado = item.diferido ? (Number(item.totalDiferido) || Number(item.total) || 0) : item.total;
-                      return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
-                        <div class="flex-grow-1 min-width-0">
-                          <div class="fw-500 text-truncate">${titulo}</div>
-                          <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:var(--fs-nano);vertical-align:middle">Contado</span>${item.diferido ? '<span class="badge bg-warning text-dark me-1" style="font-size:var(--fs-nano);vertical-align:middle">Diferido</span>' : ''}${tarjeta}${fecha}
-                          </div>
-                        </div>
-                        <div class="fw-semibold text-end flex-shrink-0">${currency(montoContado)}</div>
-                      </div>`;
-                    } else {
-                      return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
-                        <div class="flex-grow-1 min-width-0">
-                          <div class="fw-500 text-truncate">${titulo}</div>
-                          <div class="text-muted" style="font-size:0.72rem">
-                            <span class="badge bg-primary-subtle text-primary me-1" style="font-size:var(--fs-nano);vertical-align:middle">A ${item.mesesTotal} meses</span>${tarjeta}${fecha}
-                          </div>
-                        </div>
-                        <div class="text-end flex-shrink-0">
-                          <div class="fw-semibold">${currency(item.mensualidad)}<span class="text-muted fw-normal" style="font-size:var(--fs-small)">/mes</span></div>
-                          <div style="font-size:var(--fs-mini);color:var(--text-faint)">${currency(item.total)} total</div>
-                        </div>
-                      </div>`;
-                    }
-                  }).join('')
+                        const montoCell = item._tipo === 'contado'
+                          ? currency(item.diferido ? (Number(item.totalDiferido) || Number(item.total) || 0) : item.total)
+                          : `<div class="fw-semibold">${currency(item.mensualidad)}<span class="text-muted fw-normal" style="font-size:var(--fs-small)">/mes</span></div>
+                             <div style="font-size:var(--fs-mini);color:var(--text-faint)">${currency(item.total)} total</div>`;
+                        const badgeDiferido = item.diferido ? '<span class="badge bg-warning text-dark me-1" style="font-size:var(--fs-nano);vertical-align:middle">Diferido</span>' : '';
+                        const badge = item._tipo === 'contado'
+                          ? `<span class="badge bg-secondary-subtle text-secondary me-1" style="font-size:var(--fs-nano);vertical-align:middle">Contado</span>${badgeDiferido}`
+                          : `<span class="badge bg-primary-subtle text-primary me-1" style="font-size:var(--fs-nano);vertical-align:middle">A ${item.mesesTotal} meses</span>${badgeDiferido}`;
+
+                        return `<tr class="dash-compra-row" data-tipo="${item._tipo}" data-id="${item.id}" style="cursor:pointer">
+                          <td style="padding:4px 8px">
+                            <div class="fw-500 text-truncate">${titulo}</div>
+                            <div class="text-muted" style="font-size:0.72rem">${badge}${tarjeta}${fecha}</div>
+                          </td>
+                          <td class="text-end" style="padding:4px 8px;white-space:nowrap">${montoCell}</td>
+                        </tr>`;
+                      }).join('')}
+                    </tbody>
+                  </table>`
               }
             </div>
           </div>
@@ -329,28 +348,27 @@ export async function render(container) {
               <span><i class="bi bi-receipt-cutoff me-2"></i>Gastos Fijos del mes</span>
               <a href="#/compras/gastos" class="text-white" style="font-size:0.78rem">Gestionar →</a>
             </div>
-            <div class="dash-panel-content" style="max-height:260px;overflow-y:auto">
-              ${gastosDebMes.length === 0 && gastosFijosPendientes.length === 0
+            <div class="table-wrapper dash-panel-content" style="max-height:260px;overflow-y:auto">
+              ${panelGastosFijos.length === 0
                 ? `<div class="empty-state" style="padding:24px 0"><i class="bi bi-receipt"></i><p>Sin gastos fijos este mes</p></div>`
-                : gastosDebMes.concat(
-                    gastos.filter(g => g.mes === mes && g.gastaFijoId && g.estado !== 'descartado' && !debitoIds.has(g.tarjetaId))
-                          .map(g => ({ ...g, nombre: g.nombre || '—' }))
-                  ).slice(0, 8).map(g => {
-                    const tc = cardMap[g.tarjetaId];
-                    const estadoCls = g.estado === 'registrado' ? 'bg-success-subtle text-success'
-                      : g.estado === 'pendiente' ? 'bg-warning-subtle text-warning-emphasis'
-                      : 'bg-secondary-subtle text-secondary';
-                    const estadoLabel = g.estado === 'registrado' ? 'Registrado'
-                      : g.estado === 'pendiente' ? 'Pendiente' : 'Sin registrar';
-                    return `<div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom" style="font-size:0.82rem">
-                      <div class="flex-grow-1">
-                        <div class="fw-500">${g.nombre}</div>
-                        <div class="text-muted" style="font-size:0.72rem">${tc?.nombre || '—'}${g.fechaPago ? ' · ' + fmtShortDate(g.fechaPago) : ''}</div>
-                      </div>
-                      <span class="badge ${estadoCls}" style="font-size:var(--fs-tiny)">${estadoLabel}</span>
-                      <div class="fw-semibold text-end flex-shrink-0" style="min-width:60px">${currency(g.importe)}</div>
-                    </div>`;
-                  }).join('')
+                : `<table class="table table-sm mb-0" style="font-size:0.82rem">
+                    <tbody>
+                      ${panelGastosFijos.map(g => {
+                        const tc = cardMap[g.tarjetaId];
+                        const accionable = g.estatus !== 'aplicado';
+                        return `<tr class="dash-gasto-fijo-row" ${accionable ? `data-gasto-fijo-id="${g.gastaFijoId}" style="cursor:pointer"` : ''}>
+                          <td style="padding:4px 8px">
+                            <div class="fw-500">${g.nombre}</div>
+                            <div class="text-muted" style="font-size:0.72rem">${tc?.nombre || '—'}${g.fechaPago ? ' · ' + fmtShortDate(g.fechaPago) : ''}</div>
+                          </td>
+                          <td style="padding:4px 8px;white-space:nowrap">
+                            <span class="badge ${ESTATUS_GASTO_CLS[g.estatus] || 'bg-secondary-subtle text-secondary'}" style="font-size:var(--fs-tiny)">${ESTATUS_GASTO_LABEL[g.estatus] || g.estatus}</span>
+                          </td>
+                          <td class="text-end fw-semibold" style="padding:4px 8px;white-space:nowrap">${currency(g.importe)}</td>
+                        </tr>`;
+                      }).join('')}
+                    </tbody>
+                  </table>`
               }
             </div>
           </div>
@@ -370,12 +388,18 @@ export async function render(container) {
                 <tbody>
                   ${impactoTarjetas.map(t => {
                     const cortePasado = t.fechaCorte && t.fechaCorte <= hoy;
-                    const fp = t.fechaPago;
+                    const fp = t.fechaPagoConf ?? t.fechaPago;
                     const nom = fp ? anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX) : null;
                     const nomDay = nom ? Number(toISODate(nom).slice(8, 10)) : null;
                     const q = nomDay ? (nomDay <= 15 ? '1Q' : '2Q') : null;
                     const qCls = q === '1Q' ? 'bg-primary-subtle text-primary' : 'bg-success-subtle text-success';
                     const monto = t.montoAPagar ?? t.estimadoTotal ?? 0;
+                    // Solo editable cuando hay un doc `impacto` real donde persistir el
+                    // ajuste — la proyección sin guardar (`!tieneImpacto`) es de solo lectura.
+                    const idx = tieneImpacto ? impacto.tarjetas.indexOf(t) : -1;
+                    const td = (campo, inner, extraCls = '') => idx === -1
+                      ? `<td class="${extraCls}" style="padding:4px 8px;white-space:nowrap">${inner}</td>`
+                      : `<td class="td-edit-campo-dash ${extraCls}" data-idx="${idx}" data-campo="${campo}" style="padding:4px 8px;white-space:nowrap;cursor:pointer">${inner}</td>`;
                     return `<tr class="${t.pagado ? 'table-success' : ''}">
                       <td style="padding:4px 8px">
                         <div class="d-flex align-items-center gap-2">
@@ -383,13 +407,9 @@ export async function render(container) {
                           <span style="font-size:0.82rem">${t.institucion ? `<span class="text-muted">${t.institucion}</span> ` : ''}<span class="fw-500">${t.nombre}</span></span>
                         </div>
                       </td>
-                      <td style="padding:4px 8px;white-space:nowrap;font-size:0.78rem">
-                        <div class="d-flex flex-column gap-0" style="line-height:1.4">
-                          ${t.fechaCorte ? `<span class="text-muted"><i class="bi bi-scissors me-1" style="font-size:0.7rem"></i>${fmtShortDate(t.fechaCorteConf ?? t.fechaCorte)}</span>` : ''}
-                          <span style="color:var(--text-muted)"><i class="bi bi-wallet2 me-1" style="font-size:0.7rem"></i>${fp ? fmtShortDate(fp) : '—'}${q ? `<span class="badge ${qCls} ms-1" style="font-size:var(--fs-micro);padding:1px 3px">${q}</span>` : ''}</span>
-                        </div>
-                      </td>
-                      <td class="text-end fw-semibold" style="padding:4px 8px;white-space:nowrap">${currency(monto)}</td>
+                      ${td('fechaCorte', `<span class="text-muted"><i class="bi bi-scissors me-1" style="font-size:0.7rem"></i>${t.fechaCorte ? fmtShortDate(t.fechaCorteConf ?? t.fechaCorte) : '—'}</span>`, 'text-end')}
+                      ${td('fechaPago', `<span style="color:var(--text-muted)"><i class="bi bi-wallet2 me-1" style="font-size:0.7rem"></i>${fp ? fmtShortDate(fp) : '—'}${q ? `<span class="badge ${qCls} ms-1" style="font-size:var(--fs-micro);padding:1px 3px">${q}</span>` : ''}</span>`, 'text-end')}
+                      ${td('montoAPagar', currency(monto), 'text-end fw-semibold')}
                       <td style="padding:4px 8px;text-align:center">
                         ${t.pagado
                           ? `<i class="bi bi-check-circle-fill text-success"></i>`
@@ -441,6 +461,31 @@ export async function render(container) {
       tr.addEventListener('click', () => {
         const articulo = articulosMap.get(tr.dataset.articuloId);
         showAvanceModal(articulo, Number(tr.dataset.idx), () => render(container));
+      }));
+
+    document.querySelectorAll('.dash-gasto-fijo-row[data-gasto-fijo-id]').forEach(row =>
+      row.addEventListener('click', () => {
+        const g = panelGastosFijosPorId.get(row.dataset.gastoFijoId);
+        if (!g) return;
+        showModalConfirmarGasto(g, instituciones, tarjetas, () => render(container));
+      }));
+
+    document.querySelectorAll('.dash-compra-row').forEach(tr =>
+      tr.addEventListener('click', () => {
+        if (tr.dataset.tipo === 'contado') {
+          const item = contado.find(c => c.id === tr.dataset.id);
+          if (item) showModalContado(item, instituciones, tarjetas, pagosDiferidos, () => render(container));
+        } else {
+          const item = msi.find(m => m.id === tr.dataset.id);
+          if (item) showModalMsi(item, instituciones, tarjetas, pagosDiferidos, () => render(container));
+        }
+      }));
+
+    document.querySelectorAll('.td-edit-campo-dash').forEach(td =>
+      td.addEventListener('click', () => {
+        const idx   = Number(td.dataset.idx);
+        const campo = td.dataset.campo;
+        showModalEditCampoTarjeta(impacto.tarjetas[idx], idx, campo, impacto, () => render(container));
       }));
 
   } catch (e) {

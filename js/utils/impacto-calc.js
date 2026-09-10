@@ -1,4 +1,4 @@
-import { calcularMes, toISODate, anteriorNomina } from './ciclo.js';
+import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from './ciclo.js';
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -246,6 +246,46 @@ export function getGastosDebitoCompleto(gastosItems, gastosFijosItems, mes, debi
     )
     .forEach(g => result.push({ ...g, estado: 'registrado' }));
 
+  return result.sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
+}
+
+/**
+ * Gastos fijos del mes que TODAVÍA NO se aplican (ni registrado ni
+ * descartado) — cualquier forma de pago. Cada uno trae `estatus`:
+ * `'pendiente'` (antes de su fecha/quincena disponible, sin doc todavía) o
+ * `'porConfirmar'` (ya disponible; si ya existe el doc `pendiente` en
+ * Firestore, se reusa su fecha/importe editados; si no, se calculan).
+ * `id: null` cuando todavía no hay doc — quien confirme debe crear en vez
+ * de actualizar.
+ */
+export function getGastosFijosPendientes(gastosFijosItems, gastosItems, mes, festivosMX, hoy = toISODate(new Date())) {
+  const [y, mo] = mes.split('-').map(Number);
+  const month = mo - 1;
+  const existentes = new Map(
+    gastosItems.filter(g => g.gastaFijoId && g.mes === mes).map(g => [g.gastaFijoId, g])
+  );
+  const result = [];
+  gastosFijosItems.forEach(gasto => {
+    const existente = existentes.get(gasto.id);
+    if (existente) {
+      if (existente.estado === 'pendiente') {
+        result.push({ id: existente.id, gastaFijoId: gasto.id, mes, nombre: gasto.nombre,
+          tarjetaId: gasto.tarjetaId || '', numeroTarjeta: gasto.numeroTarjeta || '',
+          formaPago: gasto.formaPago || '', fechaPago: existente.fechaPago,
+          importe: Number(existente.importe) || 0, estatus: 'porConfirmar' });
+      }
+      return; // registrado/descartado ya se aplicaron o se saltaron — no entran aquí
+    }
+    const fecha = _calcularFechaGastoMes(gasto, y, month, festivosMX);
+    if (!fecha) return;
+    const fechaISO = toISODate(fecha);
+    if (!fechaISO.startsWith(mes)) return;
+    const disponible = gastoFijoDisponible(gasto.formaPago, fecha, hoy, festivosMX);
+    result.push({ id: null, gastaFijoId: gasto.id, mes, nombre: gasto.nombre,
+      tarjetaId: gasto.tarjetaId || '', numeroTarjeta: gasto.numeroTarjeta || '',
+      formaPago: gasto.formaPago || '', fechaPago: fechaISO,
+      importe: Number(gasto.importe) || 0, estatus: disponible ? 'porConfirmar' : 'pendiente' });
+  });
   return result.sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
 }
 
