@@ -1,4 +1,5 @@
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from './ciclo.js';
+import { calcularSaldo } from './saldo.js';
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -175,6 +176,15 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   });
 }
 
+/** Créditos a favor (bonificación, cancelación, conversión MSI) for a tarjeta whose
+ *  anteriorNomina(fechaPago del ciclo que contiene `fecha`) falls in mes. */
+export function getCreditosMes(creditosTarjeta, tarjetaId, ciclo, mes, festivosMX) {
+  return creditosTarjeta.filter(c => {
+    if (c.tarjetaId !== tarjetaId) return false;
+    return _enMes(_fechaPagoFromDate(c.fecha, ciclo, festivosMX), mes, festivosMX);
+  });
+}
+
 /** Confirmed credit gastos for a tarjeta whose anteriorNomina(fechaPago ciclo) falls in mes. */
 export function getGastosCreditoMes(gastosItems, tarjetaId, ciclo, mes, festivosMX) {
   return gastosItems.filter(g => {
@@ -290,7 +300,7 @@ export function getGastosFijosPendientes(gastosFijosItems, gastosItems, mes, fes
 }
 
 /** Calculates estimated amounts for one credit/loan card in a given month. */
-export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = []) {
+export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = [], creditosTarjeta = []) {
   const ciclo = tarjeta.ciclo || null;
   const tid   = tarjeta.id;
 
@@ -348,11 +358,15 @@ export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosI
     else                             pagosDifContado += men || 0;
   });
 
+  const creditosAplicados = getCreditosMes(creditosTarjeta, tid, ciclo, mes, festivosMX)
+    .reduce((s, c) => s + (Number(c.monto) || 0), 0);
+
   return {
     estimadoContado, estimadoPlazos, estimadoGastos,
     pendienteContado, pendientePlazos,
     pagosDifContado, pagosDifPlazos,
-    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos),
+    creditosAplicados,
+    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos - creditosAplicados),
   };
 }
 
@@ -411,7 +425,7 @@ export function recalcTotalesImpacto(impacto, gastosDebitoLive, nominaOverride =
  * Projects estimated impacto data for a future month.
  * Simulates progressive monthly payment of A Plazos.
  */
-export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItems, tarjetasCredito, nominaAprox, festivosMX, gastosFijosItems = [], todasTarjetas = [], pagosDiferidos = []) {
+export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItems, tarjetasCredito, nominaAprox, festivosMX, gastosFijosItems = [], todasTarjetas = [], pagosDiferidos = [], creditosTarjeta = []) {
   const targetInt = _mesInt(mes);
 
   // Simulate msiItems with projected mesesPagados
@@ -438,7 +452,7 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
   const debitoIds = new Set(todasTarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
 
   const tarjetas = tarjetasCredito.map(t => {
-    const est = calcularEstimadoTarjeta(t, contadoItems, msiProjected, gastosItems, festivosMX, mes, pagosDiferidos);
+    const est = calcularEstimadoTarjeta(t, contadoItems, msiProjected, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta);
 
     // Gastos fijos de crédito: incluir si el card tiene pago en este mes (vía nómina anterior)
     // y el gasto fijo ocurre en el mes calendario objetivo
@@ -471,13 +485,17 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
       fechaPago  = p?.fechaPago  ? toISODate(p.fechaPago)  : null;
     }
     const estimadoGastos = r2(est.estimadoGastos + estimadoGastosFijos);
+    // Disponible en vivo (incluye compras/pagos/créditos posteriores a la
+    // última actualización) — no el snapshot crudo, para que "Crédito total /
+    // Disponible" en la proyección sí refleje el saldo a favor registrado.
+    const liveSaldo = calcularSaldo(t, contadoItems, msiItems, gastosItems, pagosDiferidos, creditosTarjeta);
     return {
       tarjetaId: t.id, nombre: t.nombre, institucion: '', color: '#607d8b',
-      limiteTotal: Number(t.limiteTotal) || 0, saldoDisponible: t.saldoDisponible ?? null,
+      limiteTotal: Number(t.limiteTotal) || 0, saldoDisponible: liveSaldo ? liveSaldo.disponible : (t.saldoDisponible ?? null),
       fechaCorte, fechaPago,
       ...est,
       estimadoGastos,
-      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos + (est.pagosDifContado || 0) + (est.pagosDifPlazos || 0)),
+      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos + (est.pagosDifContado || 0) + (est.pagosDifPlazos || 0) - (est.creditosAplicados || 0)),
       confirmado: false, pagado: false,
     };
   });

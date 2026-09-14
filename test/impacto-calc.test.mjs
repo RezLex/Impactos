@@ -3,7 +3,7 @@
  * Sin framework: `node test/impacto-calc.test.mjs`.
  */
 import assert from 'node:assert/strict';
-import { getPlazosMes, getPagosDiferidosMes, getGastosFijosPendientes } from '../js/utils/impacto-calc.js';
+import { getPlazosMes, getPagosDiferidosMes, getGastosFijosPendientes, getCreditosMes, calcularEstimadoTarjeta } from '../js/utils/impacto-calc.js';
 
 let pasadas = 0;
 const test = (nombre, fn) => { fn(); pasadas++; console.log('ok  ' + nombre); };
@@ -72,6 +72,34 @@ test('getPagosDiferidosMes: el resultado para un mes fijo no depende de mesesPag
 test('getPagosDiferidosMes: sin registro de la compra padre no entra', () => {
   const r = getPagosDiferidosMes([pago()], TARJETA_ID, CICLO, '2026-01', FESTIVOS, {});
   assert.equal(r.length, 0);
+});
+
+// ── getCreditosMes ───────────────────────────────────────────────────────────
+
+const credito = (over = {}) => ({
+  id: 'cr1', tarjetaId: TARJETA_ID, fecha: '2026-01-10', monto: 150, origen: 'cancelacion', ...over,
+});
+
+test('getCreditosMes: ubica el crédito en el mes de pago del ciclo que contiene su fecha', () => {
+  // Corte 20, pago +15 días: una compra/crédito del 10-ene cae en el ciclo que
+  // corta el 20-ene y paga a principios de feb -> nomina de ese pago cae en enero.
+  const r = getCreditosMes([credito()], TARJETA_ID, CICLO, '2026-01', FESTIVOS);
+  assert.equal(r.length, 1);
+});
+
+test('getCreditosMes: otra tarjeta u otro mes no entra', () => {
+  assert.equal(getCreditosMes([credito({ tarjetaId: 'otra' })], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
+  assert.equal(getCreditosMes([credito()], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 0);
+});
+
+test('calcularEstimadoTarjeta: resta los créditos aplicados del estimadoTotal', () => {
+  const tarjeta = { id: TARJETA_ID, ciclo: CICLO };
+  const contadoItems = [{ id: 'c1', tarjetaId: TARJETA_ID, fechaCompra: '2026-01-05', total: 500 }];
+  const sinCredito = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-01', [], []);
+  const conCredito = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-01', [], [credito({ monto: 150 })]);
+  assert.equal(sinCredito.estimadoTotal, 500);
+  assert.equal(conCredito.creditosAplicados, 150);
+  assert.equal(conCredito.estimadoTotal, 350);
 });
 
 // ── getGastosFijosPendientes ─────────────────────────────────────────────────

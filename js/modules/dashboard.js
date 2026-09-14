@@ -52,7 +52,7 @@ export async function render(container) {
   try {
     const mes = currentYYYYMM();
 
-    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, inversiones, articulosRecurrentes] =
+    const [impacto, tarjetas, instituciones, msi, contado, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, creditosTarjeta, inversiones, articulosRecurrentes] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -64,6 +64,7 @@ export async function render(container) {
         getAll('festivosMX'),
         getById('config', 'general'),
         getAll('pagosDiferidos'),
+        getAll('creditosTarjeta'),
         getAll('inversiones'),
         getAll('articulosRecurrentes'),
       ]);
@@ -76,7 +77,7 @@ export async function render(container) {
     const hoy             = toISODate(new Date());
 
     // ── Saldo calculado por tarjeta ──────────────────────────────────────────
-    const saldoMap = new Map(tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos)]));
+    const saldoMap = new Map(tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos, creditosTarjeta)]));
 
     // ── Crédito health ───────────────────────────────────────────────────────
     let creditoTotal = 0, creditoDisponible = 0;
@@ -122,7 +123,7 @@ export async function render(container) {
     } else {
       impactoTarjetas = tarjetasCredito.map(t => {
         const inst      = instMap[t.institucionId];
-        const est       = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
+        const est       = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos, creditosTarjeta);
         const cicloData = calcularCicloParaMes(t.ciclo, mes, festivosMX);
         const fp        = cicloData?.fechaPago ? toISODate(cicloData.fechaPago) : null;
         const nom       = fp ? anteriorNomina(new Date(String(fp).includes('T') ? fp : fp + 'T12:00:00'), festivosMX) : null;

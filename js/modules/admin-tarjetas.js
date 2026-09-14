@@ -1,11 +1,31 @@
 import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtDate, textoLegibleSobre, rgbLegibleSobre, rgbInversoSobre } from '../utils/formatters.js';
-import { calcularSaldo } from '../utils/saldo.js';
+import { calcularSaldo, limitarDisponible } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 
 const REDES = ['Visa', 'Mastercard', 'Maestro', 'Amex', 'Carnet', 'Discover'];
 const TIPO_LABEL = { credito: 'Crédito', debito: 'Débito', prestamo: 'Préstamo' };
 const TIPO_CLS   = { credito: 'badge-credito', debito: 'badge-debito', prestamo: 'badge-prestamo' };
+// Ancla una fecha "YYYY-MM-DD" a una hora real: la actual si es hoy, mediodía
+// si no — así calcularSaldo() la compara correctamente contra
+// fechaActualizacionSaldo (que sí lleva hora) en vez de perderla por caer en
+// medianoche UTC. Mismo criterio que usa msi.js para compras/pagos.
+function _addTime(s) {
+  if (!s || s.length !== 10) return s;
+  const n = new Date();
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  return s === today
+    ? `${s}T${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}:${String(n.getSeconds()).padStart(2, '0')}`
+    : `${s}T12:00:00`;
+}
+
+const ORIGEN_LABEL = {
+  bonificacion:   'Bonificación',
+  cancelacion:    'Cancelación de compra',
+  conversionMsi:  'Conversión a MSI',
+  excedente:      'Excedente sobre el límite',
+  otro:           'Otro',
+};
 
 function detectarRed(numero) {
   const n = String(numero || '').replace(/\s/g, '');
@@ -60,17 +80,18 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas, contado, msi, gastos, pagosDiferidos] = await Promise.all([
+    const [instituciones, tarjetas, contado, msi, gastos, pagosDiferidos, creditosTarjeta] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('contado'),
       getAll('msi'),
       getAll('gastos', recentWhere('mes')),
       getAll('pagosDiferidos'),
+      getAll('creditosTarjeta'),
     ]);
 
     const saldoMap = new Map(
-      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos)])
+      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos, creditosTarjeta)])
     );
 
     instituciones.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
@@ -188,6 +209,7 @@ async function renderView(container) {
                           <i class="bi bi-eye${c.oculta ? '-slash text-muted' : ''}"></i>
                         </button>
                         ${c.saldoDisponible != null ? `<button class="btn-icon btn-csv-saldo" data-id="${c.id}" title="Descargar CSV movimientos"><i class="bi bi-download"></i></button>` : ''}
+                        ${c.tipo !== 'debito' ? `<button class="btn-icon btn-creditos-card" data-id="${c.id}" title="Saldo a favor"><i class="bi bi-arrow-return-left"></i></button>` : ''}
                         <button class="btn-icon btn-edit-card" data-id="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
                         <button class="btn-icon danger btn-del-card" data-id="${c.id}" data-nombre="${c.nombre}" title="Eliminar"><i class="bi bi-trash3"></i></button>
                       </div>
@@ -270,7 +292,12 @@ async function renderView(container) {
       btn.addEventListener('click', () => {
         const card = tarjetas.find(t => t.id === btn.dataset.id);
         if (!card) return;
-        showCardModal(container, instituciones, card.institucionId, card);
+        // Precarga con el disponible en vivo SIN saldo a favor: ese campo es la
+        // entrada manual del banco/app, y el saldo a favor se suma aparte en
+        // todas las demás vistas — mezclarlo aquí lo "absorbería" en el
+        // snapshot al guardar y se perdería como ajuste visible por separado.
+        const liveSinCreditos = calcularSaldo(card, contado, msi, gastos, pagosDiferidos);
+        showCardModal(container, instituciones, card.institucionId, card, liveSinCreditos);
       }));
 
     document.querySelectorAll('.btn-del-card').forEach(btn =>
@@ -279,6 +306,13 @@ async function renderView(container) {
         await remove('tarjetas', btn.dataset.id);
         toast('Tarjeta eliminada');
         renderView(container);
+      }));
+
+    document.querySelectorAll('.btn-creditos-card').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const card = tarjetas.find(t => t.id === btn.dataset.id);
+        if (!card) return;
+        showCreditosModal(container, card, contado, msi, creditosTarjeta, () => renderView(container));
       }));
 
     document.querySelectorAll('.btn-csv-saldo').forEach(btn =>
@@ -313,13 +347,28 @@ async function renderView(container) {
             return { 'Compra Padre': compra?.compra || p.compraId || '', 'Fecha': d10(p.fecha), 'Monto': (Number(p.monto) || 0).toFixed(2) };
           });
 
+        const rowsCreditos = creditosTarjeta
+          .filter(cr => cr.tarjetaId === card.id && posterior(cr.fecha))
+          .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+          .map(cr => {
+            const compra = contado.find(c => c.id === cr.compraId) || msi.find(m => m.id === cr.compraId);
+            return {
+              'Origen': ORIGEN_LABEL[cr.origen] || cr.origen || '',
+              'Compra Relacionada': compra?.compra || '',
+              'Fecha': d10(cr.fecha),
+              'Monto': (Number(cr.monto) || 0).toFixed(2),
+              'Nota': cr.nota || '',
+            };
+          });
+
         const since   = fechaRef ? `desde_${d10(fechaRef)}` : 'todos';
         const nombre  = (card.nombre || 'tarjeta').replace(/\s+/g, '_');
         _downloadCSV(`saldo_${nombre}_${since}.csv`, [
-          ...(rowsContado.length  ? [{ title: 'De Contado',      rows: rowsContado  }] : []),
-          ...(rowsMsi.length      ? [{ title: 'A Plazos (MSI)',  rows: rowsMsi      }] : []),
-          ...(rowsGastos.length   ? [{ title: 'Gastos Fijos',    rows: rowsGastos   }] : []),
-          ...(rowsPagos.length    ? [{ title: 'Pagos Diferidos', rows: rowsPagos    }] : []),
+          ...(rowsContado.length   ? [{ title: 'De Contado',       rows: rowsContado   }] : []),
+          ...(rowsMsi.length       ? [{ title: 'A Plazos (MSI)',   rows: rowsMsi       }] : []),
+          ...(rowsGastos.length    ? [{ title: 'Gastos Fijos',     rows: rowsGastos    }] : []),
+          ...(rowsPagos.length     ? [{ title: 'Pagos Diferidos',  rows: rowsPagos     }] : []),
+          ...(rowsCreditos.length  ? [{ title: 'Saldo a Favor', rows: rowsCreditos  }] : []),
         ]);
       }));
 
@@ -427,9 +476,14 @@ function addNumeroRow(list, num = {}, redEl) {
   list.appendChild(row);
 }
 
-function showCardModal(container, instituciones, preInstId, card = null) {
+function showCardModal(container, instituciones, preInstId, card = null, liveSaldo = null) {
   const editing        = !!card?.id;
   const tipoVal        = card?.tipo || 'debito';
+  // El campo se precarga con el disponible EN VIVO (calcularSaldo), no con el
+  // snapshot crudo de la tarjeta: guardar sin tocar este campo resetea
+  // fechaActualizacionSaldo a ahora, y si se precargara con el snapshot viejo
+  // eso borraría en silencio todo lo posterior (compras, pagos, créditos).
+  const saldoDispInicial = liveSaldo?.disponible ?? card?.saldoDisponible ?? null;
   const metodoCicloVal = card?.ciclo?.diasAlCorte ? 'c' : card?.ciclo?.diasAlPago ? 'b' : 'a';
 
   const instOpts = instituciones
@@ -505,13 +559,17 @@ function showCardModal(container, instituciones, preInstId, card = null) {
         <div class="mb-3 d-none" id="sec-saldo">
           <hr class="my-2">
           <label class="form-label fw-semibold">Saldo disponible</label>
+          ${liveSaldo && liveSaldo.ajustado ? `
+          <div class="alert alert-info py-2 mb-2" style="font-size:0.82rem">
+            <i class="bi bi-info-circle me-1"></i>Se precargó el disponible <strong>en vivo</strong> (incluye compras y pagos posteriores a la última actualización, sin contar el saldo a favor — ese se sigue sumando aparte). Al guardar se toma como nuevo punto de referencia.
+          </div>` : ''}
           <div class="row g-2">
             <div class="col-sm-6">
               <label class="form-label small text-muted">Disponible</label>
               <div class="input-group input-group-sm">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" id="saldo-disponible" name="saldoDisponible"
-                       value="${card?.saldoDisponible ?? ''}" min="0" step="0.01" placeholder="0.00">
+                       value="${saldoDispInicial ?? ''}" min="0" step="0.01" placeholder="0.00">
               </div>
             </div>
             <div class="col-sm-6">
@@ -519,7 +577,7 @@ function showCardModal(container, instituciones, preInstId, card = null) {
               <div class="input-group input-group-sm">
                 <span class="input-group-text">$</span>
                 <input type="number" class="form-control" id="saldo-usado" min="0" step="0.01" placeholder="0.00"
-                       value="${card?.saldoDisponible != null && card?.limiteTotal ? Math.max(0, Number(card.limiteTotal) - Number(card.saldoDisponible)).toFixed(2) : ''}">
+                       value="${saldoDispInicial != null && card?.limiteTotal ? Math.max(0, Number(card.limiteTotal) - Number(saldoDispInicial)).toFixed(2) : ''}">
               </div>
             </div>
             ${card?.fechaActualizacionSaldo ? `
@@ -691,12 +749,17 @@ function showCardModal(container, instituciones, preInstId, card = null) {
     // Límite (crédito y préstamo)
     if (raw.limiteTotal) data.limiteTotal = Number(raw.limiteTotal);
 
-    // Saldo disponible (crédito y préstamo)
+    // Saldo disponible (crédito y préstamo) — no puede superar el límite; el
+    // excedente se registra como saldo a favor en vez de guardarse aquí.
+    let excedenteCredito = 0;
     if (raw.tipo !== 'debito') {
       const dispVal = document.getElementById('saldo-disponible')?.value;
       if (dispVal !== '' && dispVal != null) {
-        data.saldoDisponible         = Number(dispVal);
+        const limiteRef = data.limiteTotal ?? Number(card?.limiteTotal) ?? 0;
+        const { disponible, excedente } = limitarDisponible(Number(dispVal), limiteRef);
+        data.saldoDisponible         = disponible;
         data.fechaActualizacionSaldo = new Date().toISOString();
+        excedenteCredito = excedente;
       }
     }
 
@@ -728,10 +791,129 @@ function showCardModal(container, instituciones, preInstId, card = null) {
     }
 
     try {
-      if (editing) { await update('tarjetas', card.id, data); toast('Tarjeta actualizada'); }
-      else         { await create('tarjetas', data);          toast('Tarjeta creada');       }
+      let tarjetaId;
+      if (editing) { await update('tarjetas', card.id, data); tarjetaId = card.id; toast('Tarjeta actualizada'); }
+      else         { tarjetaId = await create('tarjetas', data);                   toast('Tarjeta creada');      }
+      if (excedenteCredito > 0) {
+        await create('creditosTarjeta', {
+          tarjetaId, fecha: data.fechaActualizacionSaldo,
+          monto: excedenteCredito, origen: 'excedente',
+          nota: 'Excedente automático: el saldo disponible ingresado superaba el límite total',
+        });
+        toast(`${currency(excedenteCredito)} superaba el límite — se registró como saldo a favor`, 'info');
+      }
       closeModal();
       renderView(container);
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
+}
+
+// ── Saldo a favor ────────────────────────────────────────────────────────────
+
+function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSaved) {
+  const creditos = creditosTarjeta
+    .filter(cr => cr.tarjetaId === card.id)
+    .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+  const comprasOpts = [
+    ...contado.filter(c => c.tarjetaId === card.id).map(c => ({ id: c.id, label: `${c.compra || 'Contado'} — ${fmtDate(c.fechaCompra)}` })),
+    ...msi.filter(m => m.tarjetaId === card.id).map(m => ({ id: m.id, label: `${m.compra || 'MSI'} — ${fmtDate(m.fechaCompra)}` })),
+  ];
+
+  const renderLista = () => creditos.length ? `
+    <div class="table-wrapper mb-3">
+      <table class="table table-sm mb-0">
+        <thead><tr><th>Fecha</th><th>Origen</th><th>Compra</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+        <tbody>
+          ${creditos.map(cr => {
+            const compra = comprasOpts.find(o => o.id === cr.compraId);
+            return `<tr>
+              <td style="white-space:nowrap">${fmtDate(cr.fecha)}</td>
+              <td>${ORIGEN_LABEL[cr.origen] || cr.origen || '—'}</td>
+              <td>${compra?.label || '<span class="text-muted">—</span>'}</td>
+              <td class="text-success fw-semibold" style="white-space:nowrap">${currency(Number(cr.monto) || 0)}</td>
+              <td style="font-size:0.8rem;color:var(--text-muted)">${cr.nota || ''}</td>
+              <td><button class="btn-icon danger btn-del-credito" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>` : `<p class="text-muted mb-3">Sin saldo a favor registrado para esta tarjeta.</p>`;
+
+  openModal({
+    title: `Saldo a favor — ${card.nombre}`,
+    size: 'lg',
+    body: `
+      <div id="creditos-lista">${renderLista()}</div>
+      <hr>
+      <form id="credito-form">
+        <div class="row g-2 align-items-end">
+          <div class="col-sm-3">
+            <label class="form-label small">Fecha *</label>
+            <input type="date" class="form-control form-control-sm" name="fecha" value="${new Date().toISOString().slice(0, 10)}" required>
+          </div>
+          <div class="col-sm-2">
+            <label class="form-label small">Monto *</label>
+            <input type="number" class="form-control form-control-sm" name="monto" min="0.01" step="0.01" required>
+          </div>
+          <div class="col-sm-3">
+            <label class="form-label small">Origen *</label>
+            <select class="form-select form-select-sm" name="origen" required>
+              <option value="bonificacion">Bonificación</option>
+              <option value="cancelacion">Cancelación de compra</option>
+              <option value="conversionMsi">Conversión a MSI</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small">Compra relacionada</label>
+            <select class="form-select form-select-sm" name="compraId">
+              <option value="">— Ninguna —</option>
+              ${comprasOpts.map(o => `<option value="${o.id}">${o.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small">Nota</label>
+            <input type="text" class="form-control form-control-sm" name="nota" placeholder="Opcional">
+          </div>
+        </div>
+      </form>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-add-credito">
+        <i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor</button>`,
+  });
+
+  document.querySelectorAll('.btn-del-credito').forEach(btn =>
+    btn.addEventListener('click', async () => {
+      if (!confirmDelete('este crédito')) return;
+      await remove('creditosTarjeta', btn.dataset.id);
+      toast('Saldo a favor eliminado');
+      closeModal();
+      onSaved();
+    }));
+
+  document.getElementById('btn-add-credito').addEventListener('click', async () => {
+    const form = document.getElementById('credito-form');
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const raw = Object.fromEntries(new FormData(form));
+    const data = {
+      tarjetaId: card.id,
+      fecha:     _addTime(raw.fecha),
+      monto:     Number(raw.monto),
+      origen:    raw.origen,
+    };
+    if (raw.compraId) {
+      data.compraId        = raw.compraId;
+      data.compraColeccion = contado.some(c => c.id === raw.compraId) ? 'contado' : 'msi';
+    }
+    if (raw.nota) data.nota = raw.nota;
+
+    try {
+      await create('creditosTarjeta', data);
+      toast('Saldo a favor agregado');
+      closeModal();
+      onSaved();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }

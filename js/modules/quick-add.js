@@ -157,7 +157,7 @@ import { proyectarMes, getGastosDebitoCompleto } from '../utils/impacto-calc.js'
 import { showRegistroModal } from './articulo-detalle.js';
 
 async function _loadData() {
-  const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos] = await Promise.all([
+  const [instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta] = await Promise.all([
     getAll('instituciones'),
     getAll('tarjetas'),
     getAll('festivosMX'),
@@ -166,8 +166,9 @@ async function _loadData() {
     getAll('gastos', recentWhere('mes')),
     getAll('gastosFijos'),
     getAll('pagosDiferidos'),
+    getAll('creditosTarjeta'),
   ]);
-  return { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos };
+  return { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta };
 }
 
 function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
@@ -393,7 +394,7 @@ const PREVIEW_HTML = `
     </div>
   </div>`;
 
-async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = []) {
+async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = [], creditosTarjeta = []) {
   const preview = document.getElementById('qa-preview');
   if (!preview) return;
 
@@ -428,7 +429,7 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
   }
 
   // ── Saldo (con calcularSaldo para aplicar compras posteriores) ───────────
-  const saldo      = calcularSaldo(tarjeta, contado, msi, gastos, pagosDiferidos);
+  const saldo      = calcularSaldo(tarjeta, contado, msi, gastos, pagosDiferidos, creditosTarjeta);
   const limite     = Number(tarjeta.limiteTotal) || 0;
   const disponible = saldo ? saldo.disponible : (tarjeta.saldoDisponible != null ? Number(tarjeta.saldoDisponible) : null);
   const usado      = saldo ? saldo.usado      : (disponible != null && limite ? limite - disponible : null);
@@ -490,7 +491,7 @@ let _previewTimer = null;
 // mentiría justo en lo que sirve para decidir: disponible e impacto del mes.
 // Devuelve su propio refrescador, para poder dispararla desde fuera de los
 // campos que vigila.
-function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = [], extraTotalFn = null) {
+function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas, festivosMX, monthlyAmountFn = null, contado = [], msi = [], gastos = [], gastosFijos = [], pagosDiferidos = [], creditosTarjeta = [], extraTotalFn = null) {
   const getValues = () => {
     const form = document.getElementById(formId);
     if (!form) return;
@@ -500,7 +501,7 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
                           + (extraTotalFn ? extraTotalFn() : 0);
     const monthlyAmount = monthlyAmountFn ? monthlyAmountFn(form) : total;
     clearTimeout(_previewTimer);
-    _previewTimer = setTimeout(() => _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos), 250);
+    _previewTimer = setTimeout(() => _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta), 250);
   };
 
   const watchFields = new Set([tarjetaValField, fechaField, totalField]);
@@ -525,9 +526,9 @@ function _wirePreview(formId, tarjetaValField, fechaField, totalField, tarjetas,
 // `onSaved` permite al llamante refrescar su vista tras guardar.
 export async function openQuickAdd(action, prefill = null, onSaved = null) {
   if (action === 'articulo') { await _showArticuloPicker(onSaved); return; }
-  const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos } = await _loadData();
-  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
-  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, prefill, onSaved);
+  const { instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta } = await _loadData();
+  if (action === 'contado')     _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta, prefill, onSaved);
+  else if (action === 'plazos') _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta, prefill, onSaved);
   else if (action === 'gasto')  _showGasto(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos);
 }
 
@@ -549,7 +550,7 @@ async function _showArticuloPicker(onSaved) {
 
 // ── De Contado ────────────────────────────────────────────────────────────────
 
-function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], prefill = null, onSaved = null) {
+function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], creditosTarjeta = [], prefill = null, onSaved = null) {
   const p = prefill || {};
   openModal({
     title: 'Nueva Compra De Contado',
@@ -629,7 +630,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
   let refrescarPreview = () => {};
   const acumElegido = _wireAcumular(tarjetas, contado, p.msgId, () => refrescarPreview());
   refrescarPreview = _wirePreview('qa-contado-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas,
-    festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos,
+    festivosMX, null, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta,
     () => acumElegido()?.total || 0);
 
   // Solo en el pre-registro por enlace: la fuente no siempre dice si fue a
@@ -640,7 +641,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     const el = document.getElementById('app-modal');
     // Esperar al cierre: abrir el segundo modal encima deja el backdrop huérfano
     el.addEventListener('hidden.bs.modal', () =>
-      _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, datos, onSaved),
+      _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta, datos, onSaved),
       { once: true });
     closeModal();
   });
@@ -684,7 +685,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
 
 // ── A Plazos ──────────────────────────────────────────────────────────────────
 
-function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], prefill = null, onSaved = null) {
+function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos = [], creditosTarjeta = [], prefill = null, onSaved = null) {
   const p = prefill || {};
   openModal({
     title: 'Nueva Compra A Plazos',
@@ -771,7 +772,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
-    form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos);
+    form => Number(form.querySelector('[name=mensualidad]')?.value) || 0, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta);
 
   const chkDifPlazos  = document.getElementById('qa-chk-diferido-plazos');
   const hintDifPlazos = document.getElementById('qa-hint-diferido-plazos');
@@ -788,7 +789,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     const datos = _leerFormulario('qa-plazos-form', p);
     const el = document.getElementById('app-modal');
     el.addEventListener('hidden.bs.modal', () =>
-      _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, datos, onSaved),
+      _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos, gastosFijos, pagosDiferidos, creditosTarjeta, datos, onSaved),
       { once: true });
     closeModal();
   });

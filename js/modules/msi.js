@@ -64,8 +64,16 @@ import { currency, fmtDate, r2 } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from '../utils/ciclo.js';
 import { getGastosFijosPendientes } from '../utils/impacto-calc.js';
+import { limitarDisponible } from '../utils/saldo.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
+const ORIGEN_CREDITO_LABEL = {
+  bonificacion:  'Bonificación',
+  cancelacion:   'Cancelación de compra',
+  conversionMsi: 'Conversión a MSI',
+  excedente:     'Excedente sobre el límite',
+  otro:          'Otro',
+};
 
 // Estatus de un gasto fijo del mes — 'pendiente'/'porConfirmar' son calculados
 // (getGastosFijosPendientes), no necesariamente un `estado` guardado en
@@ -86,7 +94,7 @@ export async function render(container, tab = null, query = null) {
 
 async function renderView(container, initialTab = 'contado', query = null) {
   try {
-    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos] = await Promise.all([
+    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos, creditosTarjeta] = await Promise.all([
       getAll('contado'),
       getAll('msi'),
       getAll('instituciones'),
@@ -95,6 +103,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
       getAll('gastos', recentWhere('mes')),
       getAll('gastosFijos'),
       getAll('pagosDiferidos'),
+      getAll('creditosTarjeta'),
     ]);
 
     if (query && (query.get('desc') || query.get('total'))) {
@@ -123,6 +132,22 @@ async function renderView(container, initialTab = 'contado', query = null) {
       if (!pagosMap[p.compraId]) pagosMap[p.compraId] = [];
       pagosMap[p.compraId].push(p);
     });
+
+    // Index creditosTarjeta by compraId for fast lookup (créditos sin compraId no aparecen aquí)
+    const creditosMap = {};
+    creditosTarjeta.forEach(cr => {
+      if (!cr.compraId) return;
+      if (!creditosMap[cr.compraId]) creditosMap[cr.compraId] = [];
+      creditosMap[cr.compraId].push(cr);
+    });
+    const _rebuildCreditosMap = () => {
+      Object.keys(creditosMap).forEach(k => delete creditosMap[k]);
+      creditosTarjeta.forEach(cr => {
+        if (!cr.compraId) return;
+        if (!creditosMap[cr.compraId]) creditosMap[cr.compraId] = [];
+        creditosMap[cr.compraId].push(cr);
+      });
+    };
 
     // State: which diferido compras are expanded
     const expandedDiferidos = new Set();
@@ -344,7 +369,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
               </button>
             </div>
             <div class="accordion" id="contado-accordion">
-              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed, pagosMap, expandedDiferidos, filtroContadoTipo === 'pago' ? filtroContadoMes : null)).join('')}
+              ${groups.map((g, idx) => renderGroupContado(g, idx, cardMap, festivosMX, contadoCollapsed, pagosMap, expandedDiferidos, filtroContadoTipo === 'pago' ? filtroContadoMes : null, creditosMap)).join('')}
             </div>`
         }`;
 
@@ -452,6 +477,17 @@ async function renderView(container, initialTab = 'contado', query = null) {
                 }));
             }
           }
+        }));
+
+      content.querySelectorAll('.btn-credito-compra').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const compra = contadoItems.find(x => x.id === btn.dataset.id);
+          if (!compra) return;
+          _showModalCredito(compra, 'contado', creditosTarjeta, () => {
+            _rebuildCreditosMap();
+            _rerenderAcordeon('contado-accordion', renderContado);
+          });
         }));
 
       content.querySelectorAll('.btn-add-pago-diferido').forEach(btn =>
@@ -656,7 +692,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
               </button>
             </div>
             <div class="accordion" id="msi-accordion">
-              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro, plazosCollapsed, pagosMap, expandedDiferidos)).join('')}
+              ${groups.map((g, idx) => renderGroupMsi(g, idx, cardMap, festivosMX, filtro, plazosCollapsed, pagosMap, expandedDiferidos, creditosMap)).join('')}
             </div>`
         }`;
 
@@ -697,11 +733,19 @@ async function renderView(container, initialTab = 'contado', query = null) {
           const ops = [update('msi', m.id, { mesesPagados: nuevosMeses, restante: nuevoRestante })];
 
           // Sumar mensualidad al saldo disponible de la tarjeta (sin tocar fechaActualizacionSaldo)
+          // — sin superar el límite; el excedente se registra como saldo a favor.
           const tc = cardMap[m.tarjetaId];
           if (tc && tc.saldoDisponible != null && mensualidad > 0) {
-            const nuevoSaldo = r2(Number(tc.saldoDisponible) + mensualidad);
-            ops.push(update('tarjetas', tc.id, { saldoDisponible: nuevoSaldo }));
-            tc.saldoDisponible = nuevoSaldo; // actualizar en memoria
+            const { disponible, excedente } = limitarDisponible(Number(tc.saldoDisponible) + mensualidad, tc.limiteTotal);
+            ops.push(update('tarjetas', tc.id, { saldoDisponible: disponible }));
+            tc.saldoDisponible = disponible; // actualizar en memoria
+            if (excedente > 0) {
+              ops.push(create('creditosTarjeta', {
+                tarjetaId: tc.id, fecha: new Date().toISOString(),
+                monto: excedente, origen: 'excedente',
+                nota: 'Excedente automático: el pago de mensualidad superó el límite total',
+              }));
+            }
           }
 
           await Promise.all(ops);
@@ -740,6 +784,17 @@ async function renderView(container, initialTab = 'contado', query = null) {
           msiItems.splice(msiItems.findIndex(x => x.id === m.id), 1);
           toast('Compra eliminada');
           renderPlazos(filtroMsi);
+        }));
+
+      content.querySelectorAll('.btn-credito-compra').forEach(btn =>
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const compra = msiItems.find(x => x.id === btn.dataset.id);
+          if (!compra) return;
+          _showModalCredito(compra, 'msi', creditosTarjeta, () => {
+            _rebuildCreditosMap();
+            _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
+          });
         }));
 
       content.querySelectorAll('.btn-liquidar-msi').forEach(btn =>
@@ -1225,7 +1280,14 @@ function _getPagosEnCiclo(pagos, tc, mes, festivosMX) {
   });
 }
 
-function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false, pagosMap = {}, expandedDiferidos = new Set(), filtroMes = null) {
+function _creditoBadge(compraId, creditosMap) {
+  const list = creditosMap[compraId] || [];
+  if (!list.length) return '';
+  const total = list.reduce((s, cr) => s + (Number(cr.monto) || 0), 0);
+  return `<span class="text-success ms-1" style="font-size:var(--fs-nano)" title="Saldo a favor aplicado: ${currency(total)}"><i class="bi bi-arrow-return-left"></i> ${currency(total)}</span>`;
+}
+
+function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed = false, pagosMap = {}, expandedDiferidos = new Set(), filtroMes = null, creditosMap = {}) {
   const label      = inst?.nombre || 'Sin institución';
   const color      = inst?.color  || '#607d8b';
   const totalGrupo = items.reduce((s, c) => {
@@ -1310,6 +1372,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           <span style="font-size:0.7rem" class="${allRegistered ? 'text-success' : 'text-danger'}">
                             ${allRegistered ? '✓' : `○ ${currency(Math.max(0, pend))}`}
                           </span>
+                          ${_creditoBadge(c.id, creditosMap)}
                         </td>
                         <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                         <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
@@ -1320,6 +1383,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                         <td>
                           <div class="d-flex gap-1">
                             ${!allRegistered ? `<button class="btn-icon btn-add-pago-diferido" data-id="${c.id}" data-coleccion="contado" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>` : ''}
+                            <button class="btn-icon btn-credito-compra" data-id="${c.id}" data-coleccion="contado" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
                             <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
                             <button class="btn-icon danger btn-del-contado" data-id="${c.id}"><i class="bi bi-trash3"></i></button>
                           </div>
@@ -1349,6 +1413,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                         <div class="fw-500">
                           ${c.compra}
                           ${c.enlaceCompra ? `<a href="${c.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                          ${_creditoBadge(c.id, creditosMap)}
                         </div>
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
@@ -1357,6 +1422,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                       <td class="text-end">${_bonifTotal(c, Number(c.total) || 0, !!tc?.inst?.bonificacionConIva)}</td>
                       <td>
                         <div class="d-flex gap-1">
+                          <button class="btn-icon btn-credito-compra" data-id="${c.id}" data-coleccion="contado" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
                           <button class="btn-icon btn-edit-contado" data-id="${c.id}"><i class="bi bi-pencil"></i></button>
                           <button class="btn-icon danger btn-del-contado" data-id="${c.id}"><i class="bi bi-trash3"></i></button>
                         </div>
@@ -1395,7 +1461,7 @@ function calcularPagos(ciclo, fechaCompra, mesesTotal, festivosMX) {
   return { primerPago, ultimoPago: lastPeriodo.fechaPago, cicloYear: year, cicloMonth: month };
 }
 
-function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, collapsed = false, pagosMap = {}, expandedDiferidos = new Set()) {
+function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, collapsed = false, pagosMap = {}, expandedDiferidos = new Set(), creditosMap = {}) {
   const label        = inst?.nombre || 'Sin institución';
   const color        = inst?.color  || '#607d8b';
   const mostrarTotal = filtro !== 'curso';
@@ -1545,6 +1611,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                           <span class="fw-500">${m.compra}</span>
                           <span class="badge bg-warning text-dark ms-1" style="font-size:var(--fs-nano)">Diferido</span>
                           ${m.enlaceCompra ? `<a href="${m.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                          ${_creditoBadge(m.id, creditosMap)}
                           <div class="d-flex align-items-center gap-2 mt-1">
                             <div class="progress" style="width:120px;flex-shrink:0">
                               <div class="progress-bar ${doneParent ? 'bg-success' : 'bg-primary'}" style="width:${pctParent}%"></div>
@@ -1573,6 +1640,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                         <td>
                           <div class="d-flex gap-1">
                             ${!allRegistered ? `<button class="btn-icon btn-add-pago-diferido-msi" data-id="${m.id}" data-coleccion="msi" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>` : ''}
+                            <button class="btn-icon btn-credito-compra" data-id="${m.id}" data-coleccion="msi" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
                             <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
                             <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
                           </div>
@@ -1657,6 +1725,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                         <div class="fw-500">
                           ${m.compra}
                           ${m.enlaceCompra ? `<a href="${m.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+                          ${_creditoBadge(m.id, creditosMap)}
                         </div>
                         <div class="progress mt-1" style="width:120px">
                           <div class="progress-bar ${done ? 'bg-success' : 'bg-primary'}" style="width:${pct}%"></div>
@@ -1678,6 +1747,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                         <div class="d-flex gap-1">
                           ${!m.liquidado && Number(m.mesesPagados) < Number(m.mesesTotal) ? `<button class="btn-icon btn-pagar-msi" data-id="${m.id}" title="Registrar pago de mensualidad"><i class="bi bi-coin"></i></button>` : ''}
                           ${!m.liquidado ? `<button class="btn-icon btn-liquidar-msi" data-id="${m.id}" title="Liquidar"><i class="bi bi-check-circle"></i></button>` : ''}
+                          <button class="btn-icon btn-credito-compra" data-id="${m.id}" data-coleccion="msi" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
                           <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
                           <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
                         </div>
@@ -2468,6 +2538,100 @@ function _labelMes(mes) {
 }
 
 // ── Modal Registrar Pago Diferido ──────────────────────────────────────────────
+
+function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
+  if (!compra) return;
+  const creditos = creditosTarjeta
+    .filter(cr => cr.compraId === compra.id)
+    .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+  const renderLista = () => creditos.length ? `
+    <div class="table-wrapper mb-3">
+      <table class="table table-sm mb-0">
+        <thead><tr><th>Fecha</th><th>Origen</th><th class="text-end">Monto</th><th>Nota</th><th></th></tr></thead>
+        <tbody>
+          ${creditos.map(cr => `<tr>
+            <td style="white-space:nowrap">${fmtDate(cr.fecha)}</td>
+            <td>${ORIGEN_CREDITO_LABEL[cr.origen] || cr.origen || '—'}</td>
+            <td class="text-end text-success fw-semibold" style="white-space:nowrap">${currency(Number(cr.monto) || 0)}</td>
+            <td style="font-size:0.8rem;color:var(--text-muted)">${cr.nota || ''}</td>
+            <td><button class="btn-icon danger btn-del-credito-compra" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : `<p class="text-muted mb-3">Sin saldo a favor registrado para esta compra.</p>`;
+
+  openModal({
+    title: `Saldo a favor — ${compra.compra}`,
+    size: 'lg',
+    body: `
+      <div id="creditos-compra-lista">${renderLista()}</div>
+      <hr>
+      <form id="credito-compra-form">
+        <div class="row g-2 align-items-end">
+          <div class="col-sm-4">
+            <label class="form-label small">Fecha *</label>
+            <input type="date" class="form-control form-control-sm" name="fecha" value="${toISODate(new Date())}" required>
+          </div>
+          <div class="col-sm-3">
+            <label class="form-label small">Monto *</label>
+            <input type="number" class="form-control form-control-sm" name="monto" min="0.01" step="0.01" required>
+          </div>
+          <div class="col-sm-5">
+            <label class="form-label small">Origen *</label>
+            <select class="form-select form-select-sm" name="origen" required>
+              <option value="cancelacion">Cancelación de compra</option>
+              <option value="bonificacion">Bonificación</option>
+              <option value="conversionMsi">Conversión a MSI</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small">Nota</label>
+            <input type="text" class="form-control form-control-sm" name="nota" placeholder="Opcional">
+          </div>
+        </div>
+      </form>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-add-credito-compra">
+        <i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor</button>`,
+  });
+
+  document.querySelectorAll('.btn-del-credito-compra').forEach(btn =>
+    btn.addEventListener('click', async () => {
+      if (!confirmDelete('este crédito')) return;
+      await remove('creditosTarjeta', btn.dataset.id);
+      const idx = creditosTarjeta.findIndex(x => x.id === btn.dataset.id);
+      if (idx >= 0) creditosTarjeta.splice(idx, 1);
+      toast('Saldo a favor eliminado');
+      closeModal();
+      onSaved();
+    }));
+
+  document.getElementById('btn-add-credito-compra').addEventListener('click', async () => {
+    const form = document.getElementById('credito-compra-form');
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const raw = Object.fromEntries(new FormData(form));
+    const data = {
+      tarjetaId:       compra.tarjetaId,
+      compraId:        compra.id,
+      compraColeccion: coleccion,
+      fecha:           _addTime(raw.fecha),
+      monto:           Number(raw.monto),
+      origen:          raw.origen,
+    };
+    if (raw.nota) data.nota = raw.nota;
+
+    try {
+      const id = await create('creditosTarjeta', data);
+      creditosTarjeta.push({ id, ...data });
+      toast('Saldo a favor agregado');
+      closeModal();
+      onSaved();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
+}
 
 function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved) {
   if (!compra) return;

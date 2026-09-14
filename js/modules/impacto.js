@@ -1,9 +1,9 @@
-import { getAll, getById, upsert, update, recentWhere, where } from '../utils/db.js';
+import { getAll, getById, create, upsert, update, recentWhere, where } from '../utils/db.js';
 import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth, r2 } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { navigate } from '../router.js';
-import { calcularSaldo } from '../utils/saldo.js';
+import { calcularSaldo, limitarDisponible } from '../utils/saldo.js';
 import {
   calcularEstimadoTarjeta, getGastosDebitoMes, getGastosDebitoCompleto,
   calcularTotalesCredito, getPlazosMes, proyectarMes, recalcTotalesImpacto,
@@ -35,7 +35,7 @@ async function renderView(container, mes) {
     const isFuture  = mes > mesActivo;
     const isPast    = mes < mesActivo;
 
-    const [impactoExistente, tarjetas, instituciones, contado, msi, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos] =
+    const [impactoExistente, tarjetas, instituciones, contado, msi, gastos, gastosFijos, festivosMX, configGen, pagosDiferidos, creditosTarjeta] =
       await Promise.all([
         getById('impacto', mes),
         getAll('tarjetas'),
@@ -47,6 +47,7 @@ async function renderView(container, mes) {
         getAll('festivosMX'),
         getById('config', 'general'),
         getAll('pagosDiferidos'),
+        getAll('creditosTarjeta'),
       ]);
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
@@ -68,14 +69,15 @@ async function renderView(container, mes) {
           .filter(t => !existingIds.has(t.id))
           .map(t => {
             const inst = instMap[t.institucionId];
-            const est  = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
+            const est  = calcularEstimadoTarjeta(t, contado, msi, gastos, festivosMX, mes, pagosDiferidos, creditosTarjeta);
             const p    = t.ciclo ? calcularCicloParaMes(t.ciclo, mes, festivosMX) : null;
+            const live = calcularSaldo(t, contado, msi, gastos, pagosDiferidos, creditosTarjeta);
             changed = true;
             return {
               tarjetaId: t.id, nombre: t.nombre,
               institucion: inst?.nombre || '', color: inst?.color || '#607d8b',
               limiteTotal: Number(t.limiteTotal) || 0,
-              saldoDisponible: t.saldoDisponible ?? null,
+              saldoDisponible: live ? live.disponible : (t.saldoDisponible ?? null),
               fechaCorte: p?.fechaCorte ? toISODate(p.fechaCorte) : null,
               fechaPago:  p?.fechaPago  ? toISODate(p.fechaPago)  : null,
               ...est,
@@ -88,15 +90,16 @@ async function renderView(container, mes) {
           ...impacto.tarjetas.map(t => {
             const tarjeta = cardMap[t.tarjetaId];
             if (!tarjeta) return t;
-            const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes, pagosDiferidos);
-            const estSame = est.estimadoContado  === t.estimadoContado  &&
-                            est.estimadoPlazos   === t.estimadoPlazos   &&
-                            est.estimadoGastos   === t.estimadoGastos   &&
-                            est.estimadoTotal    === t.estimadoTotal    &&
-                            est.pendienteContado === t.pendienteContado &&
-                            est.pendientePlazos  === t.pendientePlazos  &&
-                            est.pagosDifContado  === t.pagosDifContado  &&
-                            est.pagosDifPlazos   === t.pagosDifPlazos;
+            const est  = calcularEstimadoTarjeta(tarjeta, contado, msi, gastos, festivosMX, mes, pagosDiferidos, creditosTarjeta);
+            const estSame = est.estimadoContado    === t.estimadoContado    &&
+                            est.estimadoPlazos     === t.estimadoPlazos     &&
+                            est.estimadoGastos     === t.estimadoGastos     &&
+                            est.estimadoTotal      === t.estimadoTotal      &&
+                            est.pendienteContado   === t.pendienteContado   &&
+                            est.pendientePlazos    === t.pendientePlazos    &&
+                            est.pagosDifContado    === t.pagosDifContado    &&
+                            est.pagosDifPlazos     === t.pagosDifPlazos     &&
+                            est.creditosAplicados  === t.creditosAplicados;
             // Always recalculate dates to catch stale/wrong values from previous versions
             let dateUpdate = {};
             if (tarjeta.ciclo) {
@@ -123,9 +126,9 @@ async function renderView(container, mes) {
         }
       }
     } else if (mes === mesActivo) {
-      impacto = await _crearImpacto(mes, tarjetasCredito, contado, msi, gastos, festivosMX, nominaAprox, instMap, pagosDiferidos);
+      impacto = await _crearImpacto(mes, tarjetasCredito, contado, msi, gastos, festivosMX, nominaAprox, instMap, pagosDiferidos, creditosTarjeta);
     } else if (isFuture) {
-      impacto = proyectarMes(mes, mesActivo, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas, pagosDiferidos);
+      impacto = proyectarMes(mes, mesActivo, msi, contado, gastos, tarjetasCredito, nominaAprox, festivosMX, gastosFijos, tarjetas, pagosDiferidos, creditosTarjeta);
       // Enrich projection tarjetas with institution data
       impacto.tarjetas = impacto.tarjetas.map(t => {
         const tc   = cardMap[t.tarjetaId];
@@ -142,7 +145,7 @@ async function renderView(container, mes) {
 
     const ctx = {
       mes, mesActivo, isFuture, isPast, tarjetas, cardMap, instMap,
-      tarjetasCredito, festivosMX, configGen, nominaAprox, contado, msi, gastos, pagosDiferidos,
+      tarjetasCredito, festivosMX, configGen, nominaAprox, contado, msi, gastos, pagosDiferidos, creditosTarjeta,
       gastosDebitoLive, debitoIds, container,
     };
 
@@ -155,12 +158,13 @@ async function renderView(container, mes) {
 
 // ── Create new impacto ───────────────────────────────────────────────────────
 
-async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gastosItems, festivosMX, nominaAprox, instMap, pagosDiferidos = []) {
+async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gastosItems, festivosMX, nominaAprox, instMap, pagosDiferidos = [], creditosTarjeta = []) {
   const [y, mo] = mes.split('-').map(Number);
 
   const tarjetas = tarjetasCredito.map(t => {
-    const est  = calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos);
+    const est  = calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta);
     const inst = instMap[t.institucionId];
+    const live = calcularSaldo(t, contadoItems, msiItems, gastosItems, pagosDiferidos, creditosTarjeta);
     let fechaCorte = null, fechaPago = null, fechaNomina = null;
     if (t.ciclo) {
       const p = calcularCicloParaMes(t.ciclo, mes, festivosMX);
@@ -175,7 +179,7 @@ async function _crearImpacto(mes, tarjetasCredito, contadoItems, msiItems, gasto
       tarjetaId: t.id, nombre: t.nombre,
       institucion: inst?.nombre || '', color: inst?.color || '#607d8b',
       limiteTotal:     Number(t.limiteTotal) || 0,
-      saldoDisponible: t.saldoDisponible ?? null,
+      saldoDisponible: live ? live.disponible : (t.saldoDisponible ?? null),
       fechaCorte, fechaPago, fechaNomina, ...est,
       confirmado: false, montoAPagar: null, pagado: false, fechaPagado: null,
       fechaCorteConf: null, fechaPagoConf: null, limiteTotalConf: null, saldoDispConf: null,
@@ -212,7 +216,7 @@ function _renderPage(container, impacto, ctx) {
         (impacto?.tarjetas || [])
           .map(t => {
             const tarjeta = ctx.cardMap[t.tarjetaId];
-            const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
+            const live    = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos, ctx.creditosTarjeta) : null;
             return [t.tarjetaId, live ? live.disponible : null];
           })
           .filter(([, v]) => v != null)
@@ -507,6 +511,7 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 ? `Plazos: ${currency(t.estimadoPlazos + (t.pagosDifPlazos || 0))}`  : '',
           (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 && t.pendientePlazos  > 0 ? `  Pendiente: ${currency(t.pendientePlazos)}` : '',
           t.estimadoGastos  > 0 ? `Gastos: ${currency(t.estimadoGastos)}`  : '',
+          (t.creditosAplicados || 0) > 0 ? `Saldo a favor aplicado: -${currency(t.creditosAplicados)}` : '',
         ].filter(Boolean).join('\n')}">
         ${numCell(t.estimadoTotal, t.montoAPagar, idx, 'montoAPagar')}
         ${t.pagado ? `<div class="text-muted" style="font-size:0.7rem">${fmtDate(t.fechaPagado)}</div>` : ''}
@@ -764,7 +769,7 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
 
   // 1. Compute live available credit as base
   const tarjeta  = ctx.cardMap[t.tarjetaId];
-  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
+  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos, ctx.creditosTarjeta) : null;
   const dispActual = live ? live.disponible : Number(t.saldoDisponible ?? 0);
 
   // 2. Update tarjeta record in impacto (no saldoDispConf — stays live until month closes)
@@ -772,12 +777,22 @@ async function _registrarPago(t, idx, monto, impacto, ctx) {
   updatedTarjetas[idx] = { ...t, pagado: true, fechaPagado: hoy };
   await upsert('impacto', impacto.mes, { tarjetas: updatedTarjetas });
 
-  // 3. Update tarjeta document with new saldo and reset reference date to now
+  // 3. Update tarjeta document with new saldo and reset reference date to now —
+  //    sin superar el límite; el excedente (si lo hay) se registra como crédito.
   if (t.tarjetaId && monto > 0) {
+    const { disponible, excedente } = limitarDisponible(dispActual + monto, tarjeta?.limiteTotal);
+    const fechaAct = new Date().toISOString();
     await update('tarjetas', t.tarjetaId, {
-      saldoDisponible:         r2(dispActual + monto),
-      fechaActualizacionSaldo: new Date().toISOString(),
+      saldoDisponible:         disponible,
+      fechaActualizacionSaldo: fechaAct,
     });
+    if (excedente > 0) {
+      await create('creditosTarjeta', {
+        tarjetaId: t.tarjetaId, fecha: fechaAct,
+        monto: excedente, origen: 'excedente',
+        nota: 'Excedente automático: el pago registrado superó el límite total',
+      });
+    }
   }
 
   // 3. Increment mesesPagados for A Plazos whose próximo pago is this month
@@ -878,7 +893,7 @@ async function _cerrarMes(impacto, gastosDebitoLive, totales, ctx) {
   // Snapshot live límite and saldo into conf fields for all tarjetas
   const updatedTarjetas = impacto.tarjetas.map(t => {
     const tarjeta    = ctx.cardMap[t.tarjetaId];
-    const live       = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos) : null;
+    const live       = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos, ctx.creditosTarjeta) : null;
     const saldoSnap  = live ? live.disponible : (t.saldoDisponible ?? 0);
     const limiteSnap = Number(ctx.cardMap[t.tarjetaId]?.limiteTotal ?? t.limiteTotal ?? 0);
     const autoPagado = !t.pagado && (t.montoAPagar ?? t.estimadoTotal ?? 0) === 0
