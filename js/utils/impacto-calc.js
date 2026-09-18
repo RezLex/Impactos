@@ -176,12 +176,33 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   });
 }
 
-/** Créditos a favor (bonificación, cancelación, conversión MSI) for a tarjeta whose
- *  anteriorNomina(fechaPago del ciclo que contiene `fecha`) falls in mes. */
+/**
+ * Créditos a favor (bonificación, cancelación, conversión MSI) para una tarjeta.
+ * A diferencia de una compra (que se ubica por el corte de SU PROPIO ciclo,
+ * pudiendo caer en el siguiente si se hizo después del corte), un crédito
+ * sigue abonando al pago de `mes` mientras ese pago no se haya hecho: cae en
+ * `mes` si su fecha está entre el pago del mes anterior (exclusivo) y el pago
+ * de `mes` (inclusive). Así una cancelación registrada después del corte pero
+ * antes de pagar reduce ESE pago en vez de esperar al siguiente ciclo; una
+ * vez que el pago de `mes` ya ocurrió, un crédito posterior cae en el
+ * siguiente mes — nunca reabre uno ya pagado.
+ */
 export function getCreditosMes(creditosTarjeta, tarjetaId, ciclo, mes, festivosMX) {
+  if (!ciclo) return [];
+  const periodo = calcularCicloParaMes(ciclo, mes, festivosMX);
+  if (!periodo?.fechaPago) return [];
+
+  const [y, mo]      = mes.split('-').map(Number);
+  const prevMes       = `${mo === 1 ? y - 1 : y}-${String(mo === 1 ? 12 : mo - 1).padStart(2, '0')}`;
+  const prevPeriodo   = calcularCicloParaMes(ciclo, prevMes, festivosMX);
+  const prevFechaPago = prevPeriodo?.fechaPago || null;
+
   return creditosTarjeta.filter(c => {
-    if (c.tarjetaId !== tarjetaId) return false;
-    return _enMes(_fechaPagoFromDate(c.fecha, ciclo, festivosMX), mes, festivosMX);
+    if (c.tarjetaId !== tarjetaId || !c.fecha) return false;
+    const d = _d(c.fecha);
+    if (!d) return false;
+    if (prevFechaPago && d <= prevFechaPago) return false;
+    return d <= periodo.fechaPago;
   });
 }
 

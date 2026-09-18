@@ -92,6 +92,20 @@ test('getCreditosMes: otra tarjeta u otro mes no entra', () => {
   assert.equal(getCreditosMes([credito()], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 0);
 });
 
+// Corte 20-ene, pago 4-feb (+15d). A diferencia de una compra, un crédito
+// registrado DESPUÉS del corte (ej. 25-ene) pero ANTES del pago sigue
+// abonando al pago de enero — no debe esperar al ciclo de febrero.
+test('getCreditosMes: cancelación registrada después del corte abona al pago del mes en curso, no al siguiente ciclo', () => {
+  const r = getCreditosMes([credito({ fecha: '2026-01-25' })], TARJETA_ID, CICLO, '2026-01', FESTIVOS);
+  assert.equal(r.length, 1);
+});
+
+test('getCreditosMes: una vez pagado el mes (fecha posterior al pago), el crédito cae en el siguiente mes', () => {
+  const credAfterPago = credito({ fecha: '2026-02-10' }); // después del pago de enero (4-feb)
+  assert.equal(getCreditosMes([credAfterPago], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
+  assert.equal(getCreditosMes([credAfterPago], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 1);
+});
+
 test('calcularEstimadoTarjeta: resta los créditos aplicados del estimadoTotal', () => {
   const tarjeta = { id: TARJETA_ID, ciclo: CICLO };
   const contadoItems = [{ id: 'c1', tarjetaId: TARJETA_ID, fechaCompra: '2026-01-05', total: 500 }];
