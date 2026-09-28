@@ -1546,6 +1546,8 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       const allRegistered = pendingAmount < 0.005;
                       const bonif         = !!tc?.inst?.bonificacionConIva;
                       const expanded      = expandedDiferidos.has(m.id);
+                      const sumPagosMonto = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const totalOrigMsi  = Number(m.totalDiferido) || (pendingAmount + sumPagosMonto);
 
                       // Aggregate across registered pagos
                       const sumMesesPagados  = pagos.reduce((s, p) => s + (Number(p.mesesPagados) || 0), 0);
@@ -1556,7 +1558,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       }, 0);
                       const totalRestante    = sumRestante + pendingAmount;
                       const totalMensualidad = sumMensualidad + (pendingAmount > 0 && m.mesesTotal ? pendingAmount / m.mesesTotal : 0);
-                      const totalDif  = Number(m.totalDiferido) || (Number(m.total) + pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0));
+                      const totalDif  = totalOrigMsi;
 
                       // Detectar si los pagos pertenecen a distintos ciclos
                       const _pagosCicloKeys = pagos.map(p => {
@@ -1568,7 +1570,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
                       // Progreso padre
                       const totalMesesPosibles = (Number(m.mesesTotal) || 1) * Math.max(1, pagos.length);
-                      const sumMonto = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+                      const sumMonto = sumPagosMonto;
                       const pctParent = multiCiclo
                         ? Math.min(100, Math.round(sumMonto > 0
                             ? pagos.reduce((s, p) => s + (Number(p.mesesPagados) || 0) / (Number(m.mesesTotal) || 1) * ((Number(p.monto) || 0) / sumMonto), 0) * 100
@@ -2071,13 +2073,22 @@ function _seedParaOtroTipo(formId, compraActual, coleccionActual) {
   const raw  = Object.fromEntries(new FormData(document.getElementById(formId)));
   const [tarjetaId, numeroTarjeta] = (raw.tarjetaId || '').split('::');
   const esDiferido = raw.diferido === '1';
+  const totalForm  = Number(raw.total) || 0;
+  // Diferido: el campo Total del form muestra el total ORIGINAL (totalDiferido),
+  // no el pendiente — igual criterio que al guardar (btn-save-contado/btn-save-msi).
+  // Si ya venía diferido, el pendiente real vive en compraActual.total y hay que
+  // preservarlo; si el switch es lo que activa "Pagos diferidos" recién, no hay
+  // pendiente previo y el total completo arranca como pendiente (igual que al crear).
+  const totalPendiente = esDiferido && compraActual?.diferido
+    ? Number(compraActual.total) || 0
+    : totalForm;
   return {
     compra: raw.compra, tarjetaId, numeroTarjeta,
     fechaCompra: _applyTime(raw.fechaCompra, raw.fechaCompraTime),
     enlaceCompra: raw.enlaceCompra || '',
     diferido: esDiferido,
-    total: Number(raw.total) || 0,
-    ...(esDiferido ? { totalDiferido: Number(raw.total) || 0 } : {}),
+    total: totalPendiente,
+    ...(esDiferido ? { totalDiferido: totalForm } : {}),
     bonificacion: compraActual?.bonificacion || null,
     _switchFrom: { coleccion: coleccionActual, id: compraActual.id },
     _original: compraActual,
