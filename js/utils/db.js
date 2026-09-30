@@ -14,12 +14,21 @@ const userDoc  = (name, id) => doc(db, 'users', uid(), name, id);
 // Session-level in-memory cache (5-min TTL) — resets on page reload
 const _mem = new Map();
 const MEM_TTL  = 5 * 60 * 1000;
-const MEM_COLS = new Set(['tarjetas', 'instituciones', 'gastosFijos', 'inversiones']);
+const MEM_COLS = new Set(['gastosFijos', 'inversiones']);
 
-// localStorage cache (30-day TTL) — survives page reload
+// localStorage cache — survives page reload (y sin red: base de la vista de
+// Tarjetas offline). festivosMX cambia poco, TTL largo; tarjetas/instituciones
+// se editan seguido y pueden divergir entre dispositivos, así que su TTL es
+// corto — solo para aguantar quedarte sin señal un rato, no para reemplazar
+// el refetch normal en línea (que igual invalida al primer `update`/`create`).
 const LS_PREFIX = 'impactos_c_';
-const LS_TTL    = 30 * 24 * 60 * 60 * 1000;
-const LS_COLS   = new Set(['festivosMX']);
+const LS_TTL_DEFAULT = 30 * 24 * 60 * 60 * 1000; // 30 días
+const LS_TTLS = {
+  festivosMX:    LS_TTL_DEFAULT,
+  tarjetas:      24 * 60 * 60 * 1000, // 1 día
+  instituciones: 24 * 60 * 60 * 1000,
+};
+const LS_COLS = new Set(Object.keys(LS_TTLS));
 
 function _memGet(col) {
   const c = _mem.get(col);
@@ -42,8 +51,16 @@ function _lsGet(col) {
 }
 function _lsSet(col, data) {
   try {
-    localStorage.setItem(LS_PREFIX + col, JSON.stringify({ data, exp: Date.now() + LS_TTL }));
+    const ttl = LS_TTLS[col] ?? LS_TTL_DEFAULT;
+    localStorage.setItem(LS_PREFIX + col, JSON.stringify({ data, exp: Date.now() + ttl }));
   } catch {} // ignore quota errors
+}
+/** Lee el caché de localStorage ignorando su vencimiento — último recurso sin red. */
+function _lsGetStale(col) {
+  try {
+    const raw = localStorage.getItem(LS_PREFIX + col);
+    return raw ? JSON.parse(raw).data : null;
+  } catch { return null; }
 }
 
 function _invalidate(col) {
@@ -65,8 +82,19 @@ export async function getAll(col, ...constraints) {
     }
   }
 
-  const q    = constraints.length ? query(userCol(col), ...constraints) : userCol(col);
-  const snap = await getDocs(q);
+  const q = constraints.length ? query(userCol(col), ...constraints) : userCol(col);
+  let snap;
+  try {
+    snap = await getDocs(q);
+  } catch (e) {
+    // Sin red: para colecciones con caché persistente, un dato vencido sigue
+    // siendo mejor que nada — se sirve aunque ya haya pasado su TTL.
+    if (!constraints.length && LS_COLS.has(col)) {
+      const stale = _lsGetStale(col);
+      if (stale) return stale;
+    }
+    throw e;
+  }
   const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
   // Store in appropriate cache

@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v45';
+const CACHE = 'impactos-v46';
 
 const SHELL = [
   './',
@@ -24,6 +24,7 @@ const SHELL = [
   './js/modules/tarjetas.js',
   './js/utils/acumular.js',
   './js/utils/ciclo.js',
+  './js/utils/conectividad.js',
   './js/utils/db.js',
   './js/utils/formatters.js',
   './js/utils/impacto-calc.js',
@@ -138,13 +139,29 @@ self.addEventListener('fetch', e => {
   // pueden cachear ni son asunto nuestro: que las resuelva el navegador.
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
+  // Sonda de conectividad (utils/conectividad.js): tiene que golpear la red
+  // real y fallar limpio si no hay — la estrategia de abajo cae al caché
+  // cuando la red falla, así que sin este escape la sonda respondería
+  // "éxito" desde el caché aunque no haya internet, y el modo offline nunca
+  // se detectaría.
+  if (url.searchParams.has('swprobe')) return;
+
   // Firebase/Google APIs → siempre red, sin interceptar
   if (FIREBASE_HOSTS.some(h => url.hostname.includes(h))) return;
 
-  // Navegación (HTML) → red primero, fallback a index cacheado
+  // Navegación (HTML) → red primero, fallback a index cacheado.
+  // `ignoreVary`/`ignoreSearch`: GitHub Pages sirve con `Vary: Accept-Encoding`,
+  // y por default caches.match() exige que ese header coincida byte a byte con
+  // el de la petición actual — si no coincide, "encuentra" nada y devuelve
+  // undefined, lo que Chrome/Edge muestra como ERR_FAILED en vez de la página
+  // cacheada. Se intenta primero la entrada del shell ('./') y, si por algo
+  // tampoco está, la de la request tal cual, antes de rendirse.
   if (e.request.mode === 'navigate') {
     e.respondWith(
-      fetch(e.request).catch(() => caches.match('./'))
+      fetch(e.request).catch(async () => {
+        const opts = { ignoreSearch: true, ignoreVary: true };
+        return (await caches.match('./', opts)) || (await caches.match(e.request, opts));
+      })
     );
     return;
   }
@@ -167,11 +184,13 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Archivos locales → network first, caché solo si hay error de red (offline)
+  // Archivos locales → network first, caché solo si hay error de red (offline).
+  // ignoreVary: mismo motivo que en la navegación — sin esto, un Vary que no
+  // calce byte a byte hace que un archivo SÍ cacheado "no se encuentre" offline.
   e.respondWith(
     fetch(e.request).then(res => {
       guardarEnCache(e.request, res.clone()); // clonar ya, mismo motivo que arriba
       return res;
-    }).catch(() => caches.match(e.request))
+    }).catch(() => caches.match(e.request, { ignoreVary: true }))
   );
 });

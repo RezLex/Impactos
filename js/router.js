@@ -1,12 +1,23 @@
 const _routes = {};
 let _appContent = null;
 
+// Guard opcional (ver offline.js): recibe la ruta base a la que se navegaría
+// y devuelve la ruta a la que redirigir en su lugar, o null/undefined para
+// dejarla pasar. Desacopla router.js de la lógica de modo offline — no la
+// importa directamente para no crear una dependencia entre ambos módulos.
+let _guard = null;
+
 export function register(path, handler) {
   _routes[path] = handler;
 }
 
 export function navigate(path) {
   window.location.hash = '#' + path;
+}
+
+/** Registra (o quita, pasando null) la función que puede redirigir la navegación. */
+export function setGuard(fn) {
+  _guard = fn || null;
 }
 
 export function initRouter(contentEl) {
@@ -24,6 +35,9 @@ export function initRouter(contentEl) {
     const parts    = path.split('/').filter(Boolean);
     const base     = '/' + (parts[0] || '');
     const query    = new URLSearchParams(rawQuery);
+
+    const redirect = _guard ? _guard(base) : null;
+    if (redirect && redirect !== base) { navigate(redirect); return; }
 
     const handler = _routes[path] || _routes[base] || _routes['/'];
     if (handler) {

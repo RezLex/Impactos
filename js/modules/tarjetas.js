@@ -17,6 +17,28 @@ const TIPO_BADGE = {
 
 const TIPO_ORDER = { debito: 0, credito: 1, prestamo: 2 };
 
+// ── Último saldo conocido (offline) ─────────────────────────────────────────
+// contado/msi/gastos/pagosDiferidos/creditosTarjeta no tienen caché propia —
+// sin red, esa consulta falla. Se guarda aparte solo el saldoMap ya calculado
+// (chico, derivado) para poder mostrar la wallet con el último dato conocido
+// en vez de nada, dejando claro que no es en vivo.
+const SALDO_CACHE_KEY = 'impactos_saldo_wallet';
+
+function _guardarSaldoCache(saldoMap) {
+  try {
+    const plano = {};
+    saldoMap.forEach((v, k) => { if (v) plano[k] = v; });
+    localStorage.setItem(SALDO_CACHE_KEY, JSON.stringify({ data: plano, savedAt: new Date().toISOString() }));
+  } catch {}
+}
+
+function _leerSaldoCache() {
+  try {
+    const raw = localStorage.getItem(SALDO_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 function darkenHex(hex, amount = 45) {
   const h = (hex || '#607d8b').replace('#', '');
   const r = Math.max(0, parseInt(h.slice(0,2),16)-amount);
@@ -50,20 +72,37 @@ export async function render(container) {
 
 async function renderView(container) {
   try {
-    const [instituciones, tarjetas, festivosMX, contado, msi, gastos, pagosDiferidos, creditosTarjeta] = await Promise.all([
+    // instituciones/tarjetas/festivosMX tienen caché persistente (db.js) — con
+    // eso alcanza para ver la wallet (números, CLABE) sin conexión.
+    const [instituciones, tarjetas, festivosMX] = await Promise.all([
       getAll('instituciones'),
       getAll('tarjetas'),
       getAll('festivosMX'),
-      getAll('contado'),
-      getAll('msi'),
-      getAll('gastos', recentWhere('mes')),
-      getAll('pagosDiferidos'),
-      getAll('creditosTarjeta'),
     ]);
 
-    const saldoMap = new Map(
-      tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos, creditosTarjeta)])
-    );
+    // El saldo en vivo depende de colecciones sin caché — si no hay red, se
+    // usa el último saldoMap calculado con éxito en vez de tumbar la vista.
+    let saldoMap;
+    let saldoOffline = false;
+    let saldoDesde   = null; // fecha del último cálculo, cuando se usa el caché
+    try {
+      const [contado, msi, gastos, pagosDiferidos, creditosTarjeta] = await Promise.all([
+        getAll('contado'),
+        getAll('msi'),
+        getAll('gastos', recentWhere('mes')),
+        getAll('pagosDiferidos'),
+        getAll('creditosTarjeta'),
+      ]);
+      saldoMap = new Map(
+        tarjetas.map(t => [t.id, calcularSaldo(t, contado, msi, gastos, pagosDiferidos, creditosTarjeta)])
+      );
+      _guardarSaldoCache(saldoMap);
+    } catch {
+      const cache  = _leerSaldoCache();
+      saldoMap     = new Map(Object.entries(cache?.data || {}));
+      saldoOffline = true;
+      saldoDesde   = cache?.savedAt || null;
+    }
 
     const instMap = {};
     instituciones.forEach(i => { instMap[i.id] = i; });
@@ -79,6 +118,11 @@ async function renderView(container) {
           <p>${tarjetas.filter(t => !t.oculta).length} tarjetas</p>
         </div>
       </div>
+      ${saldoOffline ? `
+      <div class="alert alert-warning py-2 mb-3" style="font-size:0.82rem">
+        <i class="bi bi-wifi-off me-1"></i>Sin conexión — el disponible/usado es el último dato
+        conocido${saldoDesde ? ` (${fmtShortDate(saldoDesde.slice(0, 10))})` : ''}, no en vivo.
+      </div>` : ''}
       <div class="filter-bar">
         <div class="filter-chips" id="filtro-tipo">
           <button class="filter-chip active" data-tipo="todos">Todas</button>

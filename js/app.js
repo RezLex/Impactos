@@ -1,8 +1,9 @@
 import { initAuth }   from './auth.js';
-import { initRouter, register, navigate } from './router.js';
+import { initRouter, register, navigate, setGuard } from './router.js';
 import { clearCache } from './utils/db.js';
+import { iniciarMonitorConexion, onCambioConexion, estaOffline } from './utils/conectividad.js';
 
-const APP_VERSION = '1.9.3-T27';
+const APP_VERSION = '1.9.3-T28';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -143,6 +144,62 @@ function setupFab() {
     })
   );
 }
+
+// ── Modo offline ──────────────────────────────────────────────────────────────
+// Sin conexión, la única vista que sigue funcionando es Tarjetas (números,
+// CLABE, todo con caché propia en db.js/tarjetas.js) — el resto depende de
+// lecturas/escrituras en vivo que fallarían. El guard del router redirige
+// cualquier intento de navegar fuera de ahí, y esto esconde el resto del menú
+// para que ni se pueda intentar.
+const RUTA_OFFLINE = '/tarjetas';
+
+function _rutaActual() {
+  return '/' + (location.hash.replace('#', '').split('?')[0].split('/').filter(Boolean)[0] || '');
+}
+
+// `.bottom-nav-item`/`.sidebar-nav li` fijan su propio `display` en la hoja de
+// estilos, que le gana en especificidad al `[hidden]` nativo — se oculta con
+// `style.display` directo, que siempre gana salvo por un `!important` externo.
+const _ocultar = (el, ocultar) => { el.style.display = ocultar ? 'none' : ''; };
+
+function aplicarModoOffline(offline) {
+  document.querySelectorAll('#sidebar [data-route], .bottom-nav [data-route]').forEach(el => {
+    const esTarjetas = el.dataset.route === RUTA_OFFLINE;
+    const item = el.closest('li') || el; // <li> en el sidebar; el propio <a> en la bottom nav
+    _ocultar(item, offline && !esTarjetas);
+  });
+
+  const adminLabel = document.querySelector('.sidebar-section-settings');
+  if (adminLabel) {
+    _ocultar(adminLabel, offline);
+    if (adminLabel.nextElementSibling?.classList.contains('sidebar-nav')) {
+      _ocultar(adminLabel.nextElementSibling, offline);
+    }
+  }
+
+  document.getElementById('quick-add-fab')?.classList.toggle('d-none', offline);
+
+  let banner = document.getElementById('offline-banner');
+  if (offline && !banner) {
+    banner = document.createElement('div');
+    banner.id = 'offline-banner';
+    banner.innerHTML = '<i class="bi bi-wifi-off me-1"></i>Sin conexión — solo Tarjetas está disponible';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2000;padding:6px 12px;' +
+      'background:#b45309;color:#fff;text-align:center;font-size:0.82rem;';
+    document.body.prepend(banner);
+  } else if (!offline && banner) {
+    banner.remove();
+  }
+}
+
+setGuard(base => (estaOffline() && base !== RUTA_OFFLINE) ? RUTA_OFFLINE : null);
+
+onCambioConexion(offline => {
+  aplicarModoOffline(offline);
+  if (offline && _rutaActual() !== RUTA_OFFLINE) navigate(RUTA_OFFLINE);
+});
+
+iniciarMonitorConexion();
 
 // ── Service Worker ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
