@@ -44,15 +44,21 @@ export function calcularMes(ciclo, year, month, festivosMX = []) {
   }
 
   // Mode A/B: cut-off day is the anchor
-  let fechaCorte = _clampDay(year, month, Number(ciclo.diaCorte));
-  fechaCorte = _ajustar(fechaCorte, ciclo.ajusteCorte || 'siguiente', festivos);
+  const corteNominal  = _clampDay(year, month, Number(ciclo.diaCorte));
+  const corteAjustado = _ajustar(new Date(corteNominal), ciclo.ajusteCorte || 'siguiente', festivos);
+  // `corteSoloCalculo`: el banco reporta el corte nominal (p.ej. el 26 aunque
+  // caiga en fin de semana), pero cuenta los días al pago desde el hábil
+  // siguiente. Con esta bandera se muestra el nominal y el ajuste solo se usa
+  // para calcular fechaPago (vía baseB más abajo) — sin ella, comportamiento
+  // igual que siempre (se muestra y se calcula desde el corte ya ajustado).
+  let fechaCorte = ciclo.corteSoloCalculo ? corteNominal : corteAjustado;
 
   let fechaPago = null;
   if (ciclo.diasAlPago) {
     // Mode B: payment is N days after cut-off
     const baseB = ciclo.baseCalculo === 'original'
-      ? _clampDay(year, month, Number(ciclo.diaCorte))
-      : fechaCorte;
+      ? corteNominal
+      : corteAjustado;
     fechaPago = new Date(baseB);
     fechaPago.setDate(fechaPago.getDate() + Number(ciclo.diasAlPago));
     fechaPago = _ajustar(fechaPago, ciclo.ajustePago || 'siguiente', festivos);

@@ -3,7 +3,7 @@
  * Sin framework ni dependencias: `node test/ciclo.test.mjs`.
  */
 import assert from 'node:assert/strict';
-import { gastoFijoDisponible, anteriorNomina, toISODate } from '../js/utils/ciclo.js';
+import { gastoFijoDisponible, anteriorNomina, toISODate, calcularMes } from '../js/utils/ciclo.js';
 
 let pasadas = 0, fallidas = 0;
 const test = (nombre, fn) => {
@@ -57,6 +57,32 @@ test('transferencia: mismo criterio original, fecha ≤ hoy', () => {
 test('formaPago vacío o sin especificar: mismo criterio original', () => {
   assert.equal(gastoFijoDisponible('', FECHA_COBRO, '2026-03-19'), false);
   assert.equal(gastoFijoDisponible(undefined, FECHA_COBRO, '2026-03-20'), true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('calcularMes — corteSoloCalculo');
+
+// Corte día 26, +20 días al pago. 26-sep-2026 cae sábado.
+const CICLO_B = { diaCorte: 26, diasAlPago: 20, ajusteCorte: 'siguiente', ajustePago: 'siguiente' };
+
+test('sin corteSoloCalculo: corte y pago se calculan ambos desde el hábil siguiente (28-sep)', () => {
+  const p = calcularMes(CICLO_B, 2026, 8, []); // septiembre (0-indexed)
+  assert.equal(toISODate(p.fechaCorte), '2026-09-28');
+  assert.equal(toISODate(p.fechaPago), '2026-10-19');
+});
+
+test('con corteSoloCalculo: se muestra el corte nominal (26) pero el pago se sigue contando desde el hábil siguiente', () => {
+  const p = calcularMes({ ...CICLO_B, corteSoloCalculo: true }, 2026, 8, []);
+  assert.equal(toISODate(p.fechaCorte), '2026-09-26');
+  assert.equal(toISODate(p.fechaPago), '2026-10-19');
+});
+
+test('corteSoloCalculo no afecta un corte que ya cae en día hábil', () => {
+  // 20-nov-2026 es viernes, ya hábil — nominal y ajustado coinciden.
+  const p1 = calcularMes(CICLO_B, 2026, 10, []);
+  const p2 = calcularMes({ ...CICLO_B, corteSoloCalculo: true }, 2026, 10, []);
+  assert.equal(toISODate(p1.fechaCorte), toISODate(p2.fechaCorte));
+  assert.equal(toISODate(p1.fechaPago), toISODate(p2.fechaPago));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

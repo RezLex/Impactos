@@ -662,6 +662,19 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
                 <label class="form-check-label" for="baseCalculo">Usar día original como base</label>
               </div>
             </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="corteSoloCalculo"
+                  ${card?.ciclo?.corteSoloCalculo ? 'checked' : ''}>
+                <label class="form-check-label" for="corteSoloCalculo">
+                  Mostrar corte nominal (el ajuste solo cuenta para calcular la fecha de pago)
+                </label>
+                <div class="form-text">
+                  Para bancos que reportan el día de corte configurado tal cual (p.ej. el 26 aunque
+                  caiga en fin de semana), pero cuentan los "días al pago" desde el siguiente hábil.
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </form>`,
@@ -787,6 +800,7 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
       ciclo.ajusteCorte = raw.ajusteCorte || 'siguiente';
       ciclo.ajustePago  = raw.ajustePago  || 'siguiente';
       if (document.getElementById('baseCalculo').checked) ciclo.baseCalculo = 'original';
+      if (document.getElementById('corteSoloCalculo').checked) ciclo.corteSoloCalculo = true;
       if (Object.keys(ciclo).length > 2) data.ciclo = ciclo;
     }
 
