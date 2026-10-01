@@ -26,45 +26,82 @@ const _fechaComparable = s => {
   return new Date(String(s).length === 10 ? s + 'T23:59:59' : s);
 };
 
-export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = [], pagosDiferidos = [], creditosTarjeta = []) {
-  if (tarjeta.saldoDisponible == null || tarjeta.tipo === 'debito') return null;
-
-  const fechaRef = tarjeta.fechaActualizacionSaldo || null;
-  const limite   = tarjeta.limiteTotal != null ? Number(tarjeta.limiteTotal) : null;
-  const baseDisp = Number(tarjeta.saldoDisponible);
-
-  let gastoPosterior = 0;
-
+/**
+ * Detalle de los eventos (compras, gastos, pagos diferidos, saldo a favor)
+ * posteriores a `fechaActualizacionSaldo` de la tarjeta — lo mismo que suma
+ * `calcularSaldo()` en `gastoPosterior`, pero como lista para mostrarla.
+ *
+ * @returns {Array<{tipo: 'contado'|'msi'|'gasto'|'pagoDiferido'|'credito',
+ *   nombre: string, fecha: string, monto: number, id: string}>} `monto` con
+ *   signo: positivo resta del disponible, negativo lo suma (saldo a favor).
+ */
+export function detalleEventosPosteriores(tarjeta, contado = [], msi = [], gastos = [], pagosDiferidos = [], creditosTarjeta = []) {
+  const fechaRef  = tarjeta.fechaActualizacionSaldo || null;
   const refDate   = fechaRef ? new Date(fechaRef) : null;
   const posterior = (fecha) => !!fecha && (refDate ? _fechaComparable(fecha) > refDate : true);
 
+  const eventos = [];
+
   contado.forEach(c => {
-    if (c.tarjetaId === tarjeta.id && posterior(c.fechaCompra))
-      gastoPosterior += Number(c.total) || 0;
+    if (c.tarjetaId !== tarjeta.id || !posterior(c.fechaCompra)) return;
+    if (!c.diferido) {
+      eventos.push({ tipo: 'contado', nombre: c.compra || 'Compra de contado', fecha: c.fechaCompra, monto: Number(c.total) || 0, id: c.id });
+      return;
+    }
+    // Diferida: `c.total` (el campo guardado) puede arrastrar un residuo de
+    // redondeo frente a los pagos realmente registrados — se recalcula en
+    // vivo (totalDiferido − pagos), igual que ya hace la UI para pintar el
+    // check de "completa", en vez de confiar en el campo guardado.
+    const totalOrig  = Number(c.totalDiferido ?? c.total) || 0;
+    const registrado = pagosDiferidos
+      .filter(p => p.compraId === c.id)
+      .reduce((s, p) => s + (Number(p.monto) || 0), 0);
+    const pendienteReal = totalOrig - registrado;
+    if (pendienteReal >= 0.005) {
+      eventos.push({ tipo: 'contado', nombre: c.compra || 'Compra de contado', fecha: c.fechaCompra, monto: pendienteReal, id: c.id });
+    }
   });
 
   msi.forEach(m => {
     if (m.diferido) return; // límites solo afectados por pagosDiferidos registrados
     if (m.tarjetaId === tarjeta.id && posterior(m.fechaCompra))
-      gastoPosterior += Number(m.total) || 0;
+      eventos.push({ tipo: 'msi', nombre: m.compra || 'Compra a MSI', fecha: m.fechaCompra, monto: Number(m.total) || 0, id: m.id });
   });
 
   gastos.forEach(g => {
     if (g.tarjetaId === tarjeta.id && g.estado === 'registrado' && posterior(g.fechaPago))
-      gastoPosterior += Number(g.importe) || 0;
+      eventos.push({ tipo: 'gasto', nombre: g.nombre || 'Gasto', fecha: g.fechaPago, monto: Number(g.importe) || 0, id: g.id });
   });
 
   // Pagos diferidos restan por su propia fecha (independiente del registro padre)
   pagosDiferidos.forEach(p => {
-    if (p.tarjetaId === tarjeta.id && posterior(p.fecha))
-      gastoPosterior += Number(p.monto) || 0;
+    if (p.tarjetaId === tarjeta.id && posterior(p.fecha)) {
+      const compra = contado.find(c => c.id === p.compraId) || msi.find(m => m.id === p.compraId);
+      eventos.push({
+        tipo: 'pagoDiferido',
+        nombre: compra?.compra ? `Pago diferido — ${compra.compra}` : 'Pago diferido',
+        fecha: p.fecha, monto: Number(p.monto) || 0, id: p.id,
+      });
+    }
   });
 
   // Créditos a favor (bonificación, cancelación, conversión) suman disponible por su propia fecha
   creditosTarjeta.forEach(c => {
     if (c.tarjetaId === tarjeta.id && posterior(c.fecha))
-      gastoPosterior -= Number(c.monto) || 0;
+      eventos.push({ tipo: 'credito', nombre: c.nota || 'Saldo a favor', fecha: c.fecha, monto: -(Number(c.monto) || 0), id: c.id });
   });
+
+  return eventos.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+}
+
+export function calcularSaldo(tarjeta, contado = [], msi = [], gastos = [], pagosDiferidos = [], creditosTarjeta = []) {
+  if (tarjeta.saldoDisponible == null || tarjeta.tipo === 'debito') return null;
+
+  const limite   = tarjeta.limiteTotal != null ? Number(tarjeta.limiteTotal) : null;
+  const baseDisp = Number(tarjeta.saldoDisponible);
+
+  const gastoPosterior = detalleEventosPosteriores(tarjeta, contado, msi, gastos, pagosDiferidos, creditosTarjeta)
+    .reduce((s, e) => s + e.monto, 0);
 
   const disponible = r2(Math.max(0, baseDisp - gastoPosterior));
   const usado      = limite != null ? r2(Math.max(0, limite - disponible)) : null;

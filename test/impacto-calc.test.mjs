@@ -3,7 +3,7 @@
  * Sin framework: `node test/impacto-calc.test.mjs`.
  */
 import assert from 'node:assert/strict';
-import { getPlazosMes, getPagosDiferidosMes, getGastosFijosPendientes, getCreditosMes, calcularEstimadoTarjeta } from '../js/utils/impacto-calc.js';
+import { getPlazosMes, getPagosDiferidosMes, getGastosFijosPendientes, getCreditosMes, calcularEstimadoTarjeta, getContadoMes } from '../js/utils/impacto-calc.js';
 
 let pasadas = 0;
 const test = (nombre, fn) => { fn(); pasadas++; console.log('ok  ' + nombre); };
@@ -54,6 +54,59 @@ test('getPlazosMes: liquidado manualmente excluye sin importar el mes', () => {
 test('getPlazosMes: otra tarjeta no entra aunque coincida la fecha', () => {
   const r = getPlazosMes([msi({ tarjetaId: 'otra' })], TARJETA_ID, CICLO, '2026-01', FESTIVOS);
   assert.equal(r.length, 0);
+});
+
+// ── fechaEfectiva: ubica el periodo en vez de fechaCompra cuando está presente ──
+
+const contadoItem = (over = {}) => ({ id: 'c1', tarjetaId: TARJETA_ID, fechaCompra: '2026-01-10', total: 500, ...over });
+
+test('getContadoMes: sin fechaEfectiva, ubica por fechaCompra (comportamiento de siempre)', () => {
+  const r = getContadoMes([contadoItem()], TARJETA_ID, CICLO, '2026-01', FESTIVOS);
+  assert.equal(r.length, 1);
+});
+
+test('getContadoMes: con fechaEfectiva, ubica por esa fecha en vez de fechaCompra', () => {
+  // fechaCompra en enero, fechaEfectiva en marzo — debe aparecer en marzo, no en enero.
+  const c = contadoItem({ fechaEfectiva: '2026-03-10' });
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-03', FESTIVOS).length, 1);
+});
+
+// ── Diferida de Contado sin resolver: se recorre al siguiente ciclo si el
+// CORTE del ciclo original ya pasó (no espera hasta la fecha de pago) ───────
+
+test('getContadoMes: diferida sin vencer (antes de su corte) se queda en su mes natural', () => {
+  // Corte 20-ene, pago 4-feb. "Hoy" todavía antes del corte → sin recorrer.
+  const c = contadoItem({ diferido: true, total: 500, totalDiferido: 500 });
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS, '2026-01-15').length, 1);
+});
+
+test('getContadoMes: diferida con su corte ya pasado (aunque falte para el pago) y sin pagos registrados se recorre al siguiente ciclo', () => {
+  // Corte 20-ene ya pasó para "hoy" 25-ene, aunque el pago (4-feb) todavía no
+  // llegue. Debe desaparecer de enero y aparecer en febrero (corte 20-feb).
+  const c = contadoItem({ diferido: true, total: 500, totalDiferido: 500 });
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS, '2026-01-25').length, 0);
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-02', FESTIVOS, '2026-01-25').length, 1);
+});
+
+test('getContadoMes: diferida con corte pasado y pago parcial también se recorre (lo que falta, no lo ya registrado)', () => {
+  const c = contadoItem({ diferido: true, total: 300, totalDiferido: 500 }); // $200 ya registrados aparte
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS, '2026-01-25').length, 0);
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-02', FESTIVOS, '2026-01-25').length, 1);
+});
+
+test('getContadoMes: diferida ya completamente registrada no se recorre ni aparece en ningún mes', () => {
+  const c = contadoItem({ diferido: true, total: 0, totalDiferido: 500 });
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS, '2026-02-10').length, 0);
+  assert.equal(getContadoMes([c], TARJETA_ID, CICLO, '2026-02', FESTIVOS, '2026-02-10').length, 0);
+});
+
+test('getPlazosMes: con fechaEfectiva, el calendario de cuotas arranca desde esa fecha', () => {
+  // fechaCompra en enero, fechaEfectiva en marzo — la primera cuota debe caer
+  // en el ciclo de marzo, no en el de enero.
+  const m = msi({ fechaEfectiva: '2026-03-10', mesesPagados: 0 });
+  assert.equal(getPlazosMes([m], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
+  assert.equal(getPlazosMes([m], TARJETA_ID, CICLO, '2026-03', FESTIVOS).length, 1);
 });
 
 const pago = (over = {}) => ({ id: 'p1', tarjetaId: TARJETA_ID, compraId: 'c1', fecha: '2026-01-10', ...over });
@@ -114,6 +167,14 @@ test('calcularEstimadoTarjeta: resta los créditos aplicados del estimadoTotal',
   assert.equal(sinCredito.estimadoTotal, 500);
   assert.equal(conCredito.creditosAplicados, 150);
   assert.equal(conCredito.estimadoTotal, 350);
+});
+
+test('calcularEstimadoTarjeta: estimadoTotal no baja de 0 aunque el crédito del mes supere lo cobrado', () => {
+  const tarjeta = { id: TARJETA_ID, ciclo: CICLO };
+  const contadoItems = [{ id: 'c1', tarjetaId: TARJETA_ID, fechaCompra: '2026-01-05', total: 200 }];
+  const r = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-01', [], [credito({ monto: 996.63 })]);
+  assert.equal(r.creditosAplicados, 996.63, 'el crédito real se sigue reportando completo, sin recortar');
+  assert.equal(r.estimadoTotal, 0, 'pero el monto a pagar tiene piso en 0');
 });
 
 // ── getGastosFijosPendientes ─────────────────────────────────────────────────

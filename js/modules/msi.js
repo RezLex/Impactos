@@ -63,7 +63,7 @@ const _addTime = s => {
 import { currency, fmtDate, r2 } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from '../utils/ciclo.js';
-import { getGastosFijosPendientes } from '../utils/impacto-calc.js';
+import { getGastosFijosPendientes, getContadoMes } from '../utils/impacto-calc.js';
 import { limitarDisponible } from '../utils/saldo.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
@@ -211,6 +211,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
       const nuevos   = [];
       const migrar   = []; // registros sin estado → actualizar a 'pendiente'
+      const aBorrar  = []; // 'pendiente' creado antes de la regla vigente de disponibilidad
 
       gastosFijosItems.forEach(gasto => {
         const existente = existeMap.get(gasto.id);
@@ -219,6 +220,25 @@ async function renderView(container, initialTab = 'contado', query = null) {
           if (!existente.estado) {
             migrar.push(existente.id);
             existente.estado = 'pendiente';
+            return;
+          }
+          // Autocorrección permanente, no un parche de una sola vez: si
+          // `gastoFijoDisponible` cambia de criterio (como pasó al quitar que
+          // "automático"/"retiro" estuvieran siempre disponibles antes de su
+          // fecha), los documentos 'pendiente' ya creados bajo la regla vieja
+          // no se re-evalúan solos — quedan "Por confirmar" para siempre
+          // aunque su fecha todavía no llegue. Este chequeo corre cada vez que
+          // se abre la pestaña Gastos y borra esos documentos prematuros con
+          // el criterio VIGENTE; se vuelven a crear solos, ya bien, cuando
+          // `gastoFijoDisponible` diga que sí les toca (mismo criterio que
+          // usa el alta de `nuevos` más abajo). Déjalo aquí: si el criterio de
+          // disponibilidad vuelve a cambiar en el futuro, esto limpia solo los
+          // documentos que quedaron de la regla anterior.
+          if (existente.estado === 'pendiente' && existente.fechaPago) {
+            const fechaDoc = new Date(existente.fechaPago + 'T12:00:00');
+            if (!gastoFijoDisponible(gasto.formaPago, fechaDoc, _hoy, festivosMX)) {
+              aBorrar.push(existente.id);
+            }
           }
           return;
         }
@@ -242,6 +262,10 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
       await Promise.all([
         ...migrar.map(id => update('gastos', id, { estado: 'pendiente' })),
+        ...aBorrar.map(id => remove('gastos', id).then(() => {
+          const idx = gastosItems.findIndex(g => g.id === id);
+          if (idx >= 0) gastosItems.splice(idx, 1);
+        })),
         ...nuevos.map(d => create('gastos', d).then(id => gastosItems.push({ ...d, id }))),
       ]);
     }
@@ -290,14 +314,13 @@ async function renderView(container, initialTab = 'contado', query = null) {
         if (c.diferido && (pagosMap[c.id] || []).length > 0 && tc?.tipo === 'credito' && tc?.ciclo) {
           return _getPagosEnCiclo(pagosMap[c.id], tc, filtroContadoMes, festivosMX).length > 0;
         }
-        if (tc?.tipo === 'credito' && tc?.ciclo && c.fechaCompra) {
-          const compra = new Date(String(c.fechaCompra).includes('T') ? c.fechaCompra : c.fechaCompra + 'T12:00:00');
-          let y = compra.getFullYear(), m = compra.getMonth();
-          let p = calcularMes(tc.ciclo, y, m, festivosMX);
-          if (p.fechaCorte < compra) { const nx = new Date(y, m + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
-          if (p.fechaPago) return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago).slice(0, 7) === filtroContadoMes;
+        // Mismo motor que Impacto (getContadoMes): respeta fechaEfectiva y
+        // recorre al siguiente ciclo una diferida sin resolver cuyo pago ya
+        // venció, en vez de duplicar esa lógica aparte y que se desincronice.
+        if (tc?.tipo === 'credito' && tc?.ciclo) {
+          return getContadoMes([c], c.tarjetaId, tc.ciclo, filtroContadoMes, festivosMX).length > 0;
         }
-        return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
+        return ((c.fechaEfectiva || c.fechaCompra) || '').slice(0, 7) === filtroContadoMes;
       });
 
       const byInst = {};
@@ -448,7 +471,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
                 <td>
                   <div class="d-flex gap-1">
                     <button class="btn-icon btn-edit-pago-diferido" data-id="${p.id}"><i class="bi bi-pencil"></i></button>
-                    <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${id}" data-monto="${p.monto}"><i class="bi bi-trash3"></i></button>
+                    <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${id}"><i class="bi bi-trash3"></i></button>
                   </div>
                 </td>
               </tr>`).join('');
@@ -466,11 +489,10 @@ async function renderView(container, initialTab = 'contado', query = null) {
                 btn.addEventListener('click', async e => {
                   e.stopPropagation();
                   const pagoId = btn.dataset.id;
-                  const monto = Number(btn.dataset.monto) || 0;
                   if (!confirm('¿Eliminar este pago?')) return;
                   await remove('pagosDiferidos', pagoId);
                   pagosDiferidos.splice(pagosDiferidos.findIndex(x => x.id === pagoId), 1);
-                  compra.total = (Number(compra.total) || 0) + monto;
+                  compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
                   await update('contado', compra.id, { total: compra.total });
                   toast('Pago eliminado');
                   _rerenderAcordeon('contado-accordion', renderContado);
@@ -519,14 +541,13 @@ async function renderView(container, initialTab = 'contado', query = null) {
           e.stopPropagation();
           const pagoId = btn.dataset.id;
           const compraId = btn.dataset.compraId;
-          const monto = Number(btn.dataset.monto) || 0;
           if (!confirm('¿Eliminar este pago?')) return;
           await remove('pagosDiferidos', pagoId);
           const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
           if (idx >= 0) pagosDiferidos.splice(idx, 1);
           const compra = contadoItems.find(x => x.id === compraId);
           if (compra) {
-            compra.total = (Number(compra.total) || 0) + monto;
+            compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
             await update('contado', compraId, { total: compra.total });
           }
           toast('Pago eliminado');
@@ -621,11 +642,11 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
       const subtitle = document.getElementById('compras-subtitle');
       if (subtitle) {
-        const label = filtro === 'curso' ? 'en curso' : filtro === 'liquidados' ? 'liquidadas' : 'en total';
+        const label = filtro === 'curso' ? 'en curso' : filtro === 'liquidados' ? 'completadas' : 'en total';
         subtitle.textContent = `${filtered.length} compra${filtered.length !== 1 ? 's' : ''} a plazos ${label}`;
       }
 
-      const emptyMsg = filtro === 'liquidados' ? 'Sin compras a plazos liquidadas'
+      const emptyMsg = filtro === 'liquidados' ? 'Sin compras a plazos completadas'
         : filtro === 'curso' ? 'Sin compras a plazos en curso'
         : 'Sin compras a plazos registradas';
 
@@ -648,7 +669,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
             </div>
             <div class="metric-info">
               <div class="metric-value">${filtered.length}</div>
-              <div class="metric-label">${filtro === 'liquidados' ? 'Compras liquidadas' : 'Compras registradas'}</div>
+              <div class="metric-label">${filtro === 'liquidados' ? 'Compras completadas' : 'Compras registradas'}</div>
             </div>
           </div>
         </div>` : `
@@ -679,7 +700,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
         <div class="filter-bar">
           <div class="filter-chips" id="filtro-msi">
             <button class="filter-chip ${filtro === 'curso'      ? 'active' : ''}" data-filtro="curso">En curso</button>
-            <button class="filter-chip ${filtro === 'liquidados' ? 'active' : ''}" data-filtro="liquidados">Liquidados</button>
+            <button class="filter-chip ${filtro === 'liquidados' ? 'active' : ''}" data-filtro="liquidados">Completados</button>
             <button class="filter-chip ${filtro === 'todos'      ? 'active' : ''}" data-filtro="todos">Todos</button>
           </div>
         </div>
@@ -753,10 +774,10 @@ async function renderView(container, initialTab = 'contado', query = null) {
           toast('Mensualidad registrada');
           if (nuevosMeses >= Number(m.mesesTotal) && !m.liquidado) {
             setTimeout(() => {
-              if (confirm(`"${m.compra}" tiene todos sus meses pagados.\n¿Marcarla como liquidada?`)) {
+              if (confirm(`"${m.compra}" tiene todos sus meses pagados.\n¿Marcarla como completada?`)) {
                 const fechaLiquidacion = toISODate(new Date());
                 update('msi', m.id, { liquidado: true, restante: 0, fechaLiquidacion })
-                  .then(() => { Object.assign(m, { liquidado: true, restante: 0, fechaLiquidacion }); toast('Compra liquidada'); renderPlazos(filtroMsi); })
+                  .then(() => { Object.assign(m, { liquidado: true, restante: 0, fechaLiquidacion }); toast('Compra completada'); renderPlazos(filtroMsi); })
                   .catch(err => toast('Error: ' + err.message, 'danger'));
               } else { renderPlazos(filtroMsi); }
             }, 300);
@@ -802,11 +823,11 @@ async function renderView(container, initialTab = 'contado', query = null) {
           e.stopPropagation();
           const m = msiItems.find(x => x.id === btn.dataset.id);
           if (!m) return;
-          if (!confirm(`¿Liquidar "${m.compra}"?\n\nSe marcará como pagada en su totalidad.`)) return;
+          if (!confirm(`¿Marcar "${m.compra}" como completada?\n\nSe marcará como pagada en su totalidad.`)) return;
           const fechaLiquidacion = toISODate(new Date());
           await update('msi', m.id, { liquidado: true, mesesPagados: m.mesesTotal, restante: 0, fechaLiquidacion });
           Object.assign(m, { liquidado: true, mesesPagados: m.mesesTotal, restante: 0, fechaLiquidacion });
-          toast('Compra liquidada');
+          toast('Compra completada');
           renderPlazos(filtroMsi);
         }));
 
@@ -847,14 +868,13 @@ async function renderView(container, initialTab = 'contado', query = null) {
           e.stopPropagation();
           const pagoId  = btn.dataset.id;
           const compraId = btn.dataset.compraId;
-          const monto   = Number(btn.dataset.monto) || 0;
           if (!confirm('¿Eliminar este pago?')) return;
           await remove('pagosDiferidos', pagoId);
           const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
           if (idx >= 0) pagosDiferidos.splice(idx, 1);
           const compra = msiItems.find(x => x.id === compraId);
           if (compra) {
-            compra.total = (Number(compra.total) || 0) + monto;
+            compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
             await update('msi', compraId, { total: compra.total });
           }
           toast('Pago eliminado');
@@ -890,7 +910,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
               'Restante':      (Number(m.restante) || 0).toFixed(2),
               'Total':         (Number(m.total) || 0).toFixed(2),
               'Diferido':      m.diferido ? 'Sí' : 'No',
-              'Liquidado':     m.liquidado ? 'Sí' : 'No',
+              'Completado':    m.liquidado ? 'Sí' : 'No',
               'Impacto':       impactoM.toFixed(2),
             };
           });
@@ -990,12 +1010,11 @@ async function renderView(container, initialTab = 'contado', query = null) {
       const hoy       = toISODate(now);
 
       // Gastos fijos del mes que todavía no se aplican — 'pendiente' (antes de
-      // su fecha/quincena) o 'porConfirmar' (ya disponible; es el mismo
+      // su fecha) o 'porConfirmar' (ya disponible; es el mismo
       // `estado: 'pendiente'` de Firestore de siempre, solo con otra etiqueta).
       const gastosFijosPendientes = getGastosFijosPendientes(gastosFijosItems, gastosItems, mesActual, festivosMX, hoy);
-      const porConfirmar        = gastosFijosPendientes.filter(g => g.estatus === 'porConfirmar');
-      const pendientesTempranos = gastosFijosPendientes.filter(g => g.estatus === 'pendiente');
-      // Para los botones Confirmar/Descartar de ambas listas y de la tabla —
+      const porConfirmar = gastosFijosPendientes.filter(g => g.estatus === 'porConfirmar');
+      // Para los botones Confirmar/Descartar de la lista y de la tabla —
       // algunas filas todavía no tienen doc en Firestore (`id: null`).
       const gastosFijosPendientesPorId = new Map(gastosFijosPendientes.map(g => [g.gastaFijoId, g]));
 
@@ -1096,14 +1115,6 @@ async function renderView(container, initialTab = 'contado', query = null) {
         </p>
         <div class="list-group mb-4">
           ${porConfirmar.map(g => filaListaGasto(g, { vencido: g.fechaPago <= hoy })).join('')}
-        </div>` : ''}
-
-        ${pendientesTempranos.length > 0 ? `
-        <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
-          <i class="bi bi-calendar3 me-1"></i>Gastos Fijos — Pendientes del mes
-        </p>
-        <div class="list-group mb-4">
-          ${pendientesTempranos.map(g => filaListaGasto(g, { vencido: false })).join('')}
         </div>` : ''}
 
         <p class="text-muted fw-semibold mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em">
@@ -1280,6 +1291,15 @@ function _getPagosEnCiclo(pagos, tc, mes, festivosMX) {
   });
 }
 
+// La fecha que de verdad ubica el periodo va arriba y destacada; la fecha de
+// compra real baja a referencia chica debajo cuando difieren.
+function _fechaCompraCell(item) {
+  const real = item.fechaCompra ? fmtDate(item.fechaCompra) : '—';
+  if (!item.fechaEfectiva) return real;
+  return `<span class="text-info" title="Ubicada en el periodo de esta fecha en vez de la de compra"><i class="bi bi-calendar-event me-1"></i>${fmtDate(item.fechaEfectiva)}</span>`
+    + `<br><small class="text-muted" title="Fecha de compra real">${real}</small>`;
+}
+
 function _creditoBadge(compraId, creditosMap) {
   const list = creditosMap[compraId] || [];
   if (!list.length) return '';
@@ -1375,7 +1395,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           ${_creditoBadge(c.id, creditosMap)}
                         </td>
                         <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
-                        <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
+                        <td style="white-space:nowrap">${_fechaCompraCell(c)}</td>
                         <td style="white-space:nowrap">${_pagoCell(filtroMes && pagos.length ? pagos[0].fecha : c.fechaCompra)}</td>
                         <td class="text-end">
                           ${_bonifTotal(c, totalVal, bonif)}
@@ -1400,7 +1420,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                           <td>
                             <div class="d-flex gap-1">
                               <button class="btn-icon btn-edit-pago-diferido" data-id="${p.id}" title="Editar pago"><i class="bi bi-pencil"></i></button>
-                              <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${c.id}" data-monto="${p.monto}" title="Eliminar pago"><i class="bi bi-trash3"></i></button>
+                              <button class="btn-icon danger btn-del-pago-diferido" data-id="${p.id}" data-compra-id="${c.id}" title="Eliminar pago"><i class="bi bi-trash3"></i></button>
                             </div>
                           </td>
                         </tr>`).join('') : '';
@@ -1417,7 +1437,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                         </div>
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
-                      <td style="white-space:nowrap">${c.fechaCompra ? fmtDate(c.fechaCompra) : '—'}</td>
+                      <td style="white-space:nowrap">${_fechaCompraCell(c)}</td>
                       <td style="white-space:nowrap">${_pagoCell(c.fechaCompra)}</td>
                       <td class="text-end">${_bonifTotal(c, Number(c.total) || 0, !!tc?.inst?.bonificacionConIva)}</td>
                       <td>
@@ -1477,7 +1497,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
     : `<span>Deuda: <strong>${currency(deuda)}</strong></span>
        <span class="d-none d-sm-inline">Mensualidad: <strong>${currency(mens)}</strong></span>`;
 
-  const thUltimo   = filtro === 'liquidados' ? 'Liquidado' : 'Último Pago';
+  const thUltimo   = filtro === 'liquidados' ? 'Completado' : 'Último Pago';
   const thRestante = mostrarTotal ? 'Total' : 'Restante';
 
   return `
@@ -1516,7 +1536,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                   .flatMap(m => {
                     const tc = cardMap[m.tarjetaId];
                     const { primerPago, ultimoPago, cicloYear, cicloMonth } = calcularPagos(
-                      tc?.ciclo, m.fechaCompra, Number(m.mesesTotal) || 0, festivosMX
+                      tc?.ciclo, m.fechaEfectiva || m.fechaCompra, Number(m.mesesTotal) || 0, festivosMX
                     );
                     const nomPrimero = primerPago ? anteriorNomina(primerPago, festivosMX) : null;
                     const nomUltimo  = ultimoPago  ? anteriorNomina(ultimoPago,  festivosMX) : null;
@@ -1630,7 +1650,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                           const mx = Math.max(...pagos.map(p => Number(p.mesesPagados) || 0));
                           return mn === mx ? `${mn}/${m.mesesTotal || 0}` : `${mn}–${mx}/${m.mesesTotal || 0}`;
                         })()}</td>
-                        <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
+                        <td style="white-space:nowrap">${_fechaCompraCell(m)}</td>
                         <td style="white-space:nowrap">${difPrimerCell}</td>
                         ${filtro === 'curso' ? `<td style="white-space:nowrap">${difProximoCell}</td>` : ''}
                         <td style="white-space:nowrap">${difUltimoCell}</td>
@@ -1684,7 +1704,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                             <div class="d-flex gap-1">
                               <button class="btn-icon btn-edit-pago-msi-plan" data-id="${p.id}" title="Editar plan"><i class="bi bi-pencil"></i></button>
                               ${!pDone ? `<button class="btn-icon btn-pagar-cuota-diferido" data-id="${p.id}" data-compra-id="${m.id}" title="Pagar cuota"><i class="bi bi-coin"></i></button>` : ''}
-                              <button class="btn-icon danger btn-del-pago-diferido-msi" data-id="${p.id}" data-compra-id="${m.id}" data-monto="${p.monto}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                              <button class="btn-icon danger btn-del-pago-diferido-msi" data-id="${p.id}" data-compra-id="${m.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
                             </div>
                           </td>
                         </tr>`;
@@ -1703,7 +1723,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
 
                     const restanteVal = mostrarTotal
                       ? currency(m.total)
-                      : (m.liquidado ? '✓ Liquidado' : done ? '✓ Pagado' : currency(restanteEfectivo));
+                      : (m.liquidado ? '✓ Completado' : done ? '✓ Pagado' : currency(restanteEfectivo));
                     const restanteCls = mostrarTotal ? '' : done ? 'text-success' : 'fw-bold';
 
                     const isLiquidado = (filtro === 'liquidados' || m.liquidado) && m.fechaLiquidacion;
@@ -1736,7 +1756,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       </td>
                       <td style="white-space:nowrap">${tc?.nombre || '—'}${lastFour ? ' ···' + lastFour : ''}</td>
                       <td class="text-center">${m.mesesPagados || 0}/${m.mesesTotal || 0}</td>
-                      <td style="white-space:nowrap">${m.fechaCompra ? fmtDate(m.fechaCompra) : '—'}</td>
+                      <td style="white-space:nowrap">${_fechaCompraCell(m)}</td>
                       <td style="white-space:nowrap">${primerPagoCell}</td>
                       ${filtro === 'curso' ? `<td style="white-space:nowrap">${proximoPagoCell}</td>` : ''}
                       <td style="white-space:nowrap">${ultimoPagoCell}</td>
@@ -1748,7 +1768,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       <td>
                         <div class="d-flex gap-1">
                           ${!m.liquidado && Number(m.mesesPagados) < Number(m.mesesTotal) ? `<button class="btn-icon btn-pagar-msi" data-id="${m.id}" title="Registrar pago de mensualidad"><i class="bi bi-coin"></i></button>` : ''}
-                          ${!m.liquidado ? `<button class="btn-icon btn-liquidar-msi" data-id="${m.id}" title="Liquidar"><i class="bi bi-check-circle"></i></button>` : ''}
+                          ${!m.liquidado ? `<button class="btn-icon btn-liquidar-msi" data-id="${m.id}" title="Completar"><i class="bi bi-check-circle"></i></button>` : ''}
                           <button class="btn-icon btn-credito-compra" data-id="${m.id}" data-coleccion="msi" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
                           <button class="btn-icon btn-edit-msi" data-id="${m.id}"><i class="bi bi-pencil"></i></button>
                           <button class="btn-icon danger btn-del-msi" data-id="${m.id}"><i class="bi bi-trash3"></i></button>
@@ -1905,6 +1925,46 @@ function _saveBonif(data) {
   }
 }
 
+// ── Fecha de liquidación (opcional) ─────────────────────────────────────────
+// Campo interno `fechaEfectiva` — distinto de `fechaLiquidacion`/`liquidado`
+// (eso es "Completar", en A Plazos: marcar una compra como ya pagada del
+// todo). Esta es la fecha en la que el banco realmente registró la compra en
+// el estado de cuenta, cuando difiere de la fecha de compra — ubica el
+// periodo/ciclo en Impacto y en los filtros de Compras en vez de fechaCompra.
+
+function _fechaEfectivaFields(compra, suffix) {
+  return `
+    <div class="col-12">
+      <div class="form-check form-switch mb-1">
+        <input class="form-check-input" type="checkbox" id="chk-fecha-efectiva-${suffix}" ${compra?.fechaEfectiva ? 'checked' : ''}>
+        <label class="form-check-label" for="chk-fecha-efectiva-${suffix}">Fecha de liquidación (opcional)</label>
+        <small class="text-muted ms-2">Si el banco la registró en el estado de cuenta en otra fecha, úsala para ubicar el periodo en vez de la fecha de compra</small>
+      </div>
+      <div id="wrap-fecha-efectiva-${suffix}" class="mt-1" style="display:${compra?.fechaEfectiva ? 'block' : 'none'}">
+        <input type="date" class="form-control" id="input-fecha-efectiva-${suffix}" value="${(compra?.fechaEfectiva || '').slice(0, 10)}">
+      </div>
+    </div>`;
+}
+
+function _wireFechaEfectiva(suffix, fechaCompraFieldSelector) {
+  const chk   = document.getElementById(`chk-fecha-efectiva-${suffix}`);
+  const wrap  = document.getElementById(`wrap-fecha-efectiva-${suffix}`);
+  const input = document.getElementById(`input-fecha-efectiva-${suffix}`);
+  chk?.addEventListener('change', () => {
+    wrap.style.display = chk.checked ? '' : 'none';
+    if (chk.checked && !input.value) {
+      const fc = document.querySelector(fechaCompraFieldSelector)?.value;
+      if (fc) input.value = fc;
+    }
+  });
+}
+
+function _saveFechaEfectiva(data, suffix) {
+  const chk   = document.getElementById(`chk-fecha-efectiva-${suffix}`);
+  const input = document.getElementById(`input-fecha-efectiva-${suffix}`);
+  data.fechaEfectiva = (chk?.checked && input?.value) ? input.value : null;
+}
+
 function _bonifBadge(item) {
   // Solo muestra indicador pequeño en el nombre; el detalle va junto al total
   const b = item?.bonificacion;
@@ -1995,6 +2055,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
             <label class="form-label">Enlace de la compra</label>
             <input type="url" class="form-control" name="enlaceCompra" value="${compra?.enlaceCompra || ''}" placeholder="https://...">
           </div>
+          ${_fechaEfectivaFields(compra, 'contado')}
           ${_bonifFields(compra)}
         </div>
       </form>`,
@@ -2004,6 +2065,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
   });
 
   _wireBonif();
+  _wireFechaEfectiva('contado', '#contado-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();
 
@@ -2047,6 +2109,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
+    _saveFechaEfectiva(data, 'contado');
     try {
       let savedId;
       if (isSwitch) {
@@ -2082,6 +2145,8 @@ function _seedParaOtroTipo(formId, compraActual, coleccionActual) {
   const totalPendiente = esDiferido && compraActual?.diferido
     ? Number(compraActual.total) || 0
     : totalForm;
+  const chkFechaEfectiva   = document.getElementById(`chk-fecha-efectiva-${coleccionActual}`);
+  const inputFechaEfectiva = document.getElementById(`input-fecha-efectiva-${coleccionActual}`);
   return {
     compra: raw.compra, tarjetaId, numeroTarjeta,
     fechaCompra: _applyTime(raw.fechaCompra, raw.fechaCompraTime),
@@ -2090,6 +2155,7 @@ function _seedParaOtroTipo(formId, compraActual, coleccionActual) {
     total: totalPendiente,
     ...(esDiferido ? { totalDiferido: totalForm } : {}),
     bonificacion: compraActual?.bonificacion || null,
+    fechaEfectiva: (chkFechaEfectiva?.checked && inputFechaEfectiva?.value) ? inputFechaEfectiva.value : null,
     _switchFrom: { coleccion: coleccionActual, id: compraActual.id },
     _original: compraActual,
   };
@@ -2201,6 +2267,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
             <label class="form-label">Enlace de la compra</label>
             <input type="url" class="form-control" name="enlaceCompra" value="${msi?.enlaceCompra || ''}" placeholder="https://...">
           </div>
+          ${_fechaEfectivaFields(msi, 'msi')}
           ${_bonifFields(msi)}
         </div>
       </form>`,
@@ -2210,6 +2277,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
   });
 
   _wireBonif();
+  _wireFechaEfectiva('msi', '#msi-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();
 
@@ -2278,6 +2346,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
     _saveBonif(data);
+    _saveFechaEfectiva(data, 'msi');
     try {
       let savedId;
       if (isSwitch) {
@@ -2294,10 +2363,10 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
       const sugerirLiquidar = data.mesesPagados === data.mesesTotal && !msi?.liquidado;
       if (sugerirLiquidar) {
         setTimeout(() => {
-          if (confirm(`"${data.compra}" tiene todos sus meses pagados.\n¿Marcarla como liquidada?`)) {
+          if (confirm(`"${data.compra}" tiene todos sus meses pagados.\n¿Marcarla como completada?`)) {
             const fechaLiquidacion = toISODate(new Date());
             update('msi', savedId, { liquidado: true, mesesPagados: data.mesesTotal, restante: 0, fechaLiquidacion })
-              .then(() => { toast('Compra liquidada'); onSaved(); })
+              .then(() => { toast('Compra completada'); onSaved(); })
               .catch(err => { toast('Error: ' + err.message, 'danger'); onSaved(); });
           } else {
             onSaved();
@@ -2644,6 +2713,23 @@ function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
   });
 }
 
+/**
+ * Recalcula desde cero el total pendiente de una compra diferida
+ * (totalDiferido − todos los pagos registrados actualmente), en vez de ir
+ * sumando/restando el campo guardado incrementalmente en cada alta, edición o
+ * baja de un pago — eso acumula residuos de redondeo entre operaciones (bug
+ * real: una compra con todos sus pagos registrados quedaba con $0.03 de
+ * "pendiente" aunque la UI ya la marcara como completa). `pagosDiferidos`
+ * debe venir ya actualizado (el pago agregado/editado/quitado) al llamar esto.
+ */
+function _recalcTotalDiferido(compra, pagosDiferidos) {
+  const totalOrig   = Number(compra.totalDiferido ?? compra.total) || 0;
+  const registrado  = pagosDiferidos
+    .filter(p => p.compraId === compra.id)
+    .reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  return r2(Math.max(0, totalOrig - registrado));
+}
+
 function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved) {
   if (!compra) return;
   const isEdit = !!pago;
@@ -2762,14 +2848,13 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
 
     try {
       if (isEdit) {
-        const diff = data.monto - Number(pago.monto);
         const upd = { fecha: data.fecha, monto: data.monto };
         if (newMensualidad != null) upd.mensualidad = newMensualidad;
         if (newRestante    != null) upd.restante    = newRestante;
         await update('pagosDiferidos', pago.id, upd);
         const idx = pagosDiferidos.findIndex(x => x.id === pago.id);
         if (idx >= 0) Object.assign(pagosDiferidos[idx], upd);
-        compra.total = r2(Math.max(0, Number(compra.total) - diff));
+        compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
         await update(coleccion, compra.id, { total: compra.total });
       } else {
         const newPago = {
@@ -2783,7 +2868,7 @@ function _showModalPagoDiferido(pago, compra, coleccion, pagosDiferidos, onSaved
         if (newRestante    != null) newPago.restante    = newRestante;
         const id = await create('pagosDiferidos', newPago);
         pagosDiferidos.push({ ...newPago, id });
-        compra.total = r2(Math.max(0, Number(compra.total) - data.monto));
+        compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
         await update(coleccion, compra.id, { total: compra.total });
       }
       closeModal();
@@ -2934,13 +3019,13 @@ function _showModalEditPagoPlan(pago, compra, pagosDiferidos, onSaved) {
     };
     try {
       await update('pagosDiferidos', pago.id, updates);
-      if (Math.abs(newMonto - montoOrig) > 0.005) {
-        compra.total = r2((Number(compra.total) || 0) + montoOrig - newMonto);
-        await update('msi', compra.id, { total: compra.total });
-      }
       Object.assign(pago, updates);
       const idx = pagosDiferidos.findIndex(x => x.id === pago.id);
       if (idx >= 0) Object.assign(pagosDiferidos[idx], updates);
+      if (Math.abs(newMonto - montoOrig) > 0.005) {
+        compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
+        await update('msi', compra.id, { total: compra.total });
+      }
       closeModal();
       toast('Plan actualizado');
       onSaved();

@@ -97,9 +97,12 @@ export async function getAll(col, ...constraints) {
   }
   const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-  // Store in appropriate cache
+  // Store in appropriate cache — nunca un resultado vacío en localStorage: si
+  // llegara a pasar por una carrera con el login o un hipo momentáneo, se
+  // quedaría serví­do tal cual hasta por un día (el caché en memoria, en
+  // cambio, de todos modos se pierde al recargar, así que ahí no hay riesgo).
   if (!constraints.length) {
-    if (LS_COLS.has(col))  _lsSet(col, data);
+    if (LS_COLS.has(col))  { if (data.length) _lsSet(col, data); }
     else if (MEM_COLS.has(col)) _memSet(col, data);
   }
 

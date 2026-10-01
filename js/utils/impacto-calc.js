@@ -35,6 +35,28 @@ function _primerCiclo(ciclo, fechaCompra, festivosMX) {
   return { cicloYear: year, cicloMonth: month };
 }
 
+/**
+ * Ciclo vigente para una compra de Contado diferida sin resolver: a diferencia
+ * de una compra normal (que se ubica una sola vez, para siempre, en el ciclo
+ * de su fecha), una diferida con saldo pendiente que nunca se registró se
+ * recorre al SIGUIENTE ciclo en cuanto el CORTE del actual ya pasó respecto a
+ * `hoy` — no espera hasta la fecha de pago: si al cortar sigue sin nada
+ * registrado, se trata como saldo del siguiente periodo, en vez de dejarlo
+ * fijo en un mes que ya cerró su corte.
+ */
+function _cicloVigenteDiferido(ciclo, fechaAncla, festivosMX, hoy) {
+  let pc = _primerCiclo(ciclo, fechaAncla, festivosMX);
+  if (!pc) return null;
+  let p = calcularMes(ciclo, pc.cicloYear, pc.cicloMonth, festivosMX);
+  let guard = 0;
+  while (p.fechaCorte && toISODate(p.fechaCorte) < hoy && guard++ < 36) {
+    const nx = new Date(pc.cicloYear, pc.cicloMonth + 1, 1);
+    pc = { cicloYear: nx.getFullYear(), cicloMonth: nx.getMonth() };
+    p = calcularMes(ciclo, pc.cicloYear, pc.cicloMonth, festivosMX);
+  }
+  return p;
+}
+
 function _mesInt(mes) {
   const [y, m] = mes.split('-').map(Number);
   return y * 12 + m;
@@ -114,12 +136,22 @@ export function calcularFechaPagoFromDate(fechaISO, ciclo, festivosMX) {
 }
 
 /** De Contado items for a tarjeta whose anteriorNomina(fechaPago) falls in mes.
- *  Diferido items are excluded once total < 0.005 (fully registered via pagos). */
-export function getContadoMes(contadoItems, tarjetaId, ciclo, mes, festivosMX) {
+ *  Diferido items are excluded once total < 0.005 (fully registered via pagos).
+ *  `fechaEfectiva`, si está, ubica el periodo en vez de `fechaCompra` — para
+ *  compras que aparecieron en el estado de cuenta en otra fecha distinta a
+ *  cuando se compraron (ver UI en msi.js: "Fecha de liquidación").
+ *  Una diferida con saldo pendiente sin resolver se recorre al siguiente
+ *  ciclo si el de su fecha original ya venció (ver _cicloVigenteDiferido). */
+export function getContadoMes(contadoItems, tarjetaId, ciclo, mes, festivosMX, hoy = toISODate(new Date())) {
   return contadoItems.filter(c => {
     if (c.tarjetaId !== tarjetaId) return false;
     if (c.diferido && (Number(c.total) || 0) < 0.005) return false;
-    return _enMes(_fechaPagoFromDate(c.fechaCompra, ciclo, festivosMX), mes, festivosMX);
+    const fechaAncla = c.fechaEfectiva || c.fechaCompra;
+    if (c.diferido) {
+      const p = _cicloVigenteDiferido(ciclo, fechaAncla, festivosMX, hoy);
+      return _enMes(p?.fechaPago, mes, festivosMX);
+    }
+    return _enMes(_fechaPagoFromDate(fechaAncla, ciclo, festivosMX), mes, festivosMX);
   });
 }
 
@@ -148,14 +180,16 @@ export function getPagosDiferidosMes(pagosDiferidos, tarjetaId, ciclo, mes, fest
   });
 }
 
-/** A Plazos items for a tarjeta whose próximo pago anteriorNomina falls in mes. */
+/** A Plazos items for a tarjeta whose próximo pago anteriorNomina falls en mes.
+ *  `fechaEfectiva`, si está, ubica el periodo (y de ahí el calendario de
+ *  cuotas) en vez de `fechaCompra` — ver nota en getContadoMes. */
 export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   if (!ciclo) return [];
   return msiItems.filter(m => {
     if (m.tarjetaId !== tarjetaId || m.liquidado) return false;
     if (m.diferido && (Number(m.total) || 0) < 0.005) return false; // ya todo registrado en pagos
 
-    const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
+    const pc = _primerCiclo(ciclo, m.fechaEfectiva || m.fechaCompra, festivosMX);
     if (!pc) return false;
 
     // Recorre las mesesTotal cuotas (índice 0..mesesTotal-1) buscando cuál cae
@@ -387,7 +421,11 @@ export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosI
     pendienteContado, pendientePlazos,
     pagosDifContado, pagosDifPlazos,
     creditosAplicados,
-    estimadoTotal: r2(estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos - creditosAplicados),
+    // Piso en 0: si el saldo a favor del mes supera lo cobrado ese ciclo, no
+    // hay "monto a pagar" negativo que registrar — el excedente ya está
+    // reflejado en el disponible de la tarjeta (saldo.js), que es quien de
+    // verdad arrastra el crédito hacia adelante.
+    estimadoTotal: r2(Math.max(0, estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos - creditosAplicados)),
   };
 }
 
@@ -457,7 +495,7 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
     const mesesPag = Number(m.mesesPagados) || 0;
     const mesesTot = Number(m.mesesTotal)   || 0;
     if (mesesPag >= mesesTot) return m;
-    const pc = _primerCiclo(ciclo, m.fechaCompra, festivosMX);
+    const pc = _primerCiclo(ciclo, m.fechaEfectiva || m.fechaCompra, festivosMX);
     if (!pc) return m;
     const nx  = new Date(pc.cicloYear, pc.cicloMonth + mesesPag, 1);
     const pp  = calcularMes(ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
@@ -516,7 +554,7 @@ export function proyectarMes(mes, currentMes, msiItems, contadoItems, gastosItem
       fechaCorte, fechaPago,
       ...est,
       estimadoGastos,
-      estimadoTotal: r2(est.estimadoContado + est.estimadoPlazos + estimadoGastos + (est.pagosDifContado || 0) + (est.pagosDifPlazos || 0) - (est.creditosAplicados || 0)),
+      estimadoTotal: r2(Math.max(0, est.estimadoContado + est.estimadoPlazos + estimadoGastos + (est.pagosDifContado || 0) + (est.pagosDifPlazos || 0) - (est.creditosAplicados || 0))),
       confirmado: false, pagado: false,
     };
   });

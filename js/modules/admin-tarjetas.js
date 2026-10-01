@@ -1,6 +1,6 @@
 import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtDate, textoLegibleSobre, rgbLegibleSobre, rgbInversoSobre } from '../utils/formatters.js';
-import { calcularSaldo, limitarDisponible } from '../utils/saldo.js';
+import { calcularSaldo, limitarDisponible, detalleEventosPosteriores } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 
 const REDES = ['Visa', 'Mastercard', 'Maestro', 'Amex', 'Carnet', 'Discover'];
@@ -297,7 +297,8 @@ async function renderView(container) {
         // todas las demás vistas — mezclarlo aquí lo "absorbería" en el
         // snapshot al guardar y se perdería como ajuste visible por separado.
         const liveSinCreditos = calcularSaldo(card, contado, msi, gastos, pagosDiferidos);
-        showCardModal(container, instituciones, card.institucionId, card, liveSinCreditos);
+        const detalleSaldo = detalleEventosPosteriores(card, contado, msi, gastos, pagosDiferidos);
+        showCardModal(container, instituciones, card.institucionId, card, liveSinCreditos, detalleSaldo);
       }));
 
     document.querySelectorAll('.btn-del-card').forEach(btn =>
@@ -476,7 +477,7 @@ function addNumeroRow(list, num = {}, redEl) {
   list.appendChild(row);
 }
 
-function showCardModal(container, instituciones, preInstId, card = null, liveSaldo = null) {
+function showCardModal(container, instituciones, preInstId, card = null, liveSaldo = null, detalleSaldo = []) {
   const editing        = !!card?.id;
   const tipoVal        = card?.tipo || 'debito';
   // El campo se precarga con el disponible EN VIVO (calcularSaldo), no con el
@@ -562,6 +563,7 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
           ${liveSaldo && liveSaldo.ajustado ? `
           <div class="alert alert-info py-2 mb-2" style="font-size:0.82rem">
             <i class="bi bi-info-circle me-1"></i>Se precargó el disponible <strong>en vivo</strong> (incluye compras y pagos posteriores a la última actualización, sin contar el saldo a favor — ese se sigue sumando aparte). Al guardar se toma como nuevo punto de referencia.
+            ${detalleSaldo.length ? `<br><button type="button" class="btn btn-link btn-sm p-0 mt-1" id="btn-ver-detalle-saldo">Ver detalle (${detalleSaldo.length})</button>` : ''}
           </div>` : ''}
           <div class="row g-2">
             <div class="col-sm-6">
@@ -693,6 +695,8 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
 
   document.getElementById('btn-add-num').addEventListener('click', () => addNumeroRow(numList, {}, redEl));
 
+  document.getElementById('btn-ver-detalle-saldo')?.addEventListener('click', () => showDetalleSaldoModal(card, detalleSaldo));
+
   const setTipo = (tipo) => {
     const isPrestamo = tipo === 'prestamo';
     document.getElementById('sec-clabe').classList.toggle('d-none', isPrestamo);
@@ -819,6 +823,59 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
       closeModal();
       renderView(container);
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  });
+}
+
+// ── Detalle del disponible en vivo ──────────────────────────────────────────
+
+const DETALLE_SALDO_LABEL = {
+  contado:      'De Contado',
+  msi:          'A Plazos',
+  gasto:        'Gasto',
+  pagoDiferido: 'Pago Diferido',
+  credito:      'Saldo a Favor',
+};
+const DETALLE_SALDO_ICON = {
+  contado:      'bi-bag',
+  msi:          'bi-calendar-range',
+  gasto:        'bi-receipt-cutoff',
+  pagoDiferido: 'bi-wallet2',
+  credito:      'bi-arrow-return-left',
+};
+
+function showDetalleSaldoModal(card, detalle) {
+  const total = detalle.reduce((s, e) => s + e.monto, 0);
+
+  openModal({
+    title: `Detalle del disponible en vivo — ${card.nombre}`,
+    size: 'lg',
+    body: `
+      <p class="text-muted mb-2" style="font-size:0.82rem">
+        Eventos posteriores a la última actualización (${card.fechaActualizacionSaldo ? fmtDate(card.fechaActualizacionSaldo) : '—'}),
+        sin contar el saldo a favor.
+      </p>
+      <div class="table-wrapper">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Nombre</th><th class="text-end">Monto</th></tr></thead>
+          <tbody>
+            ${detalle.map(e => `<tr>
+              <td style="white-space:nowrap">${fmtDate(e.fecha)}</td>
+              <td><i class="bi ${DETALLE_SALDO_ICON[e.tipo] || 'bi-dot'} me-1 text-muted"></i>${DETALLE_SALDO_LABEL[e.tipo] || e.tipo}</td>
+              <td>${e.nombre}</td>
+              <td class="text-end fw-semibold ${e.monto < 0 ? 'text-success' : ''}" style="white-space:nowrap">
+                ${e.monto < 0 ? '+' : '-'}${currency(Math.abs(e.monto))}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="fw-bold border-top">
+              <td colspan="3">Total (resta del disponible)</td>
+              <td class="text-end" style="white-space:nowrap">${currency(total)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>`,
+    footer: `<button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>`,
   });
 }
 
