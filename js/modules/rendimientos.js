@@ -1306,14 +1306,6 @@ function showHistorialModal(container, cuenta, etiqueta) {
     const visibles     = orden === 'asc' ? visiblesAsc : [...visiblesAsc].reverse();
     const pendiente = plegado.pendientes.reduce((s, f) => s + f.neto, 0);
 
-    const conIsr  = visibles.some(f => f.isr > 0.0000001);
-    // Lo que muestra cada renglón es lo ABONADO ese día (que en una cuenta sin
-    // calendario es su propio devengo) más el ajuste que se le haya registrado.
-    const montoFila = f => (f.abonado || 0) + (f.ajuste || 0);
-    const totNeto = visibles.reduce((s, f) => s + montoFila(f), 0);
-    const totIsr  = visibles.reduce((s, f) => s + f.isr, 0);
-    const cols    = conIsr ? 5 : 3;
-
     // Ajustes agrupados por fecha, para distinguir en cada renglón si lo que cayó
     // ese día fue una corrección al interés de ESE día ('diario') o un ajuste de
     // saldo/rendimiento total que solo coincide en fecha ('saldo' — o sin `tipo`,
@@ -1324,6 +1316,18 @@ function showHistorialModal(container, cuenta, etiqueta) {
       if (!f) return;
       ajustesPorFecha.set(f, [...(ajustesPorFecha.get(f) || []), a]);
     });
+
+    const conIsr  = visibles.some(f => f.isr > 0.0000001);
+    // Lo que muestra cada renglón es lo ABONADO ese día (que en una cuenta sin
+    // calendario es su propio devengo) más sus ajustes DIARIOS — los que se
+    // registran desde este mismo historial. Un ajuste de saldo (del modal
+    // Ajuste) mueve el saldo, pero no dice nada del interés de este día, así que
+    // no entra aquí: solo se marca con la etiqueta "saldo".
+    const montoFila = f => (f.abonado || 0) + (ajustesPorFecha.get(f.fecha) || [])
+      .filter(a => a.tipo === 'diario').reduce((s, a) => s + (Number(a.monto) || 0), 0);
+    const totNeto = visibles.reduce((s, f) => s + montoFila(f), 0);
+    const totIsr  = visibles.reduce((s, f) => s + f.isr, 0);
+    const cols    = conIsr ? 5 : 3;
 
     // Mismo punto de partida que usa `historialDiario` por dentro — el más
     // reciente del timeline completo, no el campo `fechaActualizacion` suelto.
@@ -1434,7 +1438,8 @@ function showHistorialModal(container, cuenta, etiqueta) {
                             montoDiario > 0 ? '+' : '−'}${currency(Math.abs(montoDiario))}</span>` : ''}
                      ${saldos.length
                        ? `<span class="inv-tr-marg" title="Ajuste de saldo/rendimiento total aplicado este día: ${
-                            montoSaldo > 0 ? '+' : '−'}${currency(Math.abs(montoSaldo))}">saldo</span>` : ''}
+                            montoSaldo > 0 ? '+' : '−'}${currency(Math.abs(montoSaldo))}">ajuste: ${
+                            montoSaldo > 0 ? '+' : '−'}${currency(Math.abs(montoSaldo))}</span>` : ''}
                    </td>
                    <td class="text-end text-muted">${currency(f.saldoFinal)}</td>
                    ${conIsr ? `<td class="text-end text-muted">${currency(f.bruto)}</td>
@@ -1733,7 +1738,7 @@ function showMovimientosModal(container, cuenta, cuentas, instMap) {
           </div>
           <div class="col-12 col-sm-6">
             <label class="form-label form-label-sm" id="mov-fecha-lbl">Fecha *</label>
-            <input type="date" class="form-control form-control-sm" name="fecha" required max="${hoy}" value="${hoy}">
+            <input type="date" class="form-control form-control-sm" name="fecha" required max="${hoy}" value="${fechaDefault}">
           </div>
           <div class="col-12 col-sm-6 d-none" id="mov-fecha2-wrap">
             <label class="form-label form-label-sm">Fecha de llegada</label>
@@ -2383,10 +2388,24 @@ function bloqueConciliacion(c) {
  * la misma foto de la cuenta.
  */
 function showAjusteModal(container, cuenta, r, etiqueta) {
-  // Fecha real de calendario — mismo criterio que showMovimientosModal.
+  // Tope: fecha real de calendario (mismo criterio que showMovimientosModal).
   const hoy           = toISODate(new Date());
-  const estimadoMonto = r2(r.saldoActual);
+  // Por default se concilia al "hoy" de la cuenta —el de su hora de corte—, que
+  // es la fecha a la que corresponde `saldoActual`. Con la fecha de calendario,
+  // antes del corte la conciliación proyectaba un día de interés de más y el
+  // estimado nacía con un desfase.
+  const fechaDefault  = hoyDeCuenta(cuenta) < hoy ? hoyDeCuenta(cuenta) : hoy;
   const cfg           = configCuenta(cuenta);
+  // El estimado sale de la MISMA proyección contra la que se concilia: así
+  // capturar "el valor estimado" cuadra al centavo. `r.saldoActual` viene del
+  // historial diario, que cuenta el propio día de la primera captura y
+  // `conciliar()` no — usarlo como default dejaba una diferencia de un día de
+  // interés antes de que el usuario tocara nada.
+  const estimadoEn    = fecha => {
+    const c = conciliar(cuenta, 0, fecha, cfg);
+    return r2(c ? c.saldoEsperado : r.saldoActual);
+  };
+  const estimadoMonto = estimadoEn(fechaDefault);
 
   let conc = null;              // última conciliación calculada
   let montoTocado = false;      // si el usuario ya ajustó el importe a clasificar
@@ -2419,7 +2438,7 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
         <div class="row g-2 mb-3">
           <div class="col-12 col-sm-6">
             <label class="form-label">Fecha *</label>
-            <input type="date" class="form-control" name="fecha" required max="${hoy}" value="${hoy}">
+            <input type="date" class="form-control" name="fecha" required max="${hoy}" value="${fechaDefault}">
           </div>
         </div>
 
@@ -2530,7 +2549,7 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
   inpMonto.addEventListener('input', () => { montoTocado = true; pintarNota(); });
 
   document.getElementById('inv-usar-est').addEventListener('click', () => {
-    inputMonto.value = estimadoMonto;
+    inputMonto.value = estimadoEn(form.fecha.value || fechaDefault);
     montoTocado = tipoTocado = false;
     pintarMonto();
   });
@@ -2646,18 +2665,44 @@ function showAjusteModal(container, cuenta, r, etiqueta) {
 
   async function borrarAjuste(i) {
     const a = cuenta.ajustes[i];
-    if (!window.confirm(`¿Eliminar el ajuste del ${fmtDate(isoDay(a.fecha))} (${currency(a.monto)})?`)) return;
-    await aplicarCambioAjustes(cuenta.ajustes.filter((_, j) => j !== i), 'Ajuste eliminado');
+    const f = isoDay(a.fecha);
+    if (!window.confirm(`¿Eliminar el ajuste del ${fmtDate(f)} (${currency(a.monto)})?`)) return;
+
+    // "Ajustar saldo" guarda juntos la captura y el ajuste; borrar solo el
+    // ajuste deja la captura fijando el saldo. Si hay otra captura de la cual
+    // volver, se ofrece deshacerla también.
+    const captura = tipoDe(a) === 'saldo' && timelineCuenta(cuenta).length > 1
+      && timelineCuenta(cuenta).some(p => p.fecha === f);
+    const tambien = captura && window.confirm(
+      `Ese ajuste se creó junto con la captura de saldo del ${fmtDate(f)}.\n\n` +
+      `¿Deshacer también esa captura? La cuenta vuelve a la captura anterior.`);
+
+    await aplicarCambioAjustes(cuenta.ajustes.filter((_, j) => j !== i), 'Ajuste eliminado',
+      tambien ? sinCaptura(f) : {});
+  }
+
+  /** Campos de la cuenta sin la captura de `fecha` — la raíz cede ante la anterior. */
+  function sinCaptura(fecha) {
+    const previas  = timelineCuenta(cuenta).filter(p => p.fecha !== fecha);
+    const fechaRaiz = isoDay(cuenta.fechaActualizacion);
+    // Si la captura borrada era la raíz, la más reciente que queda la releva
+    const raiz = fechaRaiz === fecha ? previas[previas.length - 1]
+               : previas.find(p => p.fecha === fechaRaiz);
+    const historial = previas.filter(p => p !== raiz).map(p => ({ fecha: p.fecha, monto: p.monto }));
+    return fechaRaiz === fecha
+      ? { montoInvertido: raiz.monto, fechaActualizacion: raiz.fecha, historial }
+      : { historial };
   }
 
   // Editar o borrar un ajuste puede correr el residuo de OTRO ajuste derivado
   // (todo se recalcula sobre el mismo timeline) — mismo resguardo de diff que
   // usa editar la raíz, antes de guardar en silencio.
-  async function aplicarCambioAjustes(nuevos, mensaje) {
-    const ajustes = ajustesTrasEditar({ ...cuenta, ajustes: nuevos }, etiqueta);
+  async function aplicarCambioAjustes(nuevos, mensaje, extra = {}) {
+    const ajustes = ajustesTrasEditar({ ...cuenta, ...extra, ajustes: nuevos }, etiqueta);
     if (!ajustes) return;
     try {
-      await update(COL, cuenta.id, { ajustes });
+      await update(COL, cuenta.id, { ...extra, ajustes });
+      Object.assign(cuenta, extra);
       cuenta.ajustes = ajustes;
       cambiado = true;
       toast(mensaje);

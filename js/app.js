@@ -3,7 +3,7 @@ import { initRouter, register, navigate, setGuard } from './router.js';
 import { clearCache } from './utils/db.js';
 import { iniciarMonitorConexion, onCambioConexion, estaOffline } from './utils/conectividad.js';
 
-const APP_VERSION = '1.9.3-T29';
+const APP_VERSION = '1.9.3-T30';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {

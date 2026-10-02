@@ -1508,7 +1508,14 @@ export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
     // plegado más reciente, que junta el puente inhábil con el día que lo
     // abona — mismo criterio que pinta el historial, así nunca se desalinea
     // de lo que ahí se ve.
-    ayer: filaAyer ? (filaAyer.abonado ?? filaAyer.neto) + (filaAyer.ajuste || 0) : 0,
+    // Solo cuentan los ajustes DIARIOS de ese día — uno de saldo (del modal
+    // Ajuste) mueve el saldo pero no dice nada del interés abonado, y el
+    // historial tampoco lo suma al renglón.
+    ayer: filaAyer
+      ? (filaAyer.abonado ?? filaAyer.neto) + (cuenta.ajustes || [])
+          .filter(a => a?.tipo === 'diario' && isoDay(a.fecha) === filaAyer.fecha)
+          .reduce((t, a) => t + (Number(a.monto) || 0), 0)
+      : 0,
     desglose: desgloseTramos(saldoActual, cfg),
     // La tasa ponderada y el GAT son brutos — es como los publica la institución
     tasaNominal: tasaNominal(saldoActual, cfg),
