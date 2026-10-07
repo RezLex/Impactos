@@ -1738,7 +1738,7 @@ function showMovimientosModal(container, cuenta, cuentas, instMap) {
           </div>
           <div class="col-12 col-sm-6">
             <label class="form-label form-label-sm" id="mov-fecha-lbl">Fecha *</label>
-            <input type="date" class="form-control form-control-sm" name="fecha" required max="${hoy}" value="${fechaDefault}">
+            <input type="date" class="form-control form-control-sm" name="fecha" required max="${hoy}" value="${hoy}">
           </div>
           <div class="col-12 col-sm-6 d-none" id="mov-fecha2-wrap">
             <label class="form-label form-label-sm">Fecha de llegada</label>
