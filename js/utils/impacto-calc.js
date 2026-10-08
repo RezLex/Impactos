@@ -210,18 +210,42 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
   });
 }
 
+/** Cómo se aplica un saldo a favor (`modo` de cada registro de creditosTarjeta). */
+export const CREDITO_POR_CORTE = 'corte'; // default
+export const CREDITO_AL_PAGO   = 'pago';
+
+const _modoCredito = c => c?.modo === CREDITO_AL_PAGO ? CREDITO_AL_PAGO : CREDITO_POR_CORTE;
+
 /**
  * Créditos a favor (bonificación, cancelación, conversión MSI) para una tarjeta.
- * Se ubican igual que una compra: por el CORTE. Un crédito con fecha hasta el
- * corte de un ciclo reduce el pago de ese ciclo; uno posterior al corte ya
- * pertenece al siguiente estado de cuenta y se paga con el pago siguiente —
- * así lo aplica el banco.
+ * Cada registro trae su propio `modo`:
+ *  - 'corte' (default): se ubica igual que una compra, por el CORTE. Con fecha
+ *    hasta el corte de un ciclo reduce el pago de ese ciclo; uno posterior ya
+ *    pertenece al siguiente estado de cuenta. El sobrante no usado se arrastra
+ *    (ver `_creditoArrastrado`).
+ *  - 'pago': sigue abonando al pago de `mes` mientras ese pago no se haya
+ *    hecho: cae en `mes` si su fecha está entre el pago del mes anterior
+ *    (exclusivo) y el pago de `mes` (inclusive). Una vez pagado, uno posterior
+ *    cae en el siguiente mes. Sin arrastre.
  */
 export function getCreditosMes(creditosTarjeta, tarjetaId, ciclo, mes, festivosMX) {
   if (!ciclo) return [];
-  return creditosTarjeta.filter(c =>
-    c.tarjetaId === tarjetaId && c.fecha
-    && _enMes(_fechaPagoFromDate(c.fecha, ciclo, festivosMX), mes, festivosMX));
+  const periodo = calcularCicloParaMes(ciclo, mes, festivosMX);
+  const [y, mo]  = mes.split('-').map(Number);
+  const prevMes  = `${mo === 1 ? y - 1 : y}-${String(mo === 1 ? 12 : mo - 1).padStart(2, '0')}`;
+  const prevPago = calcularCicloParaMes(ciclo, prevMes, festivosMX)?.fechaPago || null;
+
+  return creditosTarjeta.filter(c => {
+    if (c.tarjetaId !== tarjetaId || !c.fecha) return false;
+    if (_modoCredito(c) === CREDITO_AL_PAGO) {
+      if (!periodo?.fechaPago) return false;
+      const d = _d(c.fecha);
+      if (!d) return false;
+      if (prevPago && d <= prevPago) return false;
+      return d <= periodo.fechaPago;
+    }
+    return _enMes(_fechaPagoFromDate(c.fecha, ciclo, festivosMX), mes, festivosMX);
+  });
 }
 
 /** Confirmed credit gastos for a tarjeta whose anteriorNomina(fechaPago ciclo) falls in mes. */
@@ -347,19 +371,22 @@ export function getGastosFijosPendientes(gastosFijosItems, gastosItems, mes, fes
 function _creditoArrastrado(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta) {
   const ciclo = tarjeta.ciclo || null;
   if (!ciclo) return 0;
+  // Solo los créditos "por corte" arrastran; los "al pago" ya se consumen dentro de su mes.
+  const arrastrables = creditosTarjeta.filter(c => _modoCredito(c) === CREDITO_POR_CORTE);
+  const alPago       = creditosTarjeta.filter(c => _modoCredito(c) === CREDITO_AL_PAGO);
   const mesDe = c => {
     const nom = anteriorNomina(_fechaPagoFromDate(c.fecha, ciclo, festivosMX) || new Date(NaN), festivosMX);
     return nom && !isNaN(nom) ? toISODate(nom).slice(0, 7) : null;
   };
-  const primero = creditosTarjeta
+  const primero = arrastrables
     .filter(c => c.tarjetaId === tarjeta.id && c.fecha)
     .map(mesDe).filter(Boolean).sort()[0];
   if (!primero || primero >= mes) return 0;
 
   let carry = 0, m = primero, guard = 0;
   while (m < mes && guard++ < 60) {
-    const cargos = calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, m, pagosDiferidos, [], true).estimadoTotal;
-    const creditos = getCreditosMes(creditosTarjeta, tarjeta.id, ciclo, m, festivosMX)
+    const cargos = calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, m, pagosDiferidos, alPago, true).estimadoTotal;
+    const creditos = getCreditosMes(arrastrables, tarjeta.id, ciclo, m, festivosMX)
       .reduce((t, c) => t + (Number(c.monto) || 0), 0);
     carry = Math.max(0, r2(carry + creditos - cargos));
     const [y, mo] = m.split('-').map(Number);

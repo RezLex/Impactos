@@ -881,6 +881,11 @@ function showDetalleSaldoModal(card, detalle) {
 
 // ── Saldo a favor ────────────────────────────────────────────────────────────
 
+const MODO_CREDITO_LABEL = { corte: 'Por corte', pago: 'Al pago' };
+const MODO_CREDITO_OPCIONES = `
+  <option value="corte">Por corte — lo posterior al corte va al pago siguiente; el sobrante se arrastra</option>
+  <option value="pago">Al pago del mes — reduce el próximo pago aunque sea posterior al corte; sin arrastre</option>`;
+
 function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSaved) {
   const creditos = creditosTarjeta
     .filter(cr => cr.tarjetaId === card.id)
@@ -894,7 +899,7 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
   const renderLista = () => creditos.length ? `
     <div class="table-wrapper mb-3">
       <table class="table table-sm mb-0">
-        <thead><tr><th>Fecha</th><th>Origen</th><th>Compra</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Origen</th><th>Compra</th><th>Monto</th><th>Aplica</th><th>Nota</th><th></th></tr></thead>
         <tbody>
           ${creditos.map(cr => {
             const compra = comprasOpts.find(o => o.id === cr.compraId);
@@ -903,8 +908,12 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
               <td>${ORIGEN_LABEL[cr.origen] || cr.origen || '—'}</td>
               <td>${compra?.label || '<span class="text-muted">—</span>'}</td>
               <td class="text-success fw-semibold" style="white-space:nowrap">${currency(Number(cr.monto) || 0)}</td>
+              <td style="white-space:nowrap">${MODO_CREDITO_LABEL[cr.modo === 'pago' ? 'pago' : 'corte']}</td>
               <td style="font-size:0.8rem;color:var(--text-muted)">${cr.nota || ''}</td>
-              <td><button class="btn-icon danger btn-del-credito" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button></td>
+              <td style="white-space:nowrap">
+                <button class="btn-icon btn-edit-credito" data-id="${cr.id}" title="Editar"><i class="bi bi-pencil"></i></button>
+                <button class="btn-icon danger btn-del-credito" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+              </td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -943,7 +952,13 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
               ${comprasOpts.map(o => `<option value="${o.id}">${o.label}</option>`).join('')}
             </select>
           </div>
-          <div class="col-12">
+          <div class="col-sm-5">
+            <label class="form-label small">Cómo se aplica</label>
+            <select class="form-select form-select-sm" name="modo">
+              ${MODO_CREDITO_OPCIONES}
+            </select>
+          </div>
+          <div class="col-sm-7">
             <label class="form-label small">Nota</label>
             <input type="text" class="form-control form-control-sm" name="nota" placeholder="Opcional">
           </div>
@@ -951,9 +966,38 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="btn-cancel-edit-credito">Cancelar edición</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-add-credito">
         <i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor</button>`,
   });
+
+  // Edición: la fila elegida llena el mismo formulario y el botón pasa a "Guardar cambios"
+  let editando = null;
+  const btnGuardar = document.getElementById('btn-add-credito');
+  const btnCancelar = document.getElementById('btn-cancel-edit-credito');
+  const salirDeEdicion = () => {
+    editando = null;
+    document.getElementById('credito-form').reset();
+    btnGuardar.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor';
+    btnCancelar.classList.add('d-none');
+  };
+  btnCancelar.addEventListener('click', salirDeEdicion);
+  document.querySelectorAll('.btn-edit-credito').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const cr = creditos.find(x => x.id === btn.dataset.id);
+      if (!cr) return;
+      editando = cr;
+      const f = document.getElementById('credito-form');
+      f.fecha.value    = String(cr.fecha || '').slice(0, 10);
+      f.monto.value    = cr.monto;
+      f.origen.value   = cr.origen || 'otro';
+      f.compraId.value = cr.compraId || '';
+      f.modo.value     = cr.modo === 'pago' ? 'pago' : 'corte';
+      f.nota.value     = cr.nota || '';
+      btnGuardar.innerHTML = '<i class="bi bi-check-lg me-1"></i>Guardar cambios';
+      btnCancelar.classList.remove('d-none');
+      f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
 
   document.querySelectorAll('.btn-del-credito').forEach(btn =>
     btn.addEventListener('click', async () => {
@@ -974,6 +1018,7 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
       monto:     Number(raw.monto),
       origen:    raw.origen,
     };
+    if (raw.modo === 'pago') data.modo = 'pago'; // 'corte' es el default, no se guarda
     if (raw.compraId) {
       data.compraId        = raw.compraId;
       data.compraColeccion = contado.some(c => c.id === raw.compraId) ? 'contado' : 'msi';
@@ -981,6 +1026,23 @@ function showCreditosModal(container, card, contado, msi, creditosTarjeta, onSav
     if (raw.nota) data.nota = raw.nota;
 
     try {
+      if (editando) {
+        // Se conserva la hora original si la fecha no cambió
+        const mismaFecha = String(editando.fecha || '').slice(0, 10) === raw.fecha;
+        await update('creditosTarjeta', editando.id, {
+          fecha:           mismaFecha ? editando.fecha : data.fecha,
+          monto:           data.monto,
+          origen:          data.origen,
+          modo:            raw.modo === 'pago' ? 'pago' : 'corte',
+          compraId:        data.compraId || null,
+          compraColeccion: data.compraColeccion || null,
+          nota:            raw.nota || '',
+        });
+        toast('Saldo a favor actualizado');
+        closeModal();
+        onSaved();
+        return;
+      }
       await create('creditosTarjeta', data);
       toast('Saldo a favor agregado');
       closeModal();

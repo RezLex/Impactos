@@ -2628,14 +2628,18 @@ function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
   const renderLista = () => creditos.length ? `
     <div class="table-wrapper mb-3">
       <table class="table table-sm mb-0">
-        <thead><tr><th>Fecha</th><th>Origen</th><th class="text-end">Monto</th><th>Nota</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Origen</th><th class="text-end">Monto</th><th>Aplica</th><th>Nota</th><th></th></tr></thead>
         <tbody>
           ${creditos.map(cr => `<tr>
             <td style="white-space:nowrap">${fmtDate(cr.fecha)}</td>
             <td>${ORIGEN_CREDITO_LABEL[cr.origen] || cr.origen || '—'}</td>
             <td class="text-end text-success fw-semibold" style="white-space:nowrap">${currency(Number(cr.monto) || 0)}</td>
+            <td style="white-space:nowrap">${cr.modo === 'pago' ? 'Al pago' : 'Por corte'}</td>
             <td style="font-size:0.8rem;color:var(--text-muted)">${cr.nota || ''}</td>
-            <td><button class="btn-icon danger btn-del-credito-compra" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button></td>
+            <td style="white-space:nowrap">
+              <button class="btn-icon btn-edit-credito-compra" data-id="${cr.id}" title="Editar"><i class="bi bi-pencil"></i></button>
+              <button class="btn-icon danger btn-del-credito-compra" data-id="${cr.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -2666,7 +2670,14 @@ function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
               <option value="otro">Otro</option>
             </select>
           </div>
-          <div class="col-12">
+          <div class="col-sm-5">
+            <label class="form-label small">Cómo se aplica</label>
+            <select class="form-select form-select-sm" name="modo">
+              <option value="corte">Por corte — lo posterior al corte va al pago siguiente; el sobrante se arrastra</option>
+              <option value="pago">Al pago del mes — reduce el próximo pago aunque sea posterior al corte; sin arrastre</option>
+            </select>
+          </div>
+          <div class="col-sm-7">
             <label class="form-label small">Nota</label>
             <input type="text" class="form-control form-control-sm" name="nota" placeholder="Opcional">
           </div>
@@ -2674,9 +2685,37 @@ function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="btn-cancel-edit-credito-compra">Cancelar edición</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-add-credito-compra">
         <i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor</button>`,
   });
+
+  // Edición: la fila elegida llena el mismo formulario y el botón pasa a "Guardar cambios"
+  let editando = null;
+  const btnGuardar  = document.getElementById('btn-add-credito-compra');
+  const btnCancelar = document.getElementById('btn-cancel-edit-credito-compra');
+  const salirDeEdicion = () => {
+    editando = null;
+    document.getElementById('credito-compra-form').reset();
+    btnGuardar.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Agregar saldo a favor';
+    btnCancelar.classList.add('d-none');
+  };
+  btnCancelar.addEventListener('click', salirDeEdicion);
+  document.querySelectorAll('.btn-edit-credito-compra').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const cr = creditos.find(x => x.id === btn.dataset.id);
+      if (!cr) return;
+      editando = cr;
+      const f = document.getElementById('credito-compra-form');
+      f.fecha.value  = String(cr.fecha || '').slice(0, 10);
+      f.monto.value  = cr.monto;
+      f.origen.value = cr.origen || 'otro';
+      f.modo.value   = cr.modo === 'pago' ? 'pago' : 'corte';
+      f.nota.value   = cr.nota || '';
+      btnGuardar.innerHTML = '<i class="bi bi-check-lg me-1"></i>Guardar cambios';
+      btnCancelar.classList.remove('d-none');
+      f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
 
   document.querySelectorAll('.btn-del-credito-compra').forEach(btn =>
     btn.addEventListener('click', async () => {
@@ -2701,9 +2740,27 @@ function _showModalCredito(compra, coleccion, creditosTarjeta, onSaved) {
       monto:           Number(raw.monto),
       origen:          raw.origen,
     };
+    if (raw.modo === 'pago') data.modo = 'pago'; // 'corte' es el default, no se guarda
     if (raw.nota) data.nota = raw.nota;
 
     try {
+      if (editando) {
+        // Se conserva la hora original si la fecha no cambió
+        const mismaFecha = String(editando.fecha || '').slice(0, 10) === raw.fecha;
+        const cambios = {
+          fecha:  mismaFecha ? editando.fecha : data.fecha,
+          monto:  data.monto,
+          origen: data.origen,
+          modo:   raw.modo === 'pago' ? 'pago' : 'corte',
+          nota:   raw.nota || '',
+        };
+        await update('creditosTarjeta', editando.id, cambios);
+        Object.assign(editando, cambios); // la lista en memoria es la que lee el resto de la app
+        toast('Saldo a favor actualizado');
+        closeModal();
+        onSaved();
+        return;
+      }
       const id = await create('creditosTarjeta', data);
       creditosTarjeta.push({ id, ...data });
       toast('Saldo a favor agregado');
