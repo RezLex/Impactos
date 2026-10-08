@@ -212,32 +212,16 @@ export function getPlazosMes(msiItems, tarjetaId, ciclo, mes, festivosMX) {
 
 /**
  * Créditos a favor (bonificación, cancelación, conversión MSI) para una tarjeta.
- * A diferencia de una compra (que se ubica por el corte de SU PROPIO ciclo,
- * pudiendo caer en el siguiente si se hizo después del corte), un crédito
- * sigue abonando al pago de `mes` mientras ese pago no se haya hecho: cae en
- * `mes` si su fecha está entre el pago del mes anterior (exclusivo) y el pago
- * de `mes` (inclusive). Así una cancelación registrada después del corte pero
- * antes de pagar reduce ESE pago en vez de esperar al siguiente ciclo; una
- * vez que el pago de `mes` ya ocurrió, un crédito posterior cae en el
- * siguiente mes — nunca reabre uno ya pagado.
+ * Se ubican igual que una compra: por el CORTE. Un crédito con fecha hasta el
+ * corte de un ciclo reduce el pago de ese ciclo; uno posterior al corte ya
+ * pertenece al siguiente estado de cuenta y se paga con el pago siguiente —
+ * así lo aplica el banco.
  */
 export function getCreditosMes(creditosTarjeta, tarjetaId, ciclo, mes, festivosMX) {
   if (!ciclo) return [];
-  const periodo = calcularCicloParaMes(ciclo, mes, festivosMX);
-  if (!periodo?.fechaPago) return [];
-
-  const [y, mo]      = mes.split('-').map(Number);
-  const prevMes       = `${mo === 1 ? y - 1 : y}-${String(mo === 1 ? 12 : mo - 1).padStart(2, '0')}`;
-  const prevPeriodo   = calcularCicloParaMes(ciclo, prevMes, festivosMX);
-  const prevFechaPago = prevPeriodo?.fechaPago || null;
-
-  return creditosTarjeta.filter(c => {
-    if (c.tarjetaId !== tarjetaId || !c.fecha) return false;
-    const d = _d(c.fecha);
-    if (!d) return false;
-    if (prevFechaPago && d <= prevFechaPago) return false;
-    return d <= periodo.fechaPago;
-  });
+  return creditosTarjeta.filter(c =>
+    c.tarjetaId === tarjetaId && c.fecha
+    && _enMes(_fechaPagoFromDate(c.fecha, ciclo, festivosMX), mes, festivosMX));
 }
 
 /** Confirmed credit gastos for a tarjeta whose anteriorNomina(fechaPago ciclo) falls in mes. */
@@ -354,8 +338,38 @@ export function getGastosFijosPendientes(gastosFijosItems, gastosItems, mes, fes
   return result.sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
 }
 
+/**
+ * Saldo a favor de meses ANTERIORES que no alcanzó a usarse y el banco aplica a
+ * los siguientes cargos (no lo devuelve). Se arrastra mes a mes desde el primer
+ * crédito: lo que sobra de un ciclo —crédito + arrastre − cargos— pasa al
+ * siguiente. Los cargos de cada mes salen del mismo cálculo, sin créditos.
+ */
+function _creditoArrastrado(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta) {
+  const ciclo = tarjeta.ciclo || null;
+  if (!ciclo) return 0;
+  const mesDe = c => {
+    const nom = anteriorNomina(_fechaPagoFromDate(c.fecha, ciclo, festivosMX) || new Date(NaN), festivosMX);
+    return nom && !isNaN(nom) ? toISODate(nom).slice(0, 7) : null;
+  };
+  const primero = creditosTarjeta
+    .filter(c => c.tarjetaId === tarjeta.id && c.fecha)
+    .map(mesDe).filter(Boolean).sort()[0];
+  if (!primero || primero >= mes) return 0;
+
+  let carry = 0, m = primero, guard = 0;
+  while (m < mes && guard++ < 60) {
+    const cargos = calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, m, pagosDiferidos, [], true).estimadoTotal;
+    const creditos = getCreditosMes(creditosTarjeta, tarjeta.id, ciclo, m, festivosMX)
+      .reduce((t, c) => t + (Number(c.monto) || 0), 0);
+    carry = Math.max(0, r2(carry + creditos - cargos));
+    const [y, mo] = m.split('-').map(Number);
+    m = `${mo === 12 ? y + 1 : y}-${String(mo === 12 ? 1 : mo + 1).padStart(2, '0')}`;
+  }
+  return carry;
+}
+
 /** Calculates estimated amounts for one credit/loan card in a given month. */
-export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = [], creditosTarjeta = []) {
+export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = [], creditosTarjeta = [], _sinArrastre = false) {
   const ciclo = tarjeta.ciclo || null;
   const tid   = tarjeta.id;
 
@@ -413,14 +427,17 @@ export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosI
     else                             pagosDifContado += men || 0;
   });
 
-  const creditosAplicados = getCreditosMes(creditosTarjeta, tid, ciclo, mes, festivosMX)
+  const creditosMes = getCreditosMes(creditosTarjeta, tid, ciclo, mes, festivosMX)
     .reduce((s, c) => s + (Number(c.monto) || 0), 0);
+  const creditoArrastrado = _sinArrastre ? 0
+    : _creditoArrastrado(tarjeta, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta);
+  const creditosAplicados = r2(creditosMes + creditoArrastrado);
 
   return {
     estimadoContado, estimadoPlazos, estimadoGastos,
     pendienteContado, pendientePlazos,
     pagosDifContado, pagosDifPlazos,
-    creditosAplicados,
+    creditosAplicados, creditoArrastrado,
     // Piso en 0: si el saldo a favor del mes supera lo cobrado ese ciclo, no
     // hay "monto a pagar" negativo que registrar — el excedente ya está
     // reflejado en el disponible de la tarjeta (saldo.js), que es quien de

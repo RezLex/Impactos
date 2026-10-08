@@ -145,18 +145,18 @@ test('getCreditosMes: otra tarjeta u otro mes no entra', () => {
   assert.equal(getCreditosMes([credito()], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 0);
 });
 
-// Corte 20-ene, pago 4-feb (+15d). A diferencia de una compra, un crédito
-// registrado DESPUÉS del corte (ej. 25-ene) pero ANTES del pago sigue
-// abonando al pago de enero — no debe esperar al ciclo de febrero.
-test('getCreditosMes: cancelación registrada después del corte abona al pago del mes en curso, no al siguiente ciclo', () => {
-  const r = getCreditosMes([credito({ fecha: '2026-01-25' })], TARJETA_ID, CICLO, '2026-01', FESTIVOS);
-  assert.equal(r.length, 1);
+// Corte 20-ene, pago 4-feb (+15d). Un crédito registrado DESPUÉS del corte
+// (ej. 25-ene) ya pertenece al siguiente estado de cuenta: igual que una
+// compra, se paga con el pago del ciclo siguiente.
+test('getCreditosMes: crédito posterior al corte cae en el pago del ciclo siguiente', () => {
+  const c = credito({ fecha: '2026-01-25' });
+  assert.equal(getCreditosMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
+  assert.equal(getCreditosMes([c], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 1);
 });
 
-test('getCreditosMes: una vez pagado el mes (fecha posterior al pago), el crédito cae en el siguiente mes', () => {
-  const credAfterPago = credito({ fecha: '2026-02-10' }); // después del pago de enero (4-feb)
-  assert.equal(getCreditosMes([credAfterPago], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 0);
-  assert.equal(getCreditosMes([credAfterPago], TARJETA_ID, CICLO, '2026-02', FESTIVOS).length, 1);
+test('getCreditosMes: un crédito anterior al corte entra al ciclo que corta', () => {
+  const c = credito({ fecha: '2026-01-19' });
+  assert.equal(getCreditosMes([c], TARJETA_ID, CICLO, '2026-01', FESTIVOS).length, 1);
 });
 
 test('calcularEstimadoTarjeta: resta los créditos aplicados del estimadoTotal', () => {
@@ -167,6 +167,33 @@ test('calcularEstimadoTarjeta: resta los créditos aplicados del estimadoTotal',
   assert.equal(sinCredito.estimadoTotal, 500);
   assert.equal(conCredito.creditosAplicados, 150);
   assert.equal(conCredito.estimadoTotal, 350);
+});
+
+test('calcularEstimadoTarjeta: el saldo a favor que sobra se arrastra y se aplica a los cargos del mes siguiente', () => {
+  const tarjeta = { id: TARJETA_ID, ciclo: CICLO };
+  const contadoItems = [
+    { id: 'c1', tarjetaId: TARJETA_ID, fechaCompra: '2026-01-05', total: 200 },
+    { id: 'c2', tarjetaId: TARJETA_ID, fechaCompra: '2026-02-05', total: 500 },
+  ];
+  const cred = [credito({ monto: 650 })]; // enero: 650 − 200 = 450 de sobra
+  const ene = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-01', [], cred);
+  const feb = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-02', [], cred);
+  assert.equal(ene.estimadoTotal, 0);
+  assert.equal(ene.creditoArrastrado, 0);
+  assert.equal(feb.creditoArrastrado, 450);
+  assert.equal(feb.estimadoTotal, 50, '500 de cargos − 450 arrastrados');
+});
+
+test('calcularEstimadoTarjeta: el arrastre se consume y no reaparece dos meses después', () => {
+  const tarjeta = { id: TARJETA_ID, ciclo: CICLO };
+  const contadoItems = [
+    { id: 'c2', tarjetaId: TARJETA_ID, fechaCompra: '2026-02-05', total: 500 },
+    { id: 'c3', tarjetaId: TARJETA_ID, fechaCompra: '2026-03-05', total: 300 },
+  ];
+  const cred = [credito({ monto: 450 })]; // enero, sin cargos: sobran 450
+  const mar = calcularEstimadoTarjeta(tarjeta, contadoItems, [], [], FESTIVOS, '2026-03', [], cred);
+  assert.equal(mar.creditoArrastrado, 0, 'febrero se comió todo el crédito');
+  assert.equal(mar.estimadoTotal, 300);
 });
 
 test('calcularEstimadoTarjeta: estimadoTotal no baja de 0 aunque el crédito del mes supere lo cobrado', () => {

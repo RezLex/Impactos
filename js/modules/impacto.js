@@ -511,7 +511,8 @@ function _renderTarjetasTable(tarjetas, isActivo, isCerrado, hoy, festivosMX = [
           (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 ? `Plazos: ${currency(t.estimadoPlazos + (t.pagosDifPlazos || 0))}`  : '',
           (t.estimadoPlazos + (t.pagosDifPlazos || 0))  > 0 && t.pendientePlazos  > 0 ? `  Pendiente: ${currency(t.pendientePlazos)}` : '',
           t.estimadoGastos  > 0 ? `Gastos: ${currency(t.estimadoGastos)}`  : '',
-          (t.creditosAplicados || 0) > 0 ? `Saldo a favor aplicado: -${currency(t.creditosAplicados)}` : '',
+          (t.creditosAplicados || 0) > 0 ? `Saldo a favor aplicado: -${currency(t.creditosAplicados)}${
+            (t.creditoArrastrado || 0) > 0 ? ` (incluye ${currency(t.creditoArrastrado)} arrastrados de meses anteriores)` : ''}` : '',
         ].filter(Boolean).join('\n')}">
         ${numCell(t.estimadoTotal, t.montoAPagar, idx, 'montoAPagar')}
         ${t.pagado ? `<div class="text-muted" style="font-size:0.7rem">${fmtDate(t.fechaPagado)}</div>` : ''}
