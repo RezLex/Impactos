@@ -63,8 +63,10 @@ const _addTime = s => {
 import { currency, fmtDate, r2 } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from '../utils/ciclo.js';
-import { getGastosFijosPendientes, getContadoMes } from '../utils/impacto-calc.js';
+import { getGastosFijosPendientes, getContadoMes, getPlazosMes, calcularCicloParaMes } from '../utils/impacto-calc.js';
 import { limitarDisponible } from '../utils/saldo.js';
+import { calcularDistribucion } from '../utils/bonificaciones.js';
+import { bonifFieldsHTML, wireBonifFields, saveBonif } from '../utils/bonif-form.js';
 
 const FORMA_PAGO = { automatico: 'Automático', retiro: 'Retiro', transferencia: 'Transferencia' };
 const ORIGEN_CREDITO_LABEL = {
@@ -85,16 +87,50 @@ const ESTATUS_GASTO_CLS   = {
   aplicado:     'bg-success-subtle text-success',
 };
 
+// Filtros y orden de la pestaña Todas. Viven en el módulo (no dentro de
+// `renderView`) para sobrevivir a los `renderView` que disparan los modales al
+// guardar; se reinician al entrar a la ruta y con "Limpiar filtros".
+let busquedaActual;
+let filtroTodasMes;
+let filtroTodasTipo;
+let filtroTodasSinMes;
+let filtroTodasTipoReg;        // '' | 'contado' | 'plazos' | 'gastos' | 'diferidos' (contado o plazos) | 'bonificacion'
+let filtroTodasInst;           // '' | institucionId | '__sin_inst__'
+let filtroTodasSoloPendDif;    // con tipo "Diferidos": solo las que tienen saldo sin registrar en pagos
+let filtroTodasSoloBonifPend;  // con tipo "Con Bonificación": solo las que no tienen la aplicación confirmada
+let ordenTodas;                // { campo: 'fecha'|'pago', dir: 'asc'|'desc' } elegido en los encabezados; null = orden por defecto
+
+function _resetFiltrosTodas() {
+  busquedaActual           = '';
+  filtroTodasMes           = toISODate(new Date()).slice(0, 7);
+  filtroTodasTipo          = 'pago';
+  filtroTodasSinMes        = false;
+  filtroTodasTipoReg       = '';
+  filtroTodasInst          = '';
+  filtroTodasSoloPendDif   = false;
+  filtroTodasSoloBonifPend = false;
+  ordenTodas               = null;
+}
+_resetFiltrosTodas();
+
+/** ¿Algún filtro de Todas distinto del valor por defecto? (habilita "Limpiar filtros"). */
+function _hayFiltrosTodas() {
+  return !!(busquedaActual.trim() || filtroTodasTipoReg || filtroTodasInst || filtroTodasSinMes
+    || filtroTodasTipo !== 'pago' || ordenTodas
+    || filtroTodasMes !== toISODate(new Date()).slice(0, 7));
+}
+
 export async function render(container, tab = null, query = null) {
+  _resetFiltrosTodas();
   // La presencia de `meses` es lo que distingue una compra a plazos: los
   // parámetros que no aplican se omiten del enlace, no llegan vacíos.
   const tipoQuery = query?.has('meses') ? 'plazos' : null;
-  await renderView(container, tab || tipoQuery || 'contado', query);
+  await renderView(container, tab || tipoQuery || 'todas', query);
 }
 
-async function renderView(container, initialTab = 'contado', query = null) {
+async function renderView(container, initialTab = 'todas', query = null) {
   try {
-    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos, creditosTarjeta] = await Promise.all([
+    const [contadoItems, msiItems, instituciones, tarjetas, festivosMX, gastosItems, gastosFijosItems, pagosDiferidos, creditosTarjeta, bonificaciones] = await Promise.all([
       getAll('contado'),
       getAll('msi'),
       getAll('instituciones'),
@@ -104,6 +140,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
       getAll('gastosFijos'),
       getAll('pagosDiferidos'),
       getAll('creditosTarjeta'),
+      getAll('bonificaciones'),
     ]);
 
     if (query && (query.get('desc') || query.get('total'))) {
@@ -152,15 +189,63 @@ async function renderView(container, initialTab = 'contado', query = null) {
     // State: which diferido compras are expanded
     const expandedDiferidos = new Set();
 
-    const _rerenderAcordeon = (acordeonId, renderFn) => {
-      const abiertos = [...document.querySelectorAll(`#${acordeonId} .accordion-collapse.show`)].map(el => el.id);
-      const scrollY = window.scrollY;
-      // Rebuild pagosMap from current pagosDiferidos before re-render
+    const _rebuildPagosMap = () => {
       Object.keys(pagosMap).forEach(k => delete pagosMap[k]);
       pagosDiferidos.forEach(p => {
         if (!pagosMap[p.compraId]) pagosMap[p.compraId] = [];
         pagosMap[p.compraId].push(p);
       });
+    };
+
+    // ── Acciones de pagos diferidos (compartidas por De Contado, A Plazos y Todas/buscador) ──
+
+    /** Borra un pago diferido y recalcula el pendiente (`total`) de su compra en `coleccion`. */
+    const _eliminarPagoDiferido = async (pagoId, compra, coleccion) => {
+      await remove('pagosDiferidos', pagoId);
+      const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
+      if (idx >= 0) pagosDiferidos.splice(idx, 1);
+      if (compra) {
+        compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
+        await update(coleccion, compra.id, { total: compra.total });
+      }
+      toast('Pago eliminado');
+    };
+
+    /** Registra una cuota de un pago diferido de una compra a plazos y recalcula el restante de la compra. */
+    const _pagarCuotaDiferido = async (pago, compra) => {
+      const mens     = Number(pago.mensualidad != null ? pago.mensualidad : compra.mensualidad) || 0;
+      const rest     = pago.restante != null ? Number(pago.restante) : Math.max(0, Number(pago.monto) - mens * (Number(pago.mesesPagados) || 0));
+      const newMeses = (Number(pago.mesesPagados) || 0) + 1;
+      const newRest  = r2(Math.max(0, rest - mens));
+      pago.mesesPagados = newMeses;
+      pago.restante     = newRest;
+      await update('pagosDiferidos', pago.id, { mesesPagados: newMeses, restante: newRest });
+      // Recalcular restante del padre
+      const pagosDeLaCompra = pagosDiferidos.filter(p => p.compraId === compra.id);
+      const sumRest = pagosDeLaCompra.reduce((s, p) => {
+        const m2 = Number(p.mensualidad != null ? p.mensualidad : compra.mensualidad) || 0;
+        return s + (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - m2 * (Number(p.mesesPagados) || 0)));
+      }, 0);
+      const nuevoRestante = r2(sumRest + (Number(compra.total) || 0));
+      compra.restante = nuevoRestante;
+      await update('msi', compra.id, { restante: nuevoRestante });
+    };
+
+    /**
+     * Recarga la vista (vuelve a leer de Firestore) tras guardar desde un modal y
+     * regresa al mismo scroll. Los filtros de Todas viven en el módulo, así que
+     * también se conservan.
+     */
+    const _recargarConScroll = async tab => {
+      const y = window.scrollY;
+      await renderView(container, tab);
+      window.scrollTo(0, y);
+    };
+
+    const _rerenderAcordeon = (acordeonId, renderFn) => {
+      const abiertos = [...document.querySelectorAll(`#${acordeonId} .accordion-collapse.show`)].map(el => el.id);
+      const scrollY = window.scrollY;
+      _rebuildPagosMap();
       renderFn();
       // Restore open panels without animation, then restore scroll
       abiertos.forEach(id => {
@@ -185,7 +270,12 @@ async function renderView(container, initialTab = 'contado', query = null) {
         const next = new Date(year, month + 1, 1);
         p = calcularMes(tc.ciclo, next.getFullYear(), next.getMonth(), festivosMX);
       }
-      if (!p.fechaPago) return '—';
+      return _pagoCellDePeriodo(p);
+    };
+
+    /** Nómina (anterior al pago) + fecha límite de pago de un periodo `{ fechaPago }` ya calculado. */
+    const _pagoCellDePeriodo = p => {
+      if (!p?.fechaPago) return '—';
       const lim = fmtDate(toISODate(p.fechaPago));
       const nom = anteriorNomina(p.fechaPago, festivosMX);
       return `${nom ? `<span style="color:var(--bs-primary);font-weight:600"><i class="bi bi-wallet2 me-1"></i>${fmtDate(toISODate(nom))}</span><br>` : ''}<small class="text-muted"><i class="bi bi-credit-card me-1" style="font-size:0.7rem"></i>${lim}</small>`;
@@ -193,6 +283,19 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
     const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
+
+    // Bonificación repartida a cada compra ligada (módulo Bonificaciones), para
+    // que `_bonifTotal` la pinte igual que una bonificación manual.
+    _bonifLigadas = new Map();
+    {
+      const ligadas = [...contadoItems, ...msiItems].filter(c => c.bonificacionId);
+      bonificaciones.forEach(b => {
+        const compras = ligadas.filter(c => c.bonificacionId === b.id);
+        if (!compras.length) return;
+        const { porCompra } = calcularDistribucion(b, compras, !!instMap[b.institucionId]?.bonificacionConIva);
+        compras.forEach(c => _bonifLigadas.set(c.id, { bonif: b, d: porCompra.get(c.id) }));
+      });
+    }
 
     // ── Auto-crear / migrar pendientes para gastos fijos cuya fecha ya pasó ──
     {
@@ -291,7 +394,10 @@ async function renderView(container, initialTab = 'contado', query = null) {
       </div>
       <ul class="nav nav-tabs mb-3" id="compras-tabs">
         <li class="nav-item">
-          <button class="nav-link active" data-tab="contado">De Contado</button>
+          <button class="nav-link active" data-tab="todas">Todas</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="contado">De Contado</button>
         </li>
         <li class="nav-item">
           <button class="nav-link" data-tab="plazos">A Plazos</button>
@@ -304,24 +410,51 @@ async function renderView(container, initialTab = 'contado', query = null) {
 
     // ── De Contado ──────────────────────────────────────────────────────────────
 
+    // Filtros de mes compartidos por De Contado, Gastos y Todas — `tipo` es
+    // 'compra' (fecha de compra/gasto) o 'pago' (mes de la nómina que lo paga).
+
+    const _contadoEnMes = (c, tipo, mes) => {
+      if (tipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === mes;
+      const tc = cardMap[c.tarjetaId];
+      // Diferido with pagos: each pago belongs to its own cycle — show when this cycle has pagos
+      if (c.diferido && (pagosMap[c.id] || []).length > 0 && tc?.tipo === 'credito' && tc?.ciclo) {
+        return _getPagosEnCiclo(pagosMap[c.id], tc, mes, festivosMX).length > 0;
+      }
+      // Mismo motor que Impacto (getContadoMes): respeta fechaEfectiva y
+      // recorre al siguiente ciclo una diferida sin resolver cuyo pago ya
+      // venció, en vez de duplicar esa lógica aparte y que se desincronice.
+      if (tc?.tipo === 'credito' && tc?.ciclo) {
+        return getContadoMes([c], c.tarjetaId, tc.ciclo, mes, festivosMX).length > 0;
+      }
+      return ((c.fechaEfectiva || c.fechaCompra) || '').slice(0, 7) === mes;
+    };
+
+    const _contadoVal = (c, tipo, mes) => {
+      if (!c.diferido) return Number(c.total) || 0;
+      const tc2 = cardMap[c.tarjetaId];
+      const pp = (tipo === 'pago' && tc2?.ciclo)
+        ? _getPagosEnCiclo(pagosMap[c.id], tc2, mes, festivosMX)
+        : (pagosMap[c.id] || []);
+      return pp.reduce((ps, p) => ps + (Number(p.monto) || 0), 0);
+    };
+
+    const _gastoEnMes = (g, tipo, mes) => {
+      if (tipo === 'compra') return (g.fechaPago || '').slice(0, 7) === mes;
+      const tc = cardMap[g.tarjetaId];
+      if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
+        const base = new Date(String(g.fechaPago).includes('T') ? g.fechaPago : g.fechaPago + 'T12:00:00');
+        let yr = base.getFullYear(), mo = base.getMonth();
+        let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
+        if (p.fechaCorte < base) { const nx = new Date(yr, mo + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
+        if (p.fechaPago) return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago).slice(0, 7) === mes;
+      }
+      return (g.fechaPago || '').slice(0, 7) === mes;
+    };
+
     const renderContado = () => {
       const contadoCollapsed = true;
 
-      const filtered = contadoItems.filter(c => {
-        if (filtroContadoTipo === 'compra') return (c.fechaCompra || '').slice(0, 7) === filtroContadoMes;
-        const tc = cardMap[c.tarjetaId];
-        // Diferido with pagos: each pago belongs to its own cycle — show when this cycle has pagos
-        if (c.diferido && (pagosMap[c.id] || []).length > 0 && tc?.tipo === 'credito' && tc?.ciclo) {
-          return _getPagosEnCiclo(pagosMap[c.id], tc, filtroContadoMes, festivosMX).length > 0;
-        }
-        // Mismo motor que Impacto (getContadoMes): respeta fechaEfectiva y
-        // recorre al siguiente ciclo una diferida sin resolver cuyo pago ya
-        // venció, en vez de duplicar esa lógica aparte y que se desincronice.
-        if (tc?.tipo === 'credito' && tc?.ciclo) {
-          return getContadoMes([c], c.tarjetaId, tc.ciclo, filtroContadoMes, festivosMX).length > 0;
-        }
-        return ((c.fechaEfectiva || c.fechaCompra) || '').slice(0, 7) === filtroContadoMes;
-      });
+      const filtered = contadoItems.filter(c => _contadoEnMes(c, filtroContadoTipo, filtroContadoMes));
 
       const byInst = {};
       filtered.forEach(c => {
@@ -331,15 +464,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
         byInst[instId].items.push(c);
       });
 
-      const _contadoVal = c => {
-        if (!c.diferido) return Number(c.total) || 0;
-        const tc2 = cardMap[c.tarjetaId];
-        const pp = (filtroContadoTipo === 'pago' && tc2?.ciclo)
-          ? _getPagosEnCiclo(pagosMap[c.id], tc2, filtroContadoMes, festivosMX)
-          : (pagosMap[c.id] || []);
-        return pp.reduce((ps, p) => ps + (Number(p.monto) || 0), 0);
-      };
-      const totalCompras = filtered.reduce((s, c) => s + _contadoVal(c), 0);
+      const totalCompras = filtered.reduce((s, c) => s + _contadoVal(c, filtroContadoTipo, filtroContadoMes), 0);
       const groups       = Object.values(byInst)
         .filter(g => g.items.length > 0)
         .sort((a, b) => (a.inst?.nombre || '').localeCompare(b.inst?.nombre || '', 'es'));
@@ -542,15 +667,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
           const pagoId = btn.dataset.id;
           const compraId = btn.dataset.compraId;
           if (!confirm('¿Eliminar este pago?')) return;
-          await remove('pagosDiferidos', pagoId);
-          const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
-          if (idx >= 0) pagosDiferidos.splice(idx, 1);
-          const compra = contadoItems.find(x => x.id === compraId);
-          if (compra) {
-            compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
-            await update('contado', compraId, { total: compra.total });
-          }
-          toast('Pago eliminado');
+          await _eliminarPagoDiferido(pagoId, contadoItems.find(x => x.id === compraId), 'contado');
           _rerenderAcordeon('contado-accordion', renderContado);
         }));
 
@@ -869,15 +986,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
           const pagoId  = btn.dataset.id;
           const compraId = btn.dataset.compraId;
           if (!confirm('¿Eliminar este pago?')) return;
-          await remove('pagosDiferidos', pagoId);
-          const idx = pagosDiferidos.findIndex(x => x.id === pagoId);
-          if (idx >= 0) pagosDiferidos.splice(idx, 1);
-          const compra = msiItems.find(x => x.id === compraId);
-          if (compra) {
-            compra.total = _recalcTotalDiferido(compra, pagosDiferidos);
-            await update('msi', compraId, { total: compra.total });
-          }
-          toast('Pago eliminado');
+          await _eliminarPagoDiferido(pagoId, msiItems.find(x => x.id === compraId), 'msi');
           _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
         }));
 
@@ -954,22 +1063,7 @@ async function renderView(container, initialTab = 'contado', query = null) {
           const pago   = pagosDiferidos.find(x => x.id === btn.dataset.id);
           const compra = msiItems.find(x => x.id === btn.dataset.compraId);
           if (!pago || !compra) return;
-          const mens    = Number(pago.mensualidad != null ? pago.mensualidad : compra.mensualidad) || 0;
-          const rest    = pago.restante != null ? Number(pago.restante) : Math.max(0, Number(pago.monto) - mens * (Number(pago.mesesPagados) || 0));
-          const newMeses = (Number(pago.mesesPagados) || 0) + 1;
-          const newRest  = r2(Math.max(0, rest - mens));
-          pago.mesesPagados = newMeses;
-          pago.restante     = newRest;
-          await update('pagosDiferidos', pago.id, { mesesPagados: newMeses, restante: newRest });
-          // Recalcular restante del padre
-          const pagosDeLaCompra = pagosDiferidos.filter(p => p.compraId === compra.id);
-          const sumRest = pagosDeLaCompra.reduce((s, p) => {
-            const m2 = Number(p.mensualidad != null ? p.mensualidad : compra.mensualidad) || 0;
-            return s + (p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - m2 * (Number(p.mesesPagados) || 0)));
-          }, 0);
-          const nuevoRestante = r2(sumRest + (Number(compra.total) || 0));
-          compra.restante = nuevoRestante;
-          await update('msi', compra.id, { restante: nuevoRestante });
+          await _pagarCuotaDiferido(pago, compra);
           _rerenderAcordeon('msi-accordion', () => renderPlazos(filtroMsi));
         }));
     };
@@ -979,9 +1073,10 @@ async function renderView(container, initialTab = 'contado', query = null) {
     const renderTab = (tab) => {
       document.querySelectorAll('#compras-tabs .nav-link').forEach(b =>
         b.classList.toggle('active', b.dataset.tab === tab));
-      const labels = { contado: 'Nueva Compra', plazos: 'Nueva Compra MSI', gastos: 'Nuevo Gasto' };
+      const labels = { todas: 'Nueva Compra', contado: 'Nueva Compra', plazos: 'Nueva Compra MSI', gastos: 'Nuevo Gasto' };
       document.getElementById('btn-nueva-label').textContent = labels[tab] || 'Nueva Compra';
-      if (tab === 'contado')     renderContado();
+      if (tab === 'todas')        renderTodas();
+      else if (tab === 'contado') renderContado();
       else if (tab === 'plazos') renderPlazos(filtroMsi);
       else                       renderGastos();
     };
@@ -993,9 +1088,677 @@ async function renderView(container, initialTab = 'contado', query = null) {
       renderTab(tabActivo);
     });
 
+    // ── Tabla mixta (pestaña Todas) ─────────────────────────────────────────────
+
+    /** Minúsculas y sin acentos, para buscar. */
+    const _norm = s => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+    /**
+     * Número de tarjeta con que se hizo el cargo: últimos 4 dígitos y formato
+     * ('fisica' | 'digital'). Solo se guarda `numeroTarjeta`, así que el formato se
+     * deduce buscándolo entre los números de la tarjeta (física primero, como el
+     * select del modal, por si ambas comparten número). Sin número guardado se usa
+     * el mismo número por defecto que las demás tablas (física, si no la primera).
+     */
+    const _numeroCargo = (item, tc) => {
+      const limpio = s => String(s || '').replace(/\s/g, '');
+      const nums = (Array.isArray(tc?.numeros) ? tc.numeros : []).filter(n => n.numero);
+      const ordenados = [...nums.filter(n => n.formato === 'fisica'), ...nums.filter(n => n.formato !== 'fisica')];
+      if (item.numeroTarjeta) {
+        const n = ordenados.find(x => limpio(x.numero) === limpio(item.numeroTarjeta));
+        return { l4: limpio(item.numeroTarjeta).slice(-4), formato: n?.formato || null };
+      }
+      const n = ordenados[0];
+      return n ? { l4: limpio(n.numero).slice(-4), formato: n.formato } : { l4: '', formato: null };
+    };
+
+    const TIPO_BADGE = {
+      contado: '<span class="badge bg-success-subtle text-success">De Contado</span>',
+      plazos:  '<span class="badge bg-primary-subtle text-primary">A Plazos</span>',
+      gastos:  '<span class="badge bg-warning-subtle text-warning-emphasis">Gasto</span>',
+    };
+
+    /**
+     * Meses pagados de una compra a plazos. Una diferida lleva las cuotas en cada
+     * pago registrado (cada uno a `mesesTotal`), así que se suman las de todos —
+     * mismo criterio que la barra de progreso de la pestaña A Plazos.
+     */
+    const _progresoPlazo = m => {
+      const mesesTotal = Number(m.mesesTotal) || 0;
+      const pagos = m.diferido ? (pagosMap[m.id] || []) : null;
+      const pagados = pagos ? pagos.reduce((s, p) => s + (Number(p.mesesPagados) || 0), 0) : Number(m.mesesPagados) || 0;
+      const total   = pagos ? mesesTotal * Math.max(1, pagos.length) : mesesTotal;
+      const pct  = m.liquidado ? 100 : Math.min(100, Math.round(pagados / (total || 1) * 100));
+      return { pagados: m.liquidado ? total : pagados, total, pct, done: pct >= 100, unidad: pagos && pagos.length > 1 ? 'cuotas' : 'meses' };
+    };
+
+    /** Progreso (barra + meses) de una compra a plazos, para la celda de descripción. */
+    const _progresoPlazoHtml = m => {
+      const pr = _progresoPlazo(m);
+      return `
+        <div class="d-flex align-items-center gap-2 mt-1">
+          <div class="progress" style="width:90px;height:6px" title="${pr.pct}% pagado">
+            <div class="progress-bar ${pr.done ? 'bg-success' : 'bg-primary'}" style="width:${pr.pct}%"></div>
+          </div>
+          <small class="text-muted" style="white-space:nowrap">${pr.pagados}/${pr.total} ${pr.unidad}${m.liquidado ? ' · Completada' : ''}</small>
+        </div>`;
+    };
+
+    /**
+     * Celda "Monto". Cuando el monto mostrado es el total de la compra
+     * (`montoEsTotal`), la bonificación se pinta igual que en De Contado / A Plazos
+     * (`_bonifTotal`: neto, total tachado y detalle). Si es una parte (mensualidad,
+     * pagos del ciclo) la bonificación no aplica sobre ese número: solo se indica
+     * con el regalo. En compras a plazos la celda abre el detalle de montos.
+     */
+    const _montoMixtaCell = (f, i) => {
+      const tc = cardMap[f.tarjetaId];
+      const b  = _bonifInfo(f.item);
+      let monto;
+      if (f.montoEsTotal) {
+        monto = _bonifTotal(f.item, f.total, !!tc?.inst?.bonificacionConIva);
+      } else {
+        const cls = !b ? '' : b.aplicada ? 'text-success' : b.fechaMaxima < toISODate(new Date()) ? 'text-danger' : 'text-warning';
+        monto = `<span class="fw-bold">${currency(f.total)}</span>${b ? ` <i class="bi bi-gift ${cls}" style="font-size:0.75rem" title="Tiene bonificación sobre el total de la compra"></i>` : ''}`;
+      }
+      const nota = f.totalNota ? `<br><small class="text-muted">${f.totalNota}</small>` : '';
+      return f.tipo === 'plazos'
+        ? `<td class="text-end mx-montos" data-i="${i}" role="button" title="Ver montos">${monto}${nota}</td>`
+        : `<td class="text-end">${monto}${nota}</td>`;
+    };
+
+    /** Celda "Fecha Pago"; en compras a plazos abre primer / próximo / último pago. */
+    const _fechaPagoMixtaCell = (f, i) => f.tipo === 'plazos'
+      ? `<td style="white-space:nowrap" class="mx-fechas" data-i="${i}" role="button" title="Ver fechas de pago">${f.pagoHtml || '—'}</td>`
+      : `<td style="white-space:nowrap">${f.pagoHtml || '—'}</td>`;
+
+    /** Mensualidad, restante y total de una compra a plazos (mismas cuentas que la pestaña A Plazos). */
+    const _montosPlazo = m => {
+      if (!m.diferido) {
+        const mensualidad = Number(m.mensualidad) || 0;
+        const restante = m.liquidado ? 0 : m.restante != null
+          ? Number(m.restante)
+          : Math.max(0, (Number(m.total) || 0) - mensualidad * (Number(m.mesesPagados) || 0));
+        return { mensualidad, restante, total: Number(m.total) || 0 };
+      }
+      const pagos     = pagosMap[m.id] || [];
+      const pendiente = Number(m.total) || 0;
+      const mensDe    = p => Number(p.mensualidad != null ? p.mensualidad : m.mensualidad) || 0;
+      const mensualidad = pagos.reduce((s, p) => s + mensDe(p), 0) + (pendiente > 0 && m.mesesTotal ? pendiente / m.mesesTotal : 0);
+      const restante = pagos.reduce((s, p) => s + (p.restante != null
+        ? Number(p.restante)
+        : Math.max(0, Number(p.monto) - mensDe(p) * (Number(p.mesesPagados) || 0))), 0) + pendiente;
+      const total = Number(m.totalDiferido) || (pendiente + pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0));
+      return { mensualidad, restante, total };
+    };
+
+    /**
+     * Primer, próximo y último pago (fecha límite) de una compra a plazos. Una
+     * diferida tiene un plan por cada pago registrado: se toma el primero más
+     * temprano, el último más tardío y el próximo más cercano, como en A Plazos.
+     */
+    const _fechasPlazo = m => {
+      const tc = cardMap[m.tarjetaId];
+      const n  = Number(m.mesesTotal) || 0;
+      if (!tc?.ciclo || !n) return { primer: null, proximo: null, ultimo: null };
+      const planes = m.diferido
+        ? (pagosMap[m.id] || []).map(p => ({ fecha: p.fecha, pagados: Number(p.mesesPagados) || 0 }))
+        : [{ fecha: m.fechaEfectiva || m.fechaCompra, pagados: Number(m.mesesPagados) || 0 }];
+      let primer = null, proximo = null, ultimo = null;
+      for (const pl of planes) {
+        const { primerPago, ultimoPago, cicloYear, cicloMonth } = calcularPagos(tc.ciclo, pl.fecha, n, festivosMX);
+        if (primerPago && (!primer || primerPago < primer)) primer = primerPago;
+        if (ultimoPago && (!ultimo || ultimoPago > ultimo)) ultimo = ultimoPago;
+        if (!m.liquidado && cicloYear != null && pl.pagados < n) {
+          const nx = new Date(cicloYear, cicloMonth + pl.pagados, 1);
+          const pp = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX);
+          if (pp?.fechaPago && (!proximo || pp.fechaPago < proximo)) proximo = pp.fechaPago;
+        }
+      }
+      return { primer, proximo, ultimo };
+    };
+
+    const _filaDetalle = (label, valor) => `
+      <div class="d-flex justify-content-between align-items-start gap-3 py-2 border-bottom">
+        <span class="text-muted">${label}</span><span class="text-end">${valor}</span>
+      </div>`;
+
+    const _modalMontosPlazo = m => {
+      const tc = cardMap[m.tarjetaId];
+      const { mensualidad, restante, total } = _montosPlazo(m);
+      const pr = _progresoPlazo(m);
+      openModal({
+        title: `${m.compra} — Montos`,
+        body: `
+          ${_filaDetalle('Mensualidad', `<span class="fw-bold">${currency(mensualidad)}</span>`)}
+          ${_filaDetalle('Restante', restante <= 0 ? '<span class="text-success">✓ Pagado</span>' : `<span class="fw-bold">${currency(restante)}</span>`)}
+          ${_filaDetalle('Total', _bonifTotal(m, total, !!tc?.inst?.bonificacionConIva))}
+          ${_filaDetalle('Meses pagados', `${pr.pagados}/${pr.total} ${pr.unidad}`)}`,
+      });
+    };
+
+    const _modalFechasPlazo = m => {
+      const tc = cardMap[m.tarjetaId];
+      const { primer, proximo, ultimo } = _fechasPlazo(m);
+      const celda = d => d ? _pagoCellDePeriodo({ fechaPago: d }) : '—';
+      const proximoHtml = m.liquidado
+        ? `<span class="text-success">Completada${m.fechaLiquidacion ? ` el ${fmtDate(m.fechaLiquidacion)}` : ''}</span>`
+        : proximo ? celda(proximo) : '<span class="text-muted">Sin pagos pendientes</span>';
+      openModal({
+        title: `${m.compra} — Fechas de pago`,
+        body: !tc?.ciclo
+          ? '<p class="text-muted mb-0">La tarjeta no tiene ciclo de facturación configurado.</p>'
+          : `
+            ${_filaDetalle('Primer Pago', celda(primer))}
+            ${_filaDetalle('Próximo Pago', proximoHtml)}
+            ${_filaDetalle('Último Pago', celda(ultimo))}
+            ${m.diferido && !(pagosMap[m.id] || []).length ? '<p class="text-muted small mt-2 mb-0">Compra diferida sin pagos registrados todavía.</p>' : ''}`,
+      });
+    };
+
+    /** Íconos de enlace de compra y de la promoción de bonificación, si los tiene. */
+    const _enlacesHtml = item => [
+      item.enlaceCompra
+        ? `<a href="${item.enlaceCompra}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Enlace de compra"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>`
+        : '',
+      _bonifInfo(item)?.enlace
+        ? `<a href="${_bonifInfo(item).enlace}" target="_blank" rel="noopener" class="ms-1 text-success" title="Enlace de la bonificación"><i class="bi bi-gift" style="font-size:0.75rem"></i></a>`
+        : '',
+    ].join('');
+
+    /** Dot con el color de la institución + nombre; abajo ···últimos 4 y D/F (digital/física). */
+    const _tarjetaCell = (tc, item) => {
+      const { l4, formato } = _numeroCargo(item, tc);
+      const df = formato === 'digital' ? 'D' : formato === 'fisica' ? 'F' : '';
+      return `<td style="white-space:nowrap">
+        <span class="d-inline-block rounded-circle me-1" style="width:9px;height:9px;background:${tc?.inst?.color || '#607d8b'}" title="${tc?.inst?.nombre || 'Sin institución'}"></span>${tc?.nombre || '—'}
+        ${l4 ? `<br><small class="text-muted" style="padding-left:14px">···${l4}${df ? ` <span class="badge bg-secondary-subtle text-secondary-emphasis" style="font-size:var(--fs-nano)" title="${formato === 'digital' ? 'Digital' : 'Física'}">${df}</span>` : ''}</small>` : ''}
+      </td>`;
+    };
+
+    /**
+     * Fila padre (amarilla, desplegable) de una compra diferida + sus pagos si está
+     * desplegada — mismo aspecto y acciones que en De Contado / A Plazos. Con
+     * `mesPago`, una de contado solo despliega los pagos que caen en ese ciclo
+     * (igual que De Contado con "Fecha Pago").
+     */
+    /**
+     * Saldo de una compra diferida que todavía no se registra en pagos. En A Plazos
+     * es su `total` (se va reduciendo al registrar); en contado se calcula contra
+     * el total original para no depender de que `total` esté al día.
+     */
+    const _pendienteDiferido = (it, tipo) => tipo === 'plazos'
+      ? Number(it.total) || 0
+      : (Number(it.totalDiferido || it.total) || 0) - (pagosMap[it.id] || []).reduce((s, p) => s + (Number(p.monto) || 0), 0);
+
+    const _filasDiferidaMixta = (f, i, conFechaPago, mesPago) => {
+      const it  = f.item;
+      const tc  = cardMap[f.tarjetaId];
+      const esPlazo = f.tipo === 'plazos';
+      const todos = [...(pagosMap[it.id] || [])].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+      const pagos = !esPlazo && mesPago && tc?.ciclo
+        ? _getPagosEnCiclo(todos, tc, mesPago, festivosMX)
+        : todos;
+      const pend = _pendienteDiferido(it, f.tipo);
+      const allRegistered = pend < 0.005;
+      const expanded = expandedDiferidos.has(it.id);
+
+      const parentRow = `<tr class="table-warning" style="cursor:pointer" data-toggle-mixta="${it.id}">
+        <td>${TIPO_BADGE[f.tipo]}</td>
+        <td>
+          <span data-dif-icon class="me-1" style="font-size:0.8rem">${expanded ? '▼' : '▶'}</span>
+          <span class="fw-500">${f.desc || '—'}</span>
+          <span class="badge bg-warning text-dark ms-1" style="font-size:var(--fs-nano)">Diferido</span>
+          ${_enlacesHtml(it)}
+          <span style="font-size:0.7rem" class="${allRegistered ? 'text-success' : 'text-danger'}">${allRegistered ? '✓' : `○ ${currency(Math.max(0, pend))}`}</span>
+          ${_creditoBadge(it.id, creditosMap)}
+          ${esPlazo ? _progresoPlazoHtml(it) : ''}
+        </td>
+        ${_tarjetaCell(tc, it)}
+        <td style="white-space:nowrap">${f.fecha ? fmtDate(f.fecha) : '—'}</td>
+        ${conFechaPago ? _fechaPagoMixtaCell(f, i) : ''}
+        ${_montoMixtaCell(f, i)}
+        <td>
+          <div class="d-flex gap-1">
+            ${!allRegistered ? `<button class="btn-icon mx-add-pago" data-id="${it.id}" data-tipo="${f.tipo}" title="Registrar pago"><i class="bi bi-plus-circle"></i></button>` : ''}
+            <button class="btn-icon mx-credito" data-id="${it.id}" data-tipo="${f.tipo}" title="Saldo a favor (cancelación, bonificación...)"><i class="bi bi-arrow-return-left"></i></button>
+            <button class="btn-icon btn-edit-mixta" data-i="${i}" title="Editar"><i class="bi bi-pencil"></i></button>
+          </div>
+        </td>
+      </tr>`;
+
+      if (!expanded) return parentRow;
+
+      const childRows = pagos.map(p => {
+        const desc = `<td style="padding-left:28px;color:var(--text-muted);font-size:0.85rem">└ Pago ${fmtDate(p.fecha)}`;
+        const fechaPagoTd = conFechaPago ? `<td style="white-space:nowrap">${_buildPagoCellHtml(tc, p.fecha)}</td>` : '';
+        if (!esPlazo) {
+          return `<tr data-pago-de="${it.id}" class="row-highlight">
+            <td></td>${desc}</td><td></td>
+            <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>${fechaPagoTd}
+            <td class="text-end">${currency(p.monto)}</td>
+            <td><div class="d-flex gap-1">
+              <button class="btn-icon mx-edit-pago" data-id="${p.id}" title="Editar pago"><i class="bi bi-pencil"></i></button>
+              <button class="btn-icon danger mx-del-pago" data-id="${p.id}" data-compra-id="${it.id}" data-tipo="contado" title="Eliminar pago"><i class="bi bi-trash3"></i></button>
+            </div></td>
+          </tr>`;
+        }
+        const mesesTotal = Number(it.mesesTotal) || 0;
+        const pMens   = Number(p.mensualidad != null ? p.mensualidad : it.mensualidad) || 0;
+        const pMesPag = Number(p.mesesPagados) || 0;
+        const pRest   = p.restante != null ? Number(p.restante) : Math.max(0, Number(p.monto) - pMens * pMesPag);
+        const pDone   = pRest <= 0 || pMesPag >= mesesTotal;
+        const pPct    = Math.min(100, Math.round(pMesPag / (mesesTotal || 1) * 100));
+        return `<tr data-pago-de="${it.id}" class="row-highlight">
+          <td></td>${desc}
+            <div class="d-flex align-items-center gap-2 mt-1">
+              <div class="progress" style="width:90px;height:6px"><div class="progress-bar ${pDone ? 'bg-success' : 'bg-primary'}" style="width:${pPct}%"></div></div>
+              <small style="white-space:nowrap">${pMesPag}/${mesesTotal} meses</small>
+            </div>
+          </td><td></td>
+          <td style="white-space:nowrap">${p.fecha ? fmtDate(p.fecha) : '—'}</td>${fechaPagoTd}
+          <td class="text-end">${currency(pMens)}<br><small class="${pDone ? 'text-success' : 'text-muted'}">${pDone ? '✓ Pagado' : `Restante ${currency(pRest)}`}</small></td>
+          <td><div class="d-flex gap-1">
+            <button class="btn-icon mx-edit-plan" data-id="${p.id}" title="Editar plan"><i class="bi bi-pencil"></i></button>
+            ${!pDone ? `<button class="btn-icon mx-pagar-cuota" data-id="${p.id}" data-compra-id="${it.id}" title="Pagar cuota"><i class="bi bi-coin"></i></button>` : ''}
+            <button class="btn-icon danger mx-del-pago" data-id="${p.id}" data-compra-id="${it.id}" data-tipo="plazos" title="Eliminar"><i class="bi bi-trash3"></i></button>
+          </div></td>
+        </tr>`;
+      }).join('');
+
+      return parentRow + childRows;
+    };
+
+    /**
+     * Tabla mixta (contado, plazos y gastos) del buscador y de la pestaña Todas.
+     * Cada fila: `{ tipo, item, desc, tarjetaId, fecha, total, pagoHtml?, totalNota? }`.
+     * `conFechaPago` agrega la columna "Fecha Pago"; `mesPago` (Todas con "Fecha
+     * Pago") limita los pagos desplegados de una diferida de contado a ese ciclo.
+     * `orden` (`{ campo: 'fecha'|'pago', dir: 'asc'|'desc' }`) marca con flecha el
+     * encabezado por el que está ordenada; ambos encabezados de fecha son clickeables.
+     */
+    const _tablaMixta = (filas, { conFechaPago = false, mesPago = null, orden = null } = {}) => {
+      const thOrden = (campo, label) => {
+        const activo = orden?.campo === campo;
+        const icono  = activo ? (orden.dir === 'asc' ? 'bi-sort-up' : 'bi-sort-down') : 'bi-arrow-down-up text-muted';
+        return `<th style="white-space:nowrap;cursor:pointer;user-select:none" data-orden="${campo}" title="Ordenar por ${label}">
+          ${label}<i class="bi ${icono} ms-1" style="font-size:0.75rem"></i></th>`;
+      };
+      return `
+      <div class="table-wrapper">
+        <table class="table">
+          <thead><tr>
+            <th>Tipo</th><th>Descripción</th><th>Tarjeta</th>${thOrden('fecha', 'Fecha Compra/Cargo')}${conFechaPago ? thOrden('pago', 'Fecha Pago') : ''}<th class="text-end">Monto</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${filas.map((f, i) => {
+              if (f.item.diferido && f.tipo !== 'gastos') return _filasDiferidaMixta(f, i, conFechaPago, mesPago);
+              const tc = cardMap[f.tarjetaId];
+              const extra = f.tipo === 'plazos' ? _progresoPlazoHtml(f.item)
+                : f.tipo === 'gastos' && f.item.gastaFijoId ? `<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>Gasto fijo</small>` : '';
+              return `<tr>
+                <td>${TIPO_BADGE[f.tipo]}</td>
+                <td><div class="fw-500">${f.desc || '—'}${_enlacesHtml(f.item)}</div>${extra}</td>
+                ${_tarjetaCell(tc, f.item)}
+                <td style="white-space:nowrap">${f.fecha ? fmtDate(f.fecha) : '—'}</td>
+                ${conFechaPago ? _fechaPagoMixtaCell(f, i) : ''}
+                ${_montoMixtaCell(f, i)}
+                <td><button class="btn-icon btn-edit-mixta" data-i="${i}" title="Editar"><i class="bi bi-pencil"></i></button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    };
+
+    /**
+     * Eventos de `_tablaMixta`. El lápiz abre el modal de edición de su tipo y al
+     * guardar recarga en `tabAlGuardar` (o en la pestaña del tipo). Desplegar una
+     * diferida y las acciones sobre sus pagos vuelven a pintar con `rerender`
+     * conservando el scroll.
+     */
+    const _ligarTablaMixta = (content, filas, rerender, tabAlGuardar = null) => {
+      const _compra = (tipo, id) => (tipo === 'plazos' ? msiItems : contadoItems).find(x => x.id === id);
+      const _col    = tipo => tipo === 'plazos' ? 'msi' : 'contado';
+      const _pago   = id => pagosDiferidos.find(x => x.id === id);
+      const _refrescar = () => {
+        const y = window.scrollY;
+        _rebuildPagosMap();
+        rerender();
+        window.scrollTo(0, y);
+      };
+      const _on = (sel, fn) => content.querySelectorAll(sel).forEach(btn =>
+        btn.addEventListener('click', e => { e.stopPropagation(); fn(btn); }));
+
+      _on('.btn-edit-mixta', btn => {
+        const { tipo, item } = filas[Number(btn.dataset.i)];
+        const onSaved = () => _recargarConScroll(tabAlGuardar || tipo);
+        if (tipo === 'contado')     showModalContado(item, instituciones, tarjetas, pagosDiferidos, onSaved);
+        else if (tipo === 'plazos') showModalMsi(item, instituciones, tarjetas, pagosDiferidos, onSaved);
+        else                        showModalNuevoGasto(item, instituciones, tarjetas, onSaved);
+      });
+
+      // Celdas Monto / Fecha Pago de compras a plazos: abren su detalle (salvo que
+      // se haga click en un enlace, como el de la bonificación).
+      [['.mx-montos', _modalMontosPlazo], ['.mx-fechas', _modalFechasPlazo]].forEach(([sel, abrir]) =>
+        content.querySelectorAll(sel).forEach(td =>
+          td.addEventListener('click', e => {
+            if (e.target.closest('a')) return;
+            e.stopPropagation();
+            abrir(filas[Number(td.dataset.i)].item);
+          })));
+
+      content.querySelectorAll('[data-toggle-mixta]').forEach(row =>
+        row.addEventListener('click', e => {
+          if (e.target.closest('a,button')) return;
+          const id = row.dataset.toggleMixta;
+          if (expandedDiferidos.has(id)) expandedDiferidos.delete(id);
+          else expandedDiferidos.add(id);
+          _refrescar();
+        }));
+
+      _on('.mx-add-pago', btn => {
+        const compra = _compra(btn.dataset.tipo, btn.dataset.id);
+        if (!compra) return;
+        _showModalPagoDiferido(null, compra, _col(btn.dataset.tipo), pagosDiferidos, () => {
+          expandedDiferidos.add(compra.id);
+          _refrescar();
+        });
+      });
+
+      _on('.mx-credito', btn => {
+        const compra = _compra(btn.dataset.tipo, btn.dataset.id);
+        if (!compra) return;
+        _showModalCredito(compra, _col(btn.dataset.tipo), creditosTarjeta, () => {
+          _rebuildCreditosMap();
+          _refrescar();
+        });
+      });
+
+      _on('.mx-edit-pago', btn => {
+        const pago = _pago(btn.dataset.id);
+        if (!pago) return;
+        _showModalPagoDiferido(pago, _compra('contado', pago.compraId), 'contado', pagosDiferidos, _refrescar);
+      });
+
+      _on('.mx-edit-plan', btn => {
+        const pago = _pago(btn.dataset.id);
+        if (!pago) return;
+        _showModalEditPagoPlan(pago, _compra('plazos', pago.compraId), pagosDiferidos, _refrescar);
+      });
+
+      _on('.mx-pagar-cuota', async btn => {
+        const pago   = _pago(btn.dataset.id);
+        const compra = _compra('plazos', btn.dataset.compraId);
+        if (!pago || !compra) return;
+        await _pagarCuotaDiferido(pago, compra);
+        _refrescar();
+      });
+
+      _on('.mx-del-pago', async btn => {
+        if (!confirm('¿Eliminar este pago?')) return;
+        const tipo = btn.dataset.tipo;
+        await _eliminarPagoDiferido(btn.dataset.id, _compra(tipo, btn.dataset.compraId), _col(tipo));
+        _refrescar();
+      });
+    };
+
+    // ── Todas ───────────────────────────────────────────────────────────────────
+    // De Contado + A Plazos + Gastos aplicados de un mes, con los mismos filtros
+    // de mes que cada pestaña. En "Fecha Pago" una compra a plazos aparece en
+    // cada mes en que le toca una mensualidad (y su importe es la mensualidad);
+    // en "Fecha Compra" solo en el mes en que se compró, con su total.
+
+    const _plazoEnMes = (m, tipo, mes) => {
+      if (tipo === 'compra') return (m.fechaCompra || '').slice(0, 7) === mes;
+      const tc = cardMap[m.tarjetaId];
+      if (!tc?.ciclo) return false;
+      // getPlazosMes descarta las liquidadas; aquí se quieren también en los
+      // meses anteriores a su liquidación, para que el historial cuadre.
+      if (m.liquidado && (!m.fechaLiquidacion || m.fechaLiquidacion.slice(0, 7) < mes)) return false;
+      return getPlazosMes([{ ...m, liquidado: false }], m.tarjetaId, tc.ciclo, mes, festivosMX).length > 0;
+    };
+
+    const _mensualidadPlazo = m => !m.diferido
+      ? Number(m.mensualidad) || 0
+      : (pagosMap[m.id] || []).reduce((s, p) => s + (Number(p.mensualidad ?? m.mensualidad ?? p.monto) || 0), 0);
+
+    /**
+     * Fecha (ISO) en que se paga un cargo hecho en `fechaISO`: la nómina anterior
+     * al pago del ciclo que lo contiene (lo mismo que ubica el mes en "Pago"). Sin
+     * ciclo (débito), la fecha misma. Solo se usa para ordenar.
+     */
+    const _fechaPagoISO = (tc, fechaISO) => {
+      if (!fechaISO) return '';
+      if (!tc?.ciclo) return String(fechaISO).slice(0, 10);
+      const dt = new Date(String(fechaISO).includes('T') ? fechaISO : fechaISO + 'T12:00:00');
+      let p = calcularMes(tc.ciclo, dt.getFullYear(), dt.getMonth(), festivosMX);
+      if (p.fechaCorte < dt) { const nx = new Date(dt.getFullYear(), dt.getMonth() + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
+      if (!p.fechaPago) return String(fechaISO).slice(0, 10);
+      return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago);
+    };
+
+    /** Botón on/off solo con ícono (relleno = activo); `titulo` explica el filtro al pasar el mouse. */
+    const _botonOnOff = (id, activo, icono, titulo) => `
+      <button type="button" class="btn btn-sm ${activo ? 'btn-primary' : 'btn-outline-secondary'}" id="${id}"
+              aria-pressed="${activo}" aria-label="${titulo}" title="${titulo}${activo ? ' (activo)' : ''}">
+        <i class="bi ${icono}"></i>
+      </button>`;
+
+    const renderTodas = () => {
+      const tipo   = filtroTodasTipo;
+      const mes    = filtroTodasMes;
+      // "Todos los meses": sin filtro de mes, contado diferido con todos sus pagos (no
+      // solo los de un ciclo) y orden descendente por la fecha del toggle. A plazos
+      // siempre sigue al toggle: mensualidad en Pago, total en Compra.
+      const sinMes = filtroTodasSinMes;
+      const porMesPago = !sinMes && tipo === 'pago';
+      const _pagoCell = (tc, fechaISO) => tc?.ciclo ? _buildPagoCellHtml(tc, fechaISO) : (fechaISO ? fmtDate(fechaISO) : '—');
+
+      // Al escribir en el buscador se vuelve a pintar toda la pestaña: se recuerda
+      // el foco y el cursor para devolvérselos al input nuevo.
+      const buscarActivo = document.activeElement?.id === 'todas-buscar';
+      const cursor = buscarActivo ? document.activeElement.selectionStart : null;
+
+      const filasMes = [
+        ...contadoItems.filter(c => sinMes || _contadoEnMes(c, tipo, mes)).map(c => {
+          const tc = cardMap[c.tarjetaId];
+          const pagos = c.diferido
+            ? (porMesPago ? _getPagosEnCiclo(pagosMap[c.id], tc, mes, festivosMX) : [...(pagosMap[c.id] || [])])
+                .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))
+            : [];
+          const fechaAncla = pagos.length ? pagos[0].fecha : (c.fechaEfectiva || c.fechaCompra);
+          return {
+            tipo: 'contado', item: c, desc: c.compra, tarjetaId: c.tarjetaId, fecha: c.fechaCompra,
+            total: _contadoVal(c, porMesPago ? 'pago' : 'compra', mes),
+            montoEsTotal: !c.diferido,
+            totalNota: c.diferido ? 'Pagos diferidos' : '',
+            pagoHtml: _pagoCell(tc, fechaAncla),
+            fechaPagoOrden: _fechaPagoISO(tc, fechaAncla),
+          };
+        }),
+        ...msiItems.filter(m => sinMes || _plazoEnMes(m, tipo, mes)).map(m => {
+          const tc = cardMap[m.tarjetaId];
+          const ciclo = porMesPago && tc?.ciclo ? calcularCicloParaMes(tc.ciclo, mes, festivosMX) : null;
+          return {
+            tipo: 'plazos', item: m, desc: m.compra, tarjetaId: m.tarjetaId, fecha: m.fechaCompra,
+            // Toggle en Pago → mensualidad; en Compra → total de la compra (con o sin mes).
+            total: tipo === 'pago' ? _mensualidadPlazo(m) : Number(m.diferido ? (m.totalDiferido || m.total) : m.total) || 0,
+            montoEsTotal: tipo !== 'pago',
+            totalNota: tipo === 'pago' ? 'Mensualidad' : 'Total de la compra',
+            pagoHtml: ciclo ? _pagoCellDePeriodo(ciclo) : _pagoCell(tc, m.fechaEfectiva || m.fechaCompra),
+            fechaPagoOrden: ciclo?.fechaPago
+              ? toISODate(anteriorNomina(ciclo.fechaPago, festivosMX) || ciclo.fechaPago)
+              : _fechaPagoISO(tc, m.fechaEfectiva || m.fechaCompra),
+          };
+        }),
+        ...gastosItems.filter(g => g.estado === 'registrado' && (sinMes || _gastoEnMes(g, tipo, mes))).map(g => ({
+          tipo: 'gastos', item: g, desc: g.nombre, tarjetaId: g.tarjetaId, fecha: g.fechaPago,
+          total: Number(g.importe) || 0,
+          montoEsTotal: true,
+          pagoHtml: _pagoCell(cardMap[g.tarjetaId], g.fechaPago),
+          fechaPagoOrden: _fechaPagoISO(cardMap[g.tarjetaId], g.fechaPago),
+        })),
+      ];
+
+      // Filtros de tipo, institución y búsqueda (cada palabra debe aparecer en la
+      // descripción, tarjeta, institución, últimos 4 dígitos de la tarjeta del
+      // cargo, fecha o importe).
+      const terminos = _norm(busquedaActual).split(/\s+/).filter(Boolean);
+      const filas = filasMes.filter(f => {
+        const tc = cardMap[f.tarjetaId];
+        if (filtroTodasTipoReg === 'diferidos') {
+          if (f.tipo === 'gastos' || !f.item.diferido) return false;
+          if (filtroTodasSoloPendDif && _pendienteDiferido(f.item, f.tipo) < 0.005) return false;
+        } else if (filtroTodasTipoReg === 'bonificacion') {
+          const bi = _bonifInfo(f.item);
+          if (!bi) return false;
+          if (filtroTodasSoloBonifPend && bi.aplicada) return false;
+        } else if (filtroTodasTipoReg && f.tipo !== filtroTodasTipoReg) return false;
+        if (filtroTodasInst && (tc?.institucionId || '__sin_inst__') !== filtroTodasInst) return false;
+        if (!terminos.length) return true;
+        const texto = _norm([f.desc, tc?.nombre, tc?.inst?.nombre, _numeroCargo(f.item, tc).l4,
+          f.fecha, fmtDate(f.fecha), f.total, currency(f.total)].join(' '));
+        return terminos.every(t => texto.includes(t));
+      });
+      const hayFiltros = !!(filtroTodasTipoReg || filtroTodasInst || terminos.length);
+
+      const instOpciones = instituciones
+        .filter(i => tarjetas.some(t => t.institucionId === i.id))
+        .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+
+      // Orden: el que eligió el usuario en los encabezados; si no, el de siempre —
+      // por mes, fecha de compra ascendente; con "Todos los meses", descendente por
+      // la fecha del toggle. Empates: fecha de compra descendente.
+      const orden = ordenTodas || (sinMes
+        ? { campo: tipo === 'pago' ? 'pago' : 'fecha', dir: 'desc' }
+        : { campo: 'fecha', dir: 'asc' });
+      const _clave = f => (orden.campo === 'pago' ? f.fechaPagoOrden : f.fecha) || '';
+      const signo  = orden.dir === 'asc' ? 1 : -1;
+      filas.sort((a, b) => signo * _clave(a).localeCompare(_clave(b)) || (b.fecha || '').localeCompare(a.fecha || ''));
+
+      const totalPor = t => filas.filter(f => f.tipo === t).reduce((s, f) => s + f.total, 0);
+      const total = filas.reduce((s, f) => s + f.total, 0);
+
+      const subtitle = document.getElementById('compras-subtitle');
+      if (subtitle) subtitle.textContent = `${filas.length} registro${filas.length !== 1 ? 's' : ''} · ${sinMes ? 'Todos los meses' : _labelMes(mes)}`;
+
+      const content = document.getElementById('compras-tab-content');
+      content.innerHTML = `
+        <div class="filter-bar todas-filtros">
+          <div class="tf-mes d-flex align-items-center gap-1 rounded px-1"
+               style="border:1px solid ${sinMes ? 'var(--bs-primary)' : 'transparent'};background:${sinMes ? 'var(--bs-primary-bg-subtle)' : 'transparent'}">
+            <button class="btn-icon${sinMes ? ' opacity-25' : ''}" id="todas-mes-prev" ${sinMes ? 'disabled' : ''}><i class="bi bi-chevron-left"></i></button>
+            <span class="fw-500 py-1" id="todas-mes-label" role="button" aria-pressed="${sinMes}"
+                  title="${sinMes ? 'Click para volver a filtrar por mes' : 'Click para ver todos los meses'}"
+                  style="min-width:130px;text-align:center;text-transform:capitalize;user-select:none">
+              ${sinMes ? '<i class="bi bi-calendar-range me-1"></i>Todos los meses' : _labelMes(mes)}
+            </span>
+            <button class="btn-icon${sinMes ? ' opacity-25' : ''}" id="todas-mes-next" ${sinMes ? 'disabled' : ''}><i class="bi bi-chevron-right"></i></button>
+          </div>
+          <div class="tf-fecha btn-group btn-group-sm" role="group" title="Filtrar y ordenar por fecha de compra o fecha de pago">
+            <button type="button" class="btn ${tipo === 'compra' ? 'btn-primary' : 'btn-outline-secondary'}" data-ttipo="compra" aria-pressed="${tipo === 'compra'}">Compra</button>
+            <button type="button" class="btn ${tipo === 'pago'   ? 'btn-primary' : 'btn-outline-secondary'}" data-ttipo="pago"   aria-pressed="${tipo === 'pago'}">Pago</button>
+          </div>
+          <div class="tf-buscar input-group input-group-sm">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="search" class="form-control" id="todas-buscar" placeholder="Buscar compras y gastos…" value="${busquedaActual.replace(/"/g, '&quot;')}" autocomplete="off">
+          </div>
+          <div class="tf-tipo d-flex gap-2">
+          <select class="form-select form-select-sm" id="todas-filtro-tipo">
+            <option value="">Todos los tipos</option>
+            <option value="contado" ${filtroTodasTipoReg === 'contado' ? 'selected' : ''}>De Contado</option>
+            <option value="plazos"  ${filtroTodasTipoReg === 'plazos'  ? 'selected' : ''}>A Plazos</option>
+            <option value="gastos"  ${filtroTodasTipoReg === 'gastos'  ? 'selected' : ''}>Gastos</option>
+            <option value="diferidos" ${filtroTodasTipoReg === 'diferidos' ? 'selected' : ''}>Diferidos</option>
+            <option value="bonificacion" ${filtroTodasTipoReg === 'bonificacion' ? 'selected' : ''}>Con Bonificación</option>
+          </select>
+          ${filtroTodasTipoReg === 'diferidos'
+            ? _botonOnOff('todas-solo-pend-dif', filtroTodasSoloPendDif, 'bi-hourglass-split', 'Solo con saldo pendiente de registrar')
+            : ''}
+          ${filtroTodasTipoReg === 'bonificacion'
+            ? _botonOnOff('todas-solo-bonif-pend', filtroTodasSoloBonifPend, 'bi-patch-question', 'Solo sin aplicación de bonificación confirmada')
+            : ''}
+          </div>
+          <select class="tf-inst form-select form-select-sm" id="todas-filtro-inst">
+            <option value="">Todas las instituciones</option>
+            ${instOpciones.map(i => `<option value="${i.id}" ${filtroTodasInst === i.id ? 'selected' : ''}>${i.nombre}</option>`).join('')}
+            <option value="__sin_inst__" ${filtroTodasInst === '__sin_inst__' ? 'selected' : ''}>Sin institución</option>
+          </select>
+          <button type="button" class="tf-limpiar btn btn-sm btn-outline-secondary" id="todas-limpiar"
+                  ${_hayFiltrosTodas() ? '' : 'disabled'} title="Limpiar filtros" aria-label="Limpiar filtros">
+            <i class="bi bi-eraser"></i>
+          </button>
+        </div>
+        <div class="row g-3 mb-4">
+          <div class="col-6">
+            <div class="metric-card h-100">
+              <div class="metric-icon tint-success"><i class="bi bi-cash-stack"></i></div>
+              <div class="metric-info">
+                <div class="metric-value">${currency(total)}</div>
+                <div class="metric-label">${sinMes ? 'Total de todos los meses' : 'Total del período'}</div>
+                <div class="metric-sub">Contado ${currency(totalPor('contado'))} · Plazos ${currency(totalPor('plazos'))} · Gastos ${currency(totalPor('gastos'))}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="metric-card h-100">
+              <div class="metric-icon tint-purple"><i class="bi bi-receipt"></i></div>
+              <div class="metric-info">
+                <div class="metric-value">${filas.length}</div>
+                <div class="metric-label">Registros</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        ${filas.length === 0
+          ? `<div class="empty-state"><i class="bi bi-${hayFiltros ? 'search' : 'bag'}"></i><p>${hayFiltros ? 'Sin resultados con estos filtros' : 'Sin compras ni gastos para este período'}</p></div>`
+          : _tablaMixta(filas, { conFechaPago: true, mesPago: porMesPago ? mes : null, orden })}`;
+
+      // Click en un encabezado de fecha: si ya ordena por esa columna invierte la
+      // dirección; si no, ordena por ella descendente (lo más reciente arriba).
+      content.querySelectorAll('[data-orden]').forEach(th =>
+        th.addEventListener('click', () => {
+          const campo = th.dataset.orden;
+          ordenTodas = { campo, dir: orden.campo === campo && orden.dir === 'desc' ? 'asc' : 'desc' };
+          renderTodas();
+        }));
+
+      // Cambiar el toggle, el mes o "Todos los meses" descarta el orden elegido en
+      // los encabezados y vuelve al orden por defecto. El buscador y los filtros de
+      // tipo e institución solo acotan lo mostrado: conservan el orden.
+      const _refiltrar = () => { ordenTodas = null; renderTodas(); };
+
+      content.querySelector('#todas-mes-prev').addEventListener('click', () => { filtroTodasMes = _mesAnterior(filtroTodasMes); _refiltrar(); });
+      content.querySelector('#todas-mes-next').addEventListener('click', () => { filtroTodasMes = _mesSiguiente(filtroTodasMes); _refiltrar(); });
+      content.querySelectorAll('[data-ttipo]').forEach(el =>
+        el.addEventListener('click', () => {
+          if (filtroTodasTipo === el.dataset.ttipo) return;
+          filtroTodasTipo = el.dataset.ttipo;
+          _refiltrar();
+        }));
+      // El nombre del mes (no las flechas) prende/apaga "Todos los meses".
+      content.querySelector('#todas-mes-label').addEventListener('click', () => {
+        filtroTodasSinMes = !filtroTodasSinMes;
+        _refiltrar();
+      });
+      const inputBuscar = content.querySelector('#todas-buscar');
+      inputBuscar.addEventListener('input', e => { busquedaActual = e.target.value; renderTodas(); });
+      if (buscarActivo) {
+        inputBuscar.focus();
+        inputBuscar.setSelectionRange(cursor, cursor);
+      }
+      content.querySelector('#todas-filtro-tipo').addEventListener('change', e => { filtroTodasTipoReg = e.target.value; renderTodas(); });
+      content.querySelector('#todas-filtro-inst').addEventListener('change', e => { filtroTodasInst = e.target.value; renderTodas(); });
+      content.querySelector('#todas-limpiar').addEventListener('click', () => { _resetFiltrosTodas(); renderTodas(); });
+      content.querySelector('#todas-solo-pend-dif')?.addEventListener('click', () => { filtroTodasSoloPendDif = !filtroTodasSoloPendDif; renderTodas(); });
+      content.querySelector('#todas-solo-bonif-pend')?.addEventListener('click', () => { filtroTodasSoloBonifPend = !filtroTodasSoloBonifPend; renderTodas(); });
+      _ligarTablaMixta(content, filas, renderTodas, 'todas');
+    };
+
     document.getElementById('btn-nueva-compra').addEventListener('click', () => {
-      if (tabActivo === 'contado')
-        showModalContado(null, instituciones, tarjetas, pagosDiferidos, () => renderView(container, 'contado'));
+      if (tabActivo === 'contado' || tabActivo === 'todas')
+        showModalContado(null, instituciones, tarjetas, pagosDiferidos, () => _recargarConScroll(tabActivo));
       else if (tabActivo === 'plazos')
         showModalMsi(null, instituciones, tarjetas, pagosDiferidos, () => renderView(container, 'plazos'));
       else
@@ -1019,19 +1782,8 @@ async function renderView(container, initialTab = 'contado', query = null) {
       const gastosFijosPendientesPorId = new Map(gastosFijosPendientes.map(g => [g.gastaFijoId, g]));
 
       const registrados = [...gastosItems]
-        .filter(g => {
-          if (g.estado !== 'registrado') return false;
-          if (filtroGastosTipo === 'gasto') return (g.fechaPago || '').slice(0, 7) === filtroGastosMes;
-          const tc = cardMap[g.tarjetaId];
-          if (tc?.tipo === 'credito' && tc?.ciclo && g.fechaPago) {
-            const base = new Date(String(g.fechaPago).includes('T') ? g.fechaPago : g.fechaPago + 'T12:00:00');
-            let yr = base.getFullYear(), mo = base.getMonth();
-            let p = calcularMes(tc.ciclo, yr, mo, festivosMX);
-            if (p.fechaCorte < base) { const nx = new Date(yr, mo + 1, 1); p = calcularMes(tc.ciclo, nx.getFullYear(), nx.getMonth(), festivosMX); }
-            if (p.fechaPago) return toISODate(anteriorNomina(p.fechaPago, festivosMX) || p.fechaPago).slice(0, 7) === filtroGastosMes;
-          }
-          return (g.fechaPago || '').slice(0, 7) === filtroGastosMes;
-        })
+        .filter(g => g.estado === 'registrado'
+          && _gastoEnMes(g, filtroGastosTipo === 'gasto' ? 'compra' : 'pago', filtroGastosMes))
         .sort((a, b) => (a.fechaPago || '').localeCompare(b.fechaPago || ''));
 
       const totalRegistrado = registrados.reduce((s, g) => s + (Number(g.importe) || 0), 0);
@@ -1860,70 +2612,7 @@ function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
 
 // ── Bonificación helpers ────────────────────────────────────────────────────────
 
-function _bonifFields(item) {
-  const b = item?.bonificacion;
-  return `
-    <div class="col-12">
-      <div class="form-check mb-1">
-        <input class="form-check-input" type="checkbox" id="has-bonif" ${b ? 'checked' : ''}>
-        <label class="form-check-label" for="has-bonif" style="font-size:0.85rem">Esperar bonificación / cashback</label>
-      </div>
-      <div id="bonif-fields" ${b ? '' : 'style="display:none"'}>
-        <div class="row g-2">
-          <div class="col-4">
-            <select class="form-select form-select-sm" name="bonificacionTipo">
-              <option value="porcentaje" ${(!b || b.tipo === 'porcentaje') ? 'selected' : ''}>% Porcentaje</option>
-              <option value="cantidad"   ${b?.tipo === 'cantidad' ? 'selected' : ''}>$ Cantidad</option>
-            </select>
-          </div>
-          <div class="col-4">
-            <input type="number" class="form-control form-control-sm" name="bonificacionValor"
-                   value="${b?.valor ?? ''}" min="0" step="0.01" placeholder="Valor">
-          </div>
-          <div class="col-4">
-            <input type="date" class="form-control form-control-sm" name="bonificacionFecha"
-                   value="${b?.fechaMaxima ?? ''}">
-          </div>
-          <div class="col-12">
-            <input type="url" class="form-control form-control-sm" name="bonificacionEnlace"
-                   value="${b?.enlace ?? ''}" placeholder="Enlace de la promoción (opcional)">
-          </div>
-          <div class="col-12">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="bonificacionAplicada" id="bonif-aplicada" ${b?.aplicada ? 'checked' : ''}>
-              <label class="form-check-label text-success" for="bonif-aplicada" style="font-size:0.82rem">Ya recibida / aplicada</label>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function _wireBonif() {
-  const chk = document.getElementById('has-bonif');
-  const flds = document.getElementById('bonif-fields');
-  if (chk && flds) chk.addEventListener('change', () => { flds.style.display = chk.checked ? '' : 'none'; });
-}
-
-function _saveBonif(data) {
-  const tipo     = data.bonificacionTipo;
-  const valor    = Number(data.bonificacionValor);
-  const fecha    = data.bonificacionFecha;
-  const enlace   = data.bonificacionEnlace || '';
-  const aplicada = !!data.bonificacionAplicada;
-  delete data.bonificacionTipo; delete data.bonificacionValor; delete data.bonificacionFecha;
-  delete data.bonificacionEnlace; delete data.bonificacionAplicada;
-  const hasBonif = document.getElementById('has-bonif')?.checked;
-  if (hasBonif && valor > 0 && fecha) {
-    data.bonificacion = {
-      tipo, valor, fechaMaxima: fecha,
-      ...(enlace   ? { enlace }   : {}),
-      ...(aplicada ? { aplicada } : {}),
-    };
-  } else {
-    data.bonificacion = null;
-  }
-}
+// Campos de bonificación de los modales: ver utils/bonif-form.js.
 
 // ── Fecha de liquidación (opcional) ─────────────────────────────────────────
 // Campo interno `fechaEfectiva` — distinto de `fechaLiquidacion`/`liquidado`
@@ -1973,7 +2662,32 @@ function _bonifBadge(item) {
   return `<span class="${vencido ? 'text-danger' : 'text-success'}" style="font-size:0.7rem"><i class="bi bi-gift"></i></span>`;
 }
 
+/**
+ * Bonificación ligada (módulo Bonificaciones) de cada compra, por id:
+ * `{ bonif, d }` con `d` su parte de la distribución (ver calcularDistribucion).
+ * Se recalcula en cada `renderView`.
+ */
+let _bonifLigadas = new Map();
+
+/** Clase de color según el estado de una bonificación: aplicada / vencida / pendiente. */
+function _clsBonif(b) {
+  return b.aplicada ? 'text-success' : b.fechaMaxima < toISODate(new Date()) ? 'text-danger' : 'text-warning';
+}
+
+/**
+ * Datos comunes de la bonificación de una compra, sea manual (`bonificacion`) o
+ * ligada (`bonificacionId`): `{ aplicada, fechaMaxima, enlace }`, o null.
+ */
+function _bonifInfo(item) {
+  if (item?.bonificacionId) {
+    const b = _bonifLigadas.get(item.id)?.bonif;
+    return b ? { aplicada: !!b.aplicada, fechaMaxima: b.fechaMaxima, enlace: b.enlace } : null;
+  }
+  return item?.bonificacion || null;
+}
+
 function _bonifTotal(item, totalVal, conIva = false) {
+  if (item?.bonificacionId) return _bonifLigadaTotal(item, totalVal);
   const b = item?.bonificacion;
   if (!b) return `<span class="fw-bold">${currency(totalVal)}</span>`;
   const montoBase = b.tipo === 'porcentaje' ? totalVal * (b.valor / 100) : Number(b.valor);
@@ -1986,6 +2700,27 @@ function _bonifTotal(item, totalVal, conIva = false) {
     <span class="fw-bold ${cls}">${currency(final)}</span>
     <span class="text-muted text-decoration-line-through ms-1" style="font-size:0.78rem">${currency(totalVal)}</span>
     <br><span class="${cls}" style="font-size:0.7rem"><i class="bi bi-gift me-1"></i>${label}${b.tipo === 'porcentaje' ? ` = ${currency(montoBase)}` : ''}${b.conIva ? ` +IVA = ${currency(monto)}` : ''} · ${fmtDate(b.fechaMaxima)}${b.enlace ? ` <a href="${b.enlace}" target="_blank" rel="noopener" class="${cls}" title="Ver promoción"><i class="bi bi-box-arrow-up-right" style="font-size:var(--fs-mini)"></i></a>` : ''}</span>`;
+}
+
+/**
+ * Monto con bonificación ligada: neto, total tachado y la parte que le toca de la
+ * bonificación (monto y % respecto al total de la compra). Si su orden / el
+ * acumulado no alcanza el mínimo, el total va sin descuento y se indica.
+ */
+function _bonifLigadaTotal(item, totalVal) {
+  const l = _bonifLigadas.get(item.id);
+  if (!l?.d) return `<span class="fw-bold">${currency(totalVal)}</span>`;
+  const { bonif, d } = l;
+  const titulo = `${bonif.nombre}${d.folio ? ` · Folio ${d.folio}` : ''}`;
+  if (!d.califica) {
+    return `<span class="fw-bold">${currency(totalVal)}</span>
+      <br><span class="text-muted" style="font-size:0.7rem" title="${titulo}"><i class="bi bi-gift me-1"></i>${bonif.nombre} · no alcanza mínimo</span>`;
+  }
+  const cls = _clsBonif(bonif);
+  return `
+    <span class="fw-bold ${cls}">${currency(totalVal - d.monto)}</span>
+    <span class="text-muted text-decoration-line-through ms-1" style="font-size:0.78rem">${currency(totalVal)}</span>
+    <br><span class="${cls}" style="font-size:0.7rem" title="${titulo}"><i class="bi bi-gift me-1"></i>${bonif.nombre}: ${currency(d.monto)} (${d.pct.toFixed(1)}%) · ${fmtDate(bonif.fechaMaxima)}${bonif.enlace ? ` <a href="${bonif.enlace}" target="_blank" rel="noopener" class="${cls}" title="Ver promoción"><i class="bi bi-box-arrow-up-right" style="font-size:var(--fs-mini)"></i></a>` : ''}</span>`;
 }
 
 // ── Modal De Contado ────────────────────────────────────────────────────────────
@@ -2056,7 +2791,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
             <input type="url" class="form-control" name="enlaceCompra" value="${compra?.enlaceCompra || ''}" placeholder="https://...">
           </div>
           ${_fechaEfectivaFields(compra, 'contado')}
-          ${_bonifFields(compra)}
+          ${bonifFieldsHTML(compra)}
         </div>
       </form>`,
     footer: `
@@ -2064,7 +2799,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-contado">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
-  _wireBonif();
+  wireBonifFields('contado-form', compra);
   _wireFechaEfectiva('contado', '#contado-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();
@@ -2108,7 +2843,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
-    _saveBonif(data);
+    await saveBonif(data);
     _saveFechaEfectiva(data, 'contado');
     try {
       let savedId;
@@ -2155,6 +2890,8 @@ function _seedParaOtroTipo(formId, compraActual, coleccionActual) {
     total: totalPendiente,
     ...(esDiferido ? { totalDiferido: totalForm } : {}),
     bonificacion: compraActual?.bonificacion || null,
+    bonificacionId: compraActual?.bonificacionId || null,
+    folioOrden: compraActual?.folioOrden || null,
     fechaEfectiva: (chkFechaEfectiva?.checked && inputFechaEfectiva?.value) ? inputFechaEfectiva.value : null,
     _switchFrom: { coleccion: coleccionActual, id: compraActual.id },
     _original: compraActual,
@@ -2268,7 +3005,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
             <input type="url" class="form-control" name="enlaceCompra" value="${msi?.enlaceCompra || ''}" placeholder="https://...">
           </div>
           ${_fechaEfectivaFields(msi, 'msi')}
-          ${_bonifFields(msi)}
+          ${bonifFieldsHTML(msi)}
         </div>
       </form>`,
     footer: `
@@ -2276,7 +3013,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
-  _wireBonif();
+  wireBonifFields('msi-form', msi);
   _wireFechaEfectiva('msi', '#msi-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();
@@ -2345,7 +3082,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
-    _saveBonif(data);
+    await saveBonif(data);
     _saveFechaEfectiva(data, 'msi');
     try {
       let savedId;

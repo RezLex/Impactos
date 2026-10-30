@@ -2280,3 +2280,29 @@ h1,h2,h3,h4,h5,h6 { font-weight: 700; }
 
 input[type="time"] { cursor: pointer; }
 input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+
+/* ── Compras › Todas: barra de filtros ──
+   Escritorio: todo en una fila; el buscador toma el espacio sobrante y los
+   selects pueden encogerse (truncan su texto) antes que romper la fila.
+   Móvil: varias filas, cada una ocupando todo el ancho:
+   [mes | Compra·Pago] · [buscador] · [tipo (+on/off) | institución]. */
+.todas-filtros            { flex-wrap: nowrap; gap: 8px; margin-bottom: 16px; }
+.todas-filtros .tf-mes    { flex: 0 0 auto; }
+.todas-filtros .tf-fecha  { flex: 0 0 auto; }
+.todas-filtros .tf-fecha .btn { width: 76px; }
+.todas-filtros .tf-buscar { flex: 1 1 200px; min-width: 140px; width: auto; }
+.todas-filtros .tf-tipo   { flex: 0 1 auto; min-width: 0; }
+.todas-filtros .tf-tipo .form-select,
+.todas-filtros .tf-inst   { width: auto; min-width: 0; flex: 0 1 auto; }
+.todas-filtros .tf-limpiar { flex: 0 0 auto; }
+
+@media (max-width: 991px) {
+  .todas-filtros             { flex-wrap: wrap; }
+  .todas-filtros .tf-mes     { flex: 1 1 auto; justify-content: space-between; }
+  .todas-filtros .tf-fecha   { flex: 1 1 auto; }
+  .todas-filtros .tf-fecha .btn { flex: 1 1 0; width: auto; }
+  .todas-filtros .tf-buscar  { flex: 1 1 100%; }
+  .todas-filtros .tf-tipo    { flex: 1 1 0; }
+  .todas-filtros .tf-tipo .form-select { flex: 1 1 auto; }
+  .todas-filtros .tf-inst    { flex: 1 1 0; }
+}

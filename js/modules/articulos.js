@@ -75,8 +75,8 @@ async function renderList(container) {
         ? `<div class="empty-state"><i class="bi bi-basket"></i><p>Sin artículos registrados.<br>Agrega uno para empezar a llevar su inventario.</p></div>`
         : `<div class="row g-3">${ordenados.map(a => renderArticuloCard(a)).join('')}</div>`;
 
-      document.querySelectorAll('.btn-abrir-articulo').forEach(btn =>
-        btn.addEventListener('click', () => navigate('/articulos/' + btn.dataset.id)));
+      document.querySelectorAll('#articulos-grid .evento-card').forEach(card =>
+        card.addEventListener('click', () => navigate('/articulos/' + card.dataset.id)));
       document.querySelectorAll('.btn-edit-articulo').forEach(btn =>
         btn.addEventListener('click', e => {
           e.stopPropagation();
@@ -136,9 +136,6 @@ function renderArticuloCard(a) {
             <span>${stock.terminado} terminados</span>
             ${stock.sinSeguimiento ? `<span>${stock.sinSeguimiento} sin seguimiento</span>` : ''}
           </div>
-          <button class="btn btn-primary btn-sm w-100 mt-3 btn-abrir-articulo" data-id="${a.id}">
-            <i class="bi bi-arrow-right-circle me-1"></i>Ver Inventario
-          </button>
         </div>
       </div>
     </div>`;

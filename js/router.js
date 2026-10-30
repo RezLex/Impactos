@@ -61,9 +61,11 @@ function _updateNav(base) {
     '/rendimientos': 'Rendimientos',
     '/eventos':   'Eventos de Ofertas',
     '/articulos': 'Artículos Recurrentes',
+    '/deseos':    'Deseos',
     '/ajustes':   'Ajustes',
     '/festivos':  'Días Festivos',
     '/admin':     'Instituciones y Tarjetas',
+    '/bonificaciones': 'Bonificaciones',
   };
 
   document.querySelectorAll('[data-route]').forEach(el => {

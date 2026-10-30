@@ -40,6 +40,11 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Catálogo de días festivos oficiales de México
 - Compras detectadas automáticamente en el correo, listas para registrar de un toque
   (ver [Notificaciones](#notificaciones-notificaciones))
+- Bonificaciones/cashback por institución, repartidas entre las compras que se ligan a ellas
+  (ver [Bonificaciones](#bonificaciones-bonificaciones))
+- Inventario de artículos recurrentes con variación de precio entre registros
+- Lista de deseos con historial de precios por tienda y planes de compra para comparar
+  tarjetas, cupones y bonificaciones (ver [Deseos](#deseos-deseos))
 
 **Características principales:**
 - Interfaz responsiva: sidebar en desktop, bottom navigation en móvil; en móvil las tarjetas se muestran en stack con efecto de superposición
@@ -47,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T23`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T34`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -98,7 +103,11 @@ impactos/
     │   ├── dashboard.js        # Vista principal — métricas, impacto del mes, últimas compras, gastos
     │   ├── tarjetas.js         # Vista de tarjetas en formato wallet (flip cards)
     │   ├── admin-tarjetas.js   # CRUD de instituciones y tarjetas
-    │   ├── msi.js              # Módulo "Compras y Gastos": De Contado + A Plazos + Gastos
+    │   ├── msi.js              # Módulo "Compras y Gastos": Todas + De Contado + A Plazos + Gastos
+    │   ├── bonificaciones.js   # Bonificaciones por institución y sus compras ligadas
+    │   ├── articulos.js        # Artículos Recurrentes — cuadrícula de artículos
+    │   ├── articulo-detalle.js # Inventario de un artículo recurrente (registros, variación, duración)
+    │   ├── deseos.js           # Deseos: Lista (opciones + historial de precios) y Planes (cupones)
     │   ├── notificaciones.js   # Compras detectadas en el correo, pendientes de registrar
     │   ├── fijos.js            # CRUD de gastos fijos mensuales
     │   ├── impacto.js          # Impacto mensual rediseñado — confirmación, pago, cierre
@@ -111,6 +120,11 @@ impactos/
     │
     └── utils/
         ├── acumular.js         # Qué se le puede acumular a una compra de contado
+        ├── articulo-calc.js    # Precio/unidad, duración y resumen de Artículos Recurrentes
+        ├── bonificaciones.js   # Reparto de una bonificación entre sus compras + folios de orden
+        ├── bonif-form.js       # Sección "Esperar bonificación" de los modales de compra (manual o ligada)
+        ├── deseos.js           # Historial de precios y variación de las opciones de un deseo
+        ├── planes.js           # Totales de un plan de compra (carritos, cupones, bonificación)
         ├── db.js               # CRUD genérico para Firestore
         ├── formatters.js       # Formateo de moneda, fechas, seriales Excel, etc.
         ├── ciclo.js            # Cálculo de ciclos de facturación y nómina
@@ -276,7 +290,9 @@ Compras de contado (sin meses) con cualquier tipo de tarjeta.
 | `fechaCompra` | string | Datetime ISO de la compra (`YYYY-MM-DDTHH:MM:SS`) |
 | `total` | number | Monto total de la compra |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
-| `bonificacion` | object? | Bonificación/cashback esperado (ver estructura abajo) |
+| `bonificacion` | object? | Bonificación/cashback esperado capturado a mano (ver estructura abajo) |
+| `bonificacionId` | string? | Bonificación del módulo [`bonificaciones`](#bonificacionesid) a la que se ligó la compra. Excluyente con `bonificacion`: una compra tiene una u otra |
+| `folioOrden` | string? | Solo con `bonificacionId` cuyo mínimo se valida **por compra**: folio `[INSTITUCION]-[DDMMAA]-[NN]` que agrupa los registros de una misma orden |
 
 **Estructura de `bonificacion` (contado y msi):**
 
@@ -352,6 +368,7 @@ Compras a plazos (meses sin intereses). Las fechas de primer y último pago **no
 | `restante` | number? | Monto pendiente; si no está en BD se calcula como `total - mensualidad × mesesPagados` |
 | `enlaceCompra` | string? | URL al comprobante o página de la compra |
 | `bonificacion` | object? | Bonificación/cashback esperado (misma estructura que `contado`) |
+| `bonificacionId` / `folioOrden` | string? | Bonificación ligada y folio de orden (igual que en `contado`) |
 | `liquidado` | boolean? | `true` cuando la compra está completamente saldada |
 | `fechaLiquidacion` | string? | Fecha ISO en que se marcó como liquidada (`YYYY-MM-DD`) |
 
@@ -614,6 +631,67 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `comprasRealizadas` | array | Compras ya realizadas |
 | `promociones` | array | Promociones por institución |
 
+### `articulosRecurrentes/{id}`
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` | string | Nombre del artículo |
+| `tipoMedida` | string | `volumen`, `masa` o `pieza` |
+| `unidadPreferida` | string | Unidad de referencia para precio/unidad y duración/unidad |
+| `categoria` | string? | Texto libre; define el color de la card |
+| `compararMismaMarca` | boolean? | Si es `true`, la columna **Variación** del inventario solo compara registros de la misma marca. Se guarda al cambiar el check |
+| `registros` | array | Inventario: `{ marca, contenidoValor, contenidoUnidad, precio, descuento, enlaceCompra, enlacePedido, fechaComprado, estatus: comprado\|enUso\|terminado, fechaEnUso, fechaTerminado, sinSeguimiento }` |
+
+### `bonificaciones/{id}`
+
+Bonificaciones/cashback por institución (módulo [Bonificaciones](#bonificaciones-bonificaciones)).
+Las compras se ligan con `bonificacionId` y el monto esperado se reparte entre ellas.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` | string | Nombre de la promoción |
+| `institucionId` | string | Institución a la que pertenece; solo se ofrece en compras con tarjetas de esa institución |
+| `tipo` | string | `porcentaje` o `cantidad` |
+| `valor` | number | Porcentaje o monto fijo |
+| `fechaMaxima` | string | Fecha límite (`YYYY-MM-DD`) |
+| `montoMinimo` | number | Compra mínima (0 = sin mínimo) |
+| `minimoPor` | string | `compra` (cada orden —registros con el mismo `folioOrden`— debe alcanzarlo) o `acumulado` (la suma de todas las compras ligadas) |
+| `montoMaximo` | number | Tope de la bonificación (0 = sin tope) |
+| `enlace` | string | URL de la promoción |
+| `enlaceTyc` | string | URL de los términos y condiciones |
+| `aplicada` | boolean | `true` cuando ya se recibió |
+
+### `deseos/{id}`
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` | string | Artículo deseado |
+| `notas` | string | Modelo, color, etc. |
+| `opciones` | array | `{ id, tienda, precio, enlace, historial: [{ fecha, precio }] }` — `precio` es el vigente; `historial` guarda cada precio registrado en orden (el primero al crear la opción; después uno por cada cambio de precio) |
+
+### `planesCompra/{id}`
+
+Planes de la pestaña **Planes** de Deseos. Solo planeación: no tienen relación con Compras ni Impacto.
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` / `notas` | string | Identificación del plan |
+| `items` | array | Registros propios del plan: `{ id, origen: lista\|personalizado, deseoId?, opcionId?, nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`. Los tomados de Lista guardan su propia copia de los datos: editarlos no toca el deseo |
+| `cupones` | object | Cupón asignado a cada carrito: `{ "<tienda en minúsculas>\|<tarjetaId>": cuponId }` |
+
+### `cuponesPlan/{id}`
+
+Catálogo de cupones de la pestaña Planes (un cupón se puede asignar a varios carritos de distintos planes).
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` | string | Código o descripción |
+| `tienda` | string | Tienda donde aplica; solo se ofrece en carritos de esa tienda |
+| `tipo` | string | `porcentaje` o `cantidad` |
+| `valor` | number | Porcentaje o monto fijo |
+| `montoMinimo` | number | Compra mínima del carrito (0 = sin mínimo) |
+| `montoMaximo` | number | Tope del descuento; solo para `porcentaje` (0 = sin tope) |
+
 ### `_config/owner` *(fuera del namespace de usuario)*
 
 | Campo | Tipo | Descripción |
@@ -701,7 +779,24 @@ CRUD completo de instituciones y tarjetas:
 > guardar descarta el desvío y reabre el documento real sin cambios.
 
 ### Compras y Gastos (`#/compras`)
-Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
+Gestión de compras y gastos, organizada en cuatro pestañas. **Todas** es la pestaña por defecto al entrar a `#/compras` (una ruta con pestaña, como `#/compras/gastos`, abre esa). Cada tab recuerda el estado de acordeones (plegado/expandido) en `localStorage`.
+
+**Pestaña Todas** (De Contado + A Plazos + Gastos aplicados en una sola tabla)
+- **Filtros** — en escritorio en una sola fila; en móvil se acomodan en varias filas que ocupan todo el ancho (`.todas-filtros` en `app.css`):
+  - **Mes/año** `‹ Octubre 2026 ›`: dar clic en el nombre del mes (no en las flechas) activa/desactiva **Todos los meses** — se marca en azul y las flechas se deshabilitan
+  - **Compra | Pago**: dos botones unidos. *Pago* ubica cada registro por la nómina que lo paga (mismo criterio que cada pestaña)
+  - **Buscador**: cada palabra debe aparecer en descripción, tarjeta, institución, últimos 4 dígitos de la tarjeta del cargo, fecha o importe (sin acentos ni mayúsculas)
+  - **Tipo**: De Contado, A Plazos, Gastos, **Diferidos** (con botón on/off *Solo con saldo pendiente de registrar*) y **Con Bonificación** (con botón on/off *Solo sin aplicación confirmada*)
+  - **Institución**
+  - **Limpiar filtros** (borrador), deshabilitado si no hay nada que limpiar
+- Métricas: total del período (con desglose Contado · Plazos · Gastos) y número de registros
+- Columnas: Tipo · Descripción (enlaces de compra y de bonificación) · Tarjeta (punto con el color de la institución, `···últimos 4` y **F**/**D** física/digital) · **Fecha Compra/Cargo** · **Fecha Pago** · **Monto**
+  - F/D se deduce buscando `numeroTarjeta` entre los números de la tarjeta (la compra no guarda el formato); si física y digital comparten número gana la física, igual que el select del modal
+- **Monto**: en A Plazos es la mensualidad con *Pago* y el total con *Compra*. Cuando el monto es el total de la compra, la bonificación se pinta igual que en De Contado / A Plazos; si es solo una parte (mensualidad, pagos del ciclo) solo se indica con el ícono de regalo
+- En compras A Plazos, clic en **Monto** abre Mensualidad · Restante · Total · Meses pagados, y clic en **Fecha Pago** abre Primer · Próximo · Último pago
+- **Orden**: los encabezados de las dos fechas son clicables (asc/desc). Por defecto: con un mes, fecha de compra ascendente; con *Todos los meses*, descendente por la fecha del toggle. Cambiar el toggle, el mes o *Todos los meses* vuelve al orden por defecto; el buscador y los filtros de tipo/institución lo conservan
+- Las compras **diferidas** se pintan como en sus pestañas: fila amarilla desplegable con sus pagos y las mismas acciones (registrar/editar/eliminar pago, pagar cuota, editar plan, saldo a favor). Las compras a plazos muestran barra de meses pagados
+- Al guardar desde un modal, los filtros y el scroll se conservan (viven en el módulo, no dentro de `renderView`); se reinician al volver a entrar a `#/compras` o con *Limpiar filtros*
 
 **Pestaña De Contado** (colección `contado`)
 - Filtro de período: navegación mes/año (`‹ Mayo 2026 ›`) + toggle **Fecha Compra | Fecha Pago**
@@ -710,7 +805,7 @@ Gestión de compras y gastos, organizada en tres pestañas. Cada tab recuerda el
 - Tabla: descripción + enlace, tarjeta (alias + últimos 4), fecha de compra, fecha de pago, total
 - **Fecha de pago:** nómina anterior en azul (icono billetera) + límite del ciclo en gris (icono tarjeta)
 - Para tarjetas de débito la columna de fecha de pago queda vacía
-- **Columna Total:** cuando la compra tiene `bonificacion` configurada, muestra el precio neto junto al total original tachado, el monto de bonificación y la fecha límite con código de color
+- **Columna Total:** cuando la compra tiene `bonificacion` configurada, muestra el precio neto junto al total original tachado, el monto de bonificación y la fecha límite con código de color. Si está ligada a una bonificación del módulo (`bonificacionId`), muestra su parte del reparto: `Nombre: $monto (x% de la compra)`, o *no alcanza mínimo*
 
 **Pestaña A Plazos** (colección `msi`)
 - Vista en acordeón **agrupada por institución**; botón **Colapsar/Expandir todo**
@@ -840,6 +935,26 @@ Registro de gastos recurrentes (módulo en la sección **Administración** del n
 - Al abrir el tab Gastos, los gastos fijos ya disponibles ese mes (según `formaPago` — ver *Ciclo de vida de un gasto fijo*) y sin registro en `gastos` se crean automáticamente como `pendiente`
 - Los gastos fijos con `diaCobro` como texto no numérico no se precargan automáticamente
 
+### Bonificaciones (`#/bonificaciones`)
+Bonificaciones/cashback por institución (sección **Administración** del nav; colección [`bonificaciones`](#bonificacionesid)):
+- Filtro: **Activas** (no aplicadas) · **Aplicadas** · **Todas**
+- Una tarjeta por bonificación: estado (Vigente / Vencida / Aplicada), regla (`10% · mín. $1,000 por compra · máx. $500`), vencimiento, *+IVA* si la institución bonifica con IVA, enlaces a **Promoción** y **TyCs**
+- Resumen: compras ligadas, suma, bonificación esperada (badge *tope* si se alcanzó el máximo) y, con mínimo acumulado, cuánto falta
+- Tabla de compras ligadas con lo que le toca a cada una y su **% respecto al total de la compra**. Con mínimo por compra se agrupan por **folio de orden** con la suma de la orden y si *Califica* o cuánto le falta
+- Acciones: marcar aplicada/pendiente, editar, eliminar (al eliminar, sus compras quedan desligadas)
+
+**Ligar una compra** — en los modales de De Contado, A Plazos y Registro Rápido, la sección *Esperar bonificación / cashback* (`js/utils/bonif-form.js`) tiene dos modos cuando la institución de la tarjeta elegida tiene bonificaciones no aplicadas:
+- **Bonificación de la institución**: con una sola se muestra; con varias, un select. Se actualiza al cambiar de tarjeta
+- **Manual**: los campos de siempre (`bonificacion`)
+- Si el mínimo es **por compra**, se elige el **folio de orden**: la primera compra solo tiene *Nuevo*; al guardar se genera `[INSTITUCION]-[DDMMAA]-[NN]` con la fecha de la compra y el siguiente consecutivo de 2 dígitos. Las siguientes compras pueden usar un folio existente o generar otro. Los registros con el mismo folio son una orden y se suman para validar el mínimo
+
+**Reparto** (`calcularDistribucion`, `js/utils/bonificaciones.js`, probado en `test/bonificaciones.test.mjs`):
+1. Grupos que validan el mínimo: cada folio (por compra; una compra sin folio es su propio grupo) o todas juntas (acumulado). Un grupo califica si su suma ≥ `montoMinimo`
+2. *Porcentaje*: `valor`% de cada compra que califica. *Cantidad*: `valor` por cada grupo que califica (una vez si es acumulado), repartido en proporción al total de cada compra. Con `bonificacionConIva` en la institución, × 1.16
+3. Si la suma pasa `montoMaximo`, todo se escala proporcionalmente al tope
+
+La base de cada compra es su total original (`totalDiferido` en diferidas).
+
 ### Impacto Mensual (`#/impacto` o `#/impacto/YYYY-MM`)
 Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
 
@@ -949,6 +1064,38 @@ Detalles de implementación que conviene conocer antes de tocarlos:
 
 > **Qué capturar (monto):** el saldo que muestra la app del banco en ese momento, tal cual. Ese saldo **ya incluye** el interés abonado esa madrugada, así que al capturarlo con la fecha de hoy la tarjeta mostrará `Hasta hoy $0.00`. Al día siguiente, `Hasta hoy` ya reflejará ese abono.
 
+### Artículos Recurrentes (`#/articulos` y `#/articulos/{id}`)
+Inventario de consumibles (colección [`articulosRecurrentes`](#articulosrecurrentesid)):
+- Cuadrícula de cards ordenable por categoría o por más comprado. **Toda la card es clicable** y abre el inventario (los botones editar/eliminar no la abren)
+- **Inventario** (`articulo-detalle.js`): tabla de registros con marca, contenido, precio (y precio con descuento), estatus, fechas, precio/unidad, variación y duración
+  - **Fechas**: cada fecha lleva un punto con el color de su estatus (gris comprado, azul en uso, verde terminado)
+  - **Comparar solo misma marca** (switch en el encabezado): la variación solo se calcula contra registros de la misma marca. Se guarda en el artículo (`compararMismaMarca`) al cambiarlo
+  - **Variación**: porcentaje del precio/unidad (sin descuento) contra el registro del select de la celda. Por defecto se preselecciona el anterior por fecha de compra; si no hay anterior, la opción `-`. El select respeta el filtro de marca. La elección vive en la sesión (no se guarda)
+  - El **(i)** junto al porcentaje abre el desglose del cálculo: precio ÷ contenido convertido de cada registro y la fórmula
+- **Editar registro**: además de los datos de compra, permite cambiar **estatus** y las **fechas de en uso / terminado** (se valida compra ≤ en uso ≤ terminado). Con *Sin seguimiento* ese bloque se oculta
+- **Marcar en uso / terminado**: el modal precarga la fecha de hoy
+
+### Deseos (`#/deseos`)
+Lista de deseos y planeación de compras (sección **Principal** del nav). No tiene relación con Compras ni Impacto. Dos pestañas:
+
+**Lista** (colección [`deseos`](#deseosid))
+- Una tarjeta por artículo deseado con su mejor precio, y una tabla de **opciones** (tienda, precio, enlace) de la más barata a la más cara, con la etiqueta *Mejor precio*
+- **Variación** del último cambio de precio (rojo si subió, verde si bajó, igual que el inventario de Artículos Recurrentes) con el precio anterior
+- **Actualizar precio** (con vista previa de la variación) e **Historial** (del más reciente al más antiguo, cada uno con su % contra el anterior)
+- Se agrega una entrada al historial solo si el precio cambia — también al editar la opción (`registrarPrecio`, `js/utils/deseos.js`)
+
+**Planes** (colecciones [`planesCompra`](#planescompraid) y [`cuponesPlan`](#cuponesplanid))
+- **Cupones**: catálogo arriba de la pestaña (nombre, tienda obligatoria, porcentaje o cantidad fija, compra mínima, descuento máximo solo para porcentaje). Se asignan a carritos de cualquier plan
+- **Comparativa** (con 2+ planes con artículos): subtotal, cupones, bonificación, total y diferencia contra el mejor; el más barato se marca *Más conveniente*
+- Cada plan agrupa sus artículos **por tarjeta** y dentro **por tienda** (carrito). En cada carrito se elige el cupón (solo los de esa tienda)
+- **Agregar artículo**: *De Lista* (precarga la opción elegida con su precio vigente, editable), *De otro plan* (copia independiente) o *Personalizado*. En todos se elige cantidad, tarjeta y bonificación del módulo Bonificaciones (las de la institución de la tarjeta)
+- **Duplicar plan** para armar variantes
+
+**Cálculo de un plan** (`calcularPlan`, `js/utils/planes.js`, probado en `test/planes.test.mjs`):
+1. Carrito = misma tienda (sin importar mayúsculas/espacios) + misma tarjeta
+2. El cupón se aplica al subtotal del carrito si alcanza su mínimo y se reparte entre sus artículos por subtotal
+3. La bonificación se calcula sobre lo pagado ya con cupón, con el mismo reparto que el módulo Bonificaciones, pero **solo contra los artículos del mismo plan**. Con mínimo por compra, cada carrito es una orden
+
 ### Eventos de Ofertas (`#/eventos`)
 Lista de eventos registrados con acceso rápido a cada uno.
 
@@ -1002,8 +1149,11 @@ que debe funcionar esté abierta la vista que esté.
 - **Excel:** un `.xlsx` con una hoja por colección
 - **JSON:** un `.json` con todas las colecciones en un objeto
 - El nombre incluye la fecha (`IMPACTOS_YYYY-MM-DD`)
-- Se exportan las 12 colecciones con datos del usuario. Quedan fuera `notificaciones` (bandeja
-  transitoria) y `dispositivos` (tokens de push, que fuera de su navegador no significan nada)
+- Se exportan 16 colecciones con datos del usuario (incluidas `bonificaciones`, `deseos`,
+  `planesCompra` y `cuponesPlan`). Quedan fuera `notificaciones` (bandeja transitoria) y
+  `dispositivos` (tokens de push, que fuera de su navegador no significan nada)
+- **Pendiente:** `creditosTarjeta` y `articulosRecurrentes` tampoco están en la lista del respaldo
+  ni en `test/collections.js`, así que hoy no se exportan
 
 > **Corregido al mover la vista:** la lista de colecciones del módulo viejo tenía la clave `fijos`,
 > que no existe —la colección real es `gastosFijos`—, así que la hoja de Gastos Fijos salía vacía
@@ -1024,6 +1174,7 @@ Botón flotante (`+`) disponible en todos los módulos después de iniciar sesi�
 - **Preview en tiempo real**: al seleccionar tarjeta, fecha y monto muestra fechas del ciclo (corte, límite pago, nómina anterior), Disponible y Usado con cálculo aplicado, e impacto en el mes relacionado (tarjeta + global, incluyendo proyecciones)
 - Guarda directamente sin requerir navegar al módulo correspondiente
 - La Descripción/Nombre va al final del formulario para no bloquear el preview
+- La sección de bonificación es la misma de los modales de Compras (`js/utils/bonif-form.js`): manual o ligada a una bonificación de la institución, con folio de orden (ver [Bonificaciones](#bonificaciones-bonificaciones))
 
 #### Acumular compra (solo De Contado)
 
@@ -1066,7 +1217,7 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 |---|---|---|
 | `#/` | dashboard.js | Dashboard principal |
 | `#/tarjetas` | tarjetas.js | Vista wallet de tarjetas |
-| `#/compras` | msi.js | Compras y Gastos (De Contado + A Plazos + Gastos); `#/compras/gastos` abre directamente la pestaña Gastos |
+| `#/compras` | msi.js | Compras y Gastos (Todas + De Contado + A Plazos + Gastos), abre en **Todas**; `#/compras/gastos` (o `/contado`, `/plazos`) abre directamente esa pestaña |
 | `#/msi` | — | Redirige a `#/compras` (compatibilidad) |
 | `#/notificaciones` | notificaciones.js | Compras detectadas en el correo, pendientes de registrar |
 | `#/fijos` | fijos.js | Gastos fijos |
@@ -1075,7 +1226,11 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 | `#/rendimientos` | rendimientos.js | Cuentas de inversión y sus rendimientos |
 | `#/eventos` | eventos.js | Lista de eventos |
 | `#/eventos/{id}` | evento-detalle.js | Detalle de evento |
+| `#/articulos` | articulos.js | Artículos Recurrentes |
+| `#/articulos/{id}` | articulo-detalle.js | Inventario de un artículo |
+| `#/deseos` | deseos.js | Deseos: Lista y Planes |
 | `#/admin` | admin-tarjetas.js | CRUD instituciones y tarjetas |
+| `#/bonificaciones` | bonificaciones.js | Bonificaciones por institución |
 | `#/festivos` | festivos.js | Catálogo de festivos MX |
 | `#/ajustes` | ajustes.js | Ajustes de la app (absorbió Exportar Datos) |
 | `#/exportar` | — | Redirige a `#/ajustes` (compatibilidad) |
@@ -1083,8 +1238,9 @@ La app usa **hash routing** (`#/ruta`) para compatibilidad con GitHub Pages sin 
 Los módulos se cargan de forma **lazy** (`import()` dinámico).
 
 **Sidebar (escritorio):**
-- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Notificaciones, Impacto Mensual, Rendimientos
-- **Administración:** Instituciones y Tarjetas, Gastos Fijos, Días Festivos — catálogos que se dan
+- **Principal:** Dashboard, Tarjetas, Compras y Gastos, Notificaciones, Impacto Mensual, Rendimientos,
+  Artículos Recurrentes, Deseos
+- **Administración:** Instituciones y Tarjetas, Bonificaciones, Gastos Fijos, Días Festivos — catálogos que se dan
   de alta una vez y el resto de la app consulta. No confundir con `#/ajustes`, que son los ajustes
   de la app y vive en el pie
 - **Footer:** Ajustes, Cerrar Sesión

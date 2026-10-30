@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v51';
+const CACHE = 'impactos-v52';
 
 const SHELL = [
   './',
@@ -10,9 +10,11 @@ const SHELL = [
   './js/router.js',
   './js/modules/admin-tarjetas.js',
   './js/modules/dashboard.js',
+  './js/modules/deseos.js',
   './js/modules/evento-detalle.js',
   './js/modules/eventos.js',
   './js/modules/ajustes.js',
+  './js/modules/bonificaciones.js',
   './js/modules/festivos.js',
   './js/modules/fijos.js',
   './js/modules/impacto.js',
@@ -23,11 +25,15 @@ const SHELL = [
   './js/modules/rendimientos.js',
   './js/modules/tarjetas.js',
   './js/utils/acumular.js',
+  './js/utils/bonif-form.js',
+  './js/utils/bonificaciones.js',
   './js/utils/ciclo.js',
   './js/utils/conectividad.js',
   './js/utils/db.js',
+  './js/utils/deseos.js',
   './js/utils/formatters.js',
   './js/utils/impacto-calc.js',
+  './js/utils/planes.js',
   './js/utils/prefill-compra.js',
   './js/utils/rendimiento.js',
   './js/utils/saldo.js',

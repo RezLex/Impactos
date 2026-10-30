@@ -3,7 +3,7 @@ import { initRouter, register, navigate, setGuard } from './router.js';
 import { clearCache } from './utils/db.js';
 import { iniciarMonitorConexion, onCambioConexion, estaOffline } from './utils/conectividad.js';
 
-const APP_VERSION = '1.9.3-T33';
+const APP_VERSION = '1.9.3-T34';
 
 // ── Module loader (lazy) ──────────────────────────────────────────────────────
 async function load(name, ...args) {
@@ -64,10 +64,12 @@ function setupRouter() {
     if (pts[1]) load('articulo-detalle', pts[1]);
     else        load('articulos');
   });
+  register('/deseos',    ()       => load('deseos'));
   register('/ajustes',   ()       => load('ajustes'));
   register('/exportar',  ()       => navigate('/ajustes'));   // la vista se absorbió en Ajustes
   register('/festivos',  ()       => load('festivos'));
   register('/admin',     ()       => load('admin-tarjetas'));
+  register('/bonificaciones', ()  => load('bonificaciones'));
   initRouter(content);
 }
 

@@ -21,5 +21,10 @@ Ver [DOCUMENTACION.md](DOCUMENTACION.md) para la arquitectura, el modelo de dato
 
 - JavaScript ES6+ vanilla, sin framework ni build step. Módulos con `import()` dinámico.
 - Cada módulo exporta `render(container, ...args)` y pinta con template strings.
-- Los cálculos financieros viven en `js/utils/`, separados de la UI, y se prueban en Node.
+- Los cálculos financieros viven en `js/utils/`, separados de la UI, y se prueban en Node
+  (cada `test/*.test.mjs` nuevo se agrega al script `test` de `package.json`).
+- Una **colección** nueva se registra en `COLLECTIONS` de `js/modules/ajustes.js` (respaldo) y en
+  `test/collections.js` (sincronización del modo pruebas). Un **archivo JS** nuevo, en `SHELL` de
+  `sw.js` (offline). Un **módulo** nuevo: ruta en `js/app.js`, título en `js/router.js` y enlace en
+  el nav de `index.html`.
 - Comentarios y textos de UI en español.

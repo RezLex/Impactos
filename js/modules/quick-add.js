@@ -87,67 +87,8 @@ const _wireTimePicker = () => {
   });
 };
 
-const _bonifFieldsQA = (item) => {
-  const b = item?.bonificacion;
-  return `
-    <div class="col-12">
-      <div class="form-check mb-1">
-        <input class="form-check-input" type="checkbox" id="has-bonif" ${b ? 'checked' : ''}>
-        <label class="form-check-label" for="has-bonif" style="font-size:0.85rem">Bonificación / cashback esperado</label>
-      </div>
-      <div id="bonif-fields" ${b ? '' : 'style="display:none"'}>
-        <div class="row g-2">
-          <div class="col-4">
-            <select class="form-select form-select-sm" name="bonificacionTipo">
-              <option value="porcentaje" ${(!b || b.tipo === 'porcentaje') ? 'selected' : ''}>% Porcentaje</option>
-              <option value="cantidad"   ${b?.tipo === 'cantidad' ? 'selected' : ''}>$ Cantidad</option>
-            </select>
-          </div>
-          <div class="col-4">
-            <input type="number" class="form-control form-control-sm" name="bonificacionValor"
-                   value="${b?.valor ?? ''}" min="0" step="0.01" placeholder="Valor">
-          </div>
-          <div class="col-4">
-            <input type="date" class="form-control form-control-sm" name="bonificacionFecha"
-                   value="${b?.fechaMaxima ?? ''}">
-          </div>
-          <div class="col-12">
-            <input type="url" class="form-control form-control-sm" name="bonificacionEnlace"
-                   value="${b?.enlace ?? ''}" placeholder="Enlace de la promoción (opcional)">
-          </div>
-          <div class="col-12">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="bonificacionAplicada" id="bonif-aplicada" ${b?.aplicada ? 'checked' : ''}>
-              <label class="form-check-label text-success" for="bonif-aplicada" style="font-size:0.82rem">Ya recibida / aplicada</label>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`;
-};
-
-const _saveBonifQA = (data) => {
-  const tipo     = data.bonificacionTipo;
-  const valor    = Number(data.bonificacionValor);
-  const fecha    = data.bonificacionFecha;
-  const enlace   = data.bonificacionEnlace || '';
-  const aplicada = !!data.bonificacionAplicada;
-  delete data.bonificacionTipo; delete data.bonificacionValor; delete data.bonificacionFecha;
-  delete data.bonificacionEnlace; delete data.bonificacionAplicada;
-  const hasBonif = document.getElementById('has-bonif')?.checked;
-  if (hasBonif && valor > 0 && fecha) data.bonificacion = {
-    tipo, valor, fechaMaxima: fecha,
-    ...(enlace   ? { enlace }   : {}),
-    ...(aplicada ? { aplicada } : {}),
-  };
-  else delete data.bonificacion;
-};
-
-const _wireBonifQA = () => {
-  const chk = document.getElementById('has-bonif');
-  const flds = document.getElementById('bonif-fields');
-  if (chk && flds) chk.addEventListener('change', () => { flds.style.display = chk.checked ? '' : 'none'; });
-};
+// Campos de bonificación (manual o ligada a una bonificación de la institución): utils/bonif-form.js.
+import { bonifFieldsHTML, wireBonifFields, saveBonif } from '../utils/bonif-form.js';
 
 import { currency, fmtDate, fmtMonth } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
@@ -602,7 +543,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
             <input type="text" class="form-control" name="compra" value="${_attr(p.compra)}" required placeholder="Ej: Amazon — Auriculares">
           </div>
           ${ACUM_HTML}
-          ${_bonifFieldsQA(null)}
+          ${bonifFieldsHTML(null)}
         </div>
       </form>
       ${PREVIEW_HTML}`,
@@ -614,7 +555,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
       <button type="button" class="btn btn-primary btn-sm" id="qa-save-contado">Guardar</button>`,
   });
 
-  _wireBonifQA();
+  wireBonifFields('qa-contado-form', null);
   _wireTimeToggle();
   _wireTimePicker();
 
@@ -669,7 +610,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
-    _saveBonifQA(data);
+    await saveBonif(data);
     try {
       await create('contado', data);
       // Después de crear, nunca antes: si falla el cierre del origen queda una
@@ -747,7 +688,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
             <label class="form-label">Descripción *</label>
             <input type="text" class="form-control" name="compra" value="${_attr(p.compra)}" required placeholder="Ej: Amazon — Teclado">
           </div>
-          ${_bonifFieldsQA(null)}
+          ${bonifFieldsHTML(null)}
         </div>
       </form>
       ${PREVIEW_HTML}`,
@@ -768,7 +709,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   document.getElementById('qa-total').addEventListener('input', recalc);
   document.getElementById('qa-meses').addEventListener('input', recalc);
 
-  _wireBonifQA();
+  wireBonifFields('qa-plazos-form', null);
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,
@@ -817,7 +758,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
     if (!data.enlaceCompra) delete data.enlaceCompra;
     if (!data.msgId) delete data.msgId;
     data.fechaCompra = _applyTime(data.fechaCompra, data.fechaCompraTime); delete data.fechaCompraTime;
-    _saveBonifQA(data);
+    await saveBonif(data);
     try {
       await create('msi', data);
       closeModal();
