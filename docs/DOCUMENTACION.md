@@ -52,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T35`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T36`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -553,6 +553,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `nombre` | string? | Alias de la cuenta (ej. Cajita, Ahorro+). Opcional — si está vacío se muestra el nombre de la institución |
 | `montoInvertido` | number | Último saldo **real observado** de la cuenta. Solo se edita desde el modal **Ajuste**; al crear la cuenta arranca en `0` — el abono inicial se guarda como movimiento, no aquí |
 | `fechaActualizacion` | string | Fecha (`YYYY-MM-DD`) en que ese monto era el saldo real. Al crear la cuenta es un día antes de la fecha de inversión que se captura (el estado previo al primer abono) |
+| `capturaRegistrada` | string? | Hora (ISO) en que se capturó ese saldo desde **Ajuste**. Ordena la captura contra los movimientos del mismo día (ver *Modelo de eventos*). Ausente en capturas previas a este campo |
 | `tramos` | array | Límites de rendimiento de la vigencia **actual** (ver estructura abajo) |
 | `modoTramos` | string? | Cómo se aplican los tramos de la vigencia actual: `progresivo` (default) o `unico` |
 | `modoTasa` | string? | Cómo se interpreta la tasa publicada de la vigencia actual: `nominal` (default) o `efectiva` |
@@ -564,10 +565,10 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `baseIsr` | number? | Días del año para la **retención**: `365` (default) o `360`. Solo aplica con `isrSobre: 'capital'` |
 | `redondeoTasa` | string? | Cómo mostrar la tasa ponderada: `truncar` (default) o `redondear` |
 | `redondeoDiario` | string? | Cómo se capitalizan el interés y el ISR de cada día: `continuo` (default, exactos), `centavos` (redondeados por separado antes de sumarse) o `acumulado` (remanente fraccionario que se paga cuando completa un centavo — ver *Redondeo diario*) |
-| `calendarioAbono` | string? | Qué días abona la institución: `natural` (default, todos los días), `habilAcumula` (devenga siempre pero solo abona en día hábil) o `habilSolo` (los inhábiles no devengan). Ver *Calendario de abono* |
+| `calendarioAbono` | string? | Qué días abona la institución: `natural` (default, todos los días), `habilAcumula` (devenga siempre pero solo abona en día hábil) `habilSolo` (los inhábiles no devengan) o `habilAnticipa` (el hábil previo paga los inhábiles por adelantado). Ver *Calendario de abono* |
 | `horaCorte` | number? | Hora CDMX (0-23) en la que "hoy" empieza a contar para esta cuenta — `7` (default) si está ausente. Ver *Hora de corte por cuenta* |
 | `movimientoRinde` | string? | Sobre qué saldo rinde un movimiento su propio día de llegada: `saldoViejo` (default/ausente) o `saldoNuevo`. Ver *Cuándo rinde un movimiento* |
-| `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto }`, máximo 60, ascendente |
+| `historial` | array? | Capturas anteriores de `montoInvertido`: `{ fecha, monto, registrado? }` (`registrado` = su `capturaRegistrada`), máximo 60, ascendente |
 | `movimientos` | array? | Aportes, retiros y traspasos — no son rendimiento (ver estructura abajo) |
 | `ajustes` | array? | Correcciones al rendimiento que el modelo no predijo (ver estructura abajo) |
 | ~~`referencia`~~ | string? | **Obsoleto** — ya no se captura ni se muestra. Puede seguir presente en documentos antiguos |
@@ -584,6 +585,7 @@ Cuentas de inversión del módulo **Rendimientos**. Una cuenta pertenece a una i
 | `nota` | string? | Texto libre |
 | `transferenciaId` | string? | Presente solo si es una pata de traspaso entre cuentas propias — une las dos patas espejo |
 | `contraparteId` | string? | ID de la otra cuenta del traspaso (solo junto con `transferenciaId`) |
+| `registrado` | string? | Hora (ISO) en que se registró. Si es posterior a la captura de saldo del mismo día, el movimiento se aplica **encima** del ancla en vez de quedar absorbido por ella. Los *Detectado al conciliar* no lo llevan (son parte de lo que la captura explica) |
 
 > Un traspaso entre dos cuentas del módulo se guarda como **dos** movimientos espejo (un retiro en el origen, un aporte en el destino) unidos por el mismo `transferenciaId`, cada uno en el documento de su propia cuenta — así cada cuenta se sigue calculando sola, sin depender de cargar la otra. Se capturan una sola vez desde el modal de **Movimientos**; editarlos o eliminarlos actualiza ambas patas a la vez (`js/utils/db.js`:`batchUpdate`). Si el dinero tarda en llegar (traspaso entre instituciones distintas), la pata de destino puede llevar una fecha posterior a la de origen — esos días en tránsito no generan interés en ninguna de las dos cuentas.
 
@@ -1646,7 +1648,7 @@ El motor no calcula solo a partir de dos puntos observados: cada cuenta es una l
 | **Movimiento** | `movimientos[]` | Un aporte o retiro. Por default, su propio día de llegada rinde sobre el saldo **viejo** (el que había antes de sumarlo) — el saldo nuevo recién empieza a componer desde el día siguiente, igual que en la realidad: el dinero que entra a mediodía no generó interés esa madrugada. Configurable por cuenta (`movimientoRinde`), ver *Cuándo rinde un movimiento* |
 | **Ajuste** | `ajustes[]` | Una corrección al rendimiento que el modelo no supo predecir. A diferencia del movimiento, sí compone ese mismo día sobre el saldo ya con la corrección incluida |
 
-Dentro de una misma fecha el orden de aplicación es siempre **movimiento → ajuste → ancla** (`ORDEN_EVENTO`): la ancla cierra el día porque es el dato observado, y debe ganarle a cualquier proyección previa.
+Dentro de una misma fecha el orden de aplicación es **movimiento → ajuste → ancla** (`ORDEN_EVENTO`): la ancla cierra el día porque es el dato observado, y debe ganarle a cualquier proyección previa. **Excepción:** un movimiento registrado *después* de capturar el saldo de ese día (`movimiento.registrado > capturaRegistrada`, marcado `trasAncla` en `eventosCuenta`) va al final — el saldo capturado no lo incluía. Sin esto, capturar el saldo y luego registrar un traspaso con la misma fecha hacía que el ancla absorbiera el traspaso y el ajuste derivado se recalculara por su monto. Las funciones que arrancan en un ancla (`estadoEnFecha`, `conciliar`, `recorrerDesdeCaptura`, el primer renglón de `historialDiario`) suman esos movimientos sin componer (`recorrer(..., desdeEsCaptura)`), y `recalcularAjustes` los excluye del residuo. Los datos sin hora conservan el orden anterior.
 
 Se cumple siempre:
 
@@ -1654,7 +1656,7 @@ Se cumple siempre:
 saldoFinal = saldoInicial + rendimiento + movimientos + ajustes
 ```
 
-**Conciliación.** Capturar un ajuste no le pide al usuario que calcule nada: `conciliar(cuenta, saldoReal, fecha, cfg)` compara el saldo real contra lo que el motor proyectaba desde la ancla anterior y devuelve el `residuo`. El modal de **Ajuste** clasifica ese residuo como *deriva del cálculo* (ajuste tipo `saldo`, ver [`inversiones/{id}`](#inversionesid)) o *aportación/retiro no registrado* (redirige a Movimientos), y calcula además una `derivaAnual` — el residuo anualizado sobre el capital — que sirve para detectar una configuración equivocada (base, interpretación de la tasa, redondeo) cuando se repite captura tras captura con el mismo signo.
+**Conciliación.** Capturar un ajuste no le pide al usuario que calcule nada: `conciliar(cuenta, saldoReal, fecha, cfg)` compara el saldo real contra lo que el motor proyectaba desde la ancla anterior y devuelve el `residuo`. El saldo esperado se lee de la **misma tabla día por día** que muestra la tarjeta (`historialDiario`, saldo redondeado a centavos cada día, bolsa pendiente encadenada), sin las capturas de esa fecha en adelante — antes salía de un `recorrer()` de un solo tramo que componía de corrido y se despegaba hasta 5 centavos del *Saldo actual estimado*. Excepción: si el ancla de partida es la primera de la cuenta se usa el `recorrer()` de siempre, porque el historial trata esa primera captura como saldo al inicio de su día (las cuentas creadas desde la app arrancan con un ancla en $0, así que no les aplica). El modal de **Ajuste** clasifica ese residuo como *deriva del cálculo* (ajuste tipo `saldo`, ver [`inversiones/{id}`](#inversionesid)) o *aportación/retiro no registrado* (redirige a Movimientos), y calcula además una `derivaAnual` — el residuo anualizado sobre el capital — que sirve para detectar una configuración equivocada (base, interpretación de la tasa, redondeo) cuando se repite captura tras captura con el mismo signo.
 
 **Recálculo en cascada.** Un ajuste marcado `derivado: true` absorbe *todo* el residuo de la ancla en la que vive, así que si algo anterior cambia (se edita el monto o la fecha de una ancla previa, o se registra retroactivamente un movimiento) ese residuo ya no es el mismo. `recalcularAjustes(cuenta, cfg)` recalcula el importe de cada ajuste derivado dejando intacto el motivo y sin tocar los que el usuario dimensionó a mano (`derivado: false`, o sueltos sin ancla ese día). La UI (`ajustesTrasEditar`) nunca aplica esto en silencio: si algún importe cambia, pide confirmación mostrando el antes/después de cada uno.
 
@@ -1671,6 +1673,7 @@ Devengar y abonar no son lo mismo, aunque en la mayoría de las cuentas coincida
 | `natural` (default) | todos los días | el mismo día | Fintech (Revolut, Nu, Mercado Pago). Idéntico, peso a peso, al comportamiento previo a este campo |
 | `habilAcumula` | todos los días | el acumulado, el siguiente día hábil | Bancos y pagarés que no mueven dinero en fin de semana ni festivo |
 | `habilSolo` | solo días hábiles | ese día | Fondos de inversión, que solo tienen precio los días que abre el mercado |
+| `habilAnticipa` | todos los días | el último hábil antes del puente paga su día **y los inhábiles siguientes**, por adelantado | Mifel |
 
 La regla que lo ordena todo es una sola:
 
@@ -1683,6 +1686,8 @@ Va sobre el propio día `D`, no sobre `D+1`, porque así presenta la app el dato
 Lo devengado y todavía sin acreditar vive en **`pendiente`**, fuera del saldo, que es exactamente donde lo tiene la institución. Es lo que arregla el residuo espurio de fin de semana: antes, conciliar un domingo comparaba el saldo real (congelado desde el viernes) contra un saldo proyectado que ya había compuesto sábado y domingo, y la diferencia se reportaba como deriva del cálculo. Ahora `saldoEsperado` excluye lo pendiente y `conciliar` lo devuelve por separado.
 
 Distinguir `habilAcumula` de `habilSolo` importa porque el costo de confundirlas es de órdenes distintos: la primera solo retrasa la composición un par de días (centavos al año, verificado en las pruebas), la segunda quita ~104 días de devengo — cerca de **28% menos** de rendimiento anual.
+
+**Pago anticipado (`habilAnticipa`).** El espejo de `habilAcumula`: el puente se paga *antes*, no después. El último día hábil abona `(1 + inhabilesSiguientes(D))` días de interés calculados sobre **su propio saldo**, y el importe del abono se redondea una sola vez (no día por día — `pasoDiario(saldo, cfg, remanente, dias)`). Los inhábiles no abonan nada y un movimiento que llega en inhábil no rinde hasta el siguiente hábil, porque ese puente ya se pagó. Nunca deja `pendiente`. En la tabla, `plegarDiasInhabiles` pliega el puente **hacia atrás**: el hábil gana `anticipados` (fechas que su abono ya incluye, aunque todavía no lleguen) y la etiqueta `+N días`; un inhábil solo sobrevive si trae movimiento o ajuste. *Último* es el abono del hábil más reciente. Verificado contra el estado de cuenta de Mifel (ago–oct 2026): reconstruyendo la cuenta desde el primer depósito, la diferencia máxima con el saldo real tras cada abono es de $0.02 (con `natural` llegaba a $20). El banco tiene ruido de ±1 centavo en algunos abonos de puente que ninguna fórmula reproduce. Los festivos bancarios (16 sep, 2 nov) deben estar en Días Festivos.
 
 **De dónde salen los días inhábiles.** Los fines de semana son gratis (se derivan de la fecha) y los festivos vienen de la colección `festivosMX`, la misma que ya usa el ciclo de las tarjetas. Como son una propiedad del país y no de la cuenta, y llegan de Firestore de forma asíncrona mientras que las entradas del motor (`resumenCuenta`, `historialDiario`) son síncronas, viven en un **registro de módulo**: la vista los carga una vez con `registrarInhabiles(festivosMX)` antes de calcular nada, y `configCuenta` los fotografía dentro de la `cfg` para que el cálculo en sí siga dependiendo solo de sus argumentos. Los llaman `js/modules/rendimientos.js` y `js/modules/dashboard.js`. Sin festivos registrados el cálculo degrada a solo fines de semana, que es la mayor parte del efecto — el formulario avisa cuando ese es el caso.
 
@@ -1761,7 +1766,7 @@ MODO_PROGRESIVO 'progresivo' · MODO_UNICO 'unico'
 ISR_CAPITAL     'capital'    · ISR_INTERES 'interes'
 TASA_NOMINAL    'nominal'    · TASA_EFECTIVA 'efectiva'
 REDONDEO_CONTINUO 'continuo' · REDONDEO_CENTAVOS 'centavos' · REDONDEO_ACUMULADO 'acumulado'
-ABONO_NATURAL 'natural' · ABONO_HABIL_ACUMULA 'habilAcumula' · ABONO_HABIL_SOLO 'habilSolo'
+ABONO_NATURAL 'natural' · ABONO_HABIL_ACUMULA 'habilAcumula' · ABONO_HABIL_SOLO 'habilSolo' · ABONO_HABIL_ANTICIPA 'habilAnticipa'
 
 // Tipo de evento y dirección de un movimiento — ver Modelo de eventos arriba
 EVENTO_ANCLA 'ancla' · EVENTO_MOVIMIENTO 'movimiento' · EVENTO_AJUSTE 'ajuste'
@@ -1884,6 +1889,8 @@ totalizarResumenes(resumenes) → { capital, saldoActual, rendimientoHastaHoy,
 ```
 
 **Orden del cálculo** (el punto clave del módulo): primero se actualiza el monto invertido desde su última fecha de actualización hasta hoy —recorriendo movimientos y ajustes posteriores como cualquier otro tramo del calendario— y **sobre ese saldo ya actualizado** se calculan los rendimientos diario, mensual y anual.
+
+**Movimientos en tránsito.** El "hoy" de la cuenta rueda a su hora de corte, así que un aporte/retiro/traspaso fechado en el día de calendario actual todavía no tiene renglón en el historial. `resumenCuenta` lo suma igual a `saldoActual` (`movEnTransito`: movimientos con fecha posterior al "hoy" de la cuenta y hasta la fecha real CDMX) para que el **Saldo actual estimado** lo refleje al momento; su interés se sigue calculando en el historial cuando su día cierra. Si a `resumenCuenta` se le pasa `hoy` explícito, la fecha real por default es ese mismo `hoy` (sin tránsito).
 
 `rendimientoEntre` devuelve `null` si el rango completo es previo al primer saldo registrado o si las fechas están invertidas. Si solo el inicio es previo, recorta al primer registro y marca `recortado: true`.
 

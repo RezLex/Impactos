@@ -15,7 +15,7 @@ import {
   registrarInhabiles, esInhabil, siguienteHabil, plegarDiasInhabiles,
   vigenciasTasa, vigenciaEnFecha, interesDiario, isrDiario,
   EVENTO_ANCLA, EVENTO_MOVIMIENTO, EVENTO_AJUSTE, MOV_APORTE, MOV_RETIRO,
-  TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO,
+  TASA_EFECTIVA, MODO_UNICO, ABONO_HABIL_ACUMULA, ABONO_HABIL_SOLO, ABONO_HABIL_ANTICIPA,
   REDONDEO_CENTAVOS, REDONDEO_ACUMULADO,
   hoyISO, hoyDeCuenta, horaCorteCuenta, CORTE_RENDIMIENTOS,
   MOV_RINDE_SALDO_VIEJO, MOV_RINDE_SALDO_NUEVO,
@@ -664,6 +664,24 @@ test('rendimientoHastaHoy coincide con la suma de la tabla aunque haya un aporte
     'debe ser exactamente lo que suma la tabla, no una proyección aparte');
 });
 
+test('un retiro de hoy se refleja en saldoActual antes de que su día cierre por la hora de corte', () => {
+  // Hora de corte tardía: el "hoy" de la cuenta sigue en el 7 ago aunque el
+  // calendario ya sea 8 ago, y el retiro del 8 ya salió de la cuenta.
+  const cuenta = cuentaPlana({
+    movimientos: [{ fecha: '2026-08-08', tipo: MOV_RETIRO, monto: 800 }],
+  });
+  const sinRetiro = resumenCuenta(cuentaPlana(), '2026-08-07');
+  const r = resumenCuenta(cuenta, '2026-08-07', '2026-08-08');
+  cerca(r.saldoActual, sinRetiro.saldoActual - 800, 'el retiro se descuenta al momento');
+  cerca(r.rendimientoHastaHoy, sinRetiro.rendimientoHastaHoy, 'no altera el rendimiento ya generado');
+  // Sin fecha real explícita (hoy pasado a mano) el movimiento futuro no cuenta.
+  cerca(resumenCuenta(cuenta, '2026-08-07').saldoActual, sinRetiro.saldoActual, 'fuera de rango no cuenta');
+  // Ya con su día cerrado, se cuenta una sola vez (por el historial, no doble).
+  const rDespues = resumenCuenta(cuenta, '2026-08-08', '2026-08-08');
+  assert.equal(rDespues.movEnTransito, 0);
+  assert.ok(Math.abs(rDespues.saldoActual - r.saldoActual) < 20, 'no se descuenta dos veces');
+});
+
 test('historialDiario atraviesa una ancla intermedia, no arranca directo en ella', () => {
   // Mismo caso que rompía resumenCuenta (capital=0 en el campo crudo, el valor real
   // está en el historial) pero ahora visto desde la tabla completa: debe recorrer
@@ -1217,6 +1235,114 @@ test('dos movimientos el mismo día con saldoNuevo: el segundo no compone retroa
   const saldoConUno   = saldoEnFecha(eventosCuenta(soloElPrimero), '2026-01-11', cfg);
   const saldoConAmbos = saldoEnFecha(eventosCuenta(cuenta), '2026-01-11', cfg);
   cerca(saldoConAmbos - saldoConUno, 2000, 'el segundo aporte se refleja completo en el cierre, sin componer');
+});
+
+test('el saldo esperado al conciliar es el mismo que muestra la tarjeta, al centavo', () => {
+  // Caso real: la tarjeta de Mercado Pago decía $26,033.58 y "Usar este valor"
+  // del modal Ajuste $26,033.57 — conciliar componía de corrido sin redondear
+  // y el historial redondea el saldo cada día. Con calendario hábil y pendiente
+  // de fin de semana se llegaban a separar 5 centavos.
+  registrarInhabiles([]);
+  for (let k = 0; k < 60; k++) {
+    const monto = 20000 + k * 97.31;
+    const cuenta = {
+      montoInvertido: monto, fechaActualizacion: '2026-10-01',
+      historial: [{ fecha: '2026-08-31', monto: 0 }, { fecha: '2026-09-01', monto: monto - 300 }],
+      tramos: [{ hasta: 25000, tasa: 15 }, { hasta: null, tasa: 6 }], isrAnual: 0.9,
+      calendarioAbono: ABONO_HABIL_ACUMULA,
+    };
+    const tarjeta = resumenCuenta(cuenta, '2026-10-31').saldoActual;
+    const modal   = conciliar(cuenta, 0, '2026-10-31').saldoEsperado;
+    assert.equal(r2(modal), r2(tarjeta), `monto ${monto}`);
+  }
+});
+
+// ── Movimiento registrado después de capturar el saldo el mismo día ───────────
+// Caso real (Mercado Pago, 31 oct): captura de saldo $26,033.55 con ajuste
+// derivado +$0.02, y DESPUÉS una transferencia de $1,033.55 fechada el mismo
+// día. Antes el ancla cerraba el día y absorbía la transferencia: el ajuste
+// derivado se recalculaba a +$1,033.53.
+const cuentaCapturaYTraspaso = (registradoMov) => ({
+  montoInvertido: 26033.55, fechaActualizacion: '2026-10-31', capturaRegistrada: '2026-10-31T18:00:00.000Z',
+  historial: [{ fecha: '2026-10-30', monto: 26033.53 }],
+  tramos: [{ hasta: 25000, tasa: 15 }, { hasta: null, tasa: 6 }],
+  ajustes: [{ fecha: '2026-10-31', monto: 0.02, motivo: 'Deriva del cálculo', tipo: 'saldo', derivado: true }],
+  movimientos: [{ fecha: '2026-10-31', tipo: MOV_RETIRO, monto: 1033.55, transferenciaId: 't1',
+    ...(registradoMov ? { registrado: registradoMov } : {}) }],
+});
+
+test('un movimiento registrado después de la captura del mismo día va encima del ancla', () => {
+  const cuenta = cuentaCapturaYTraspaso('2026-10-31T18:05:00.000Z');
+  const sinTraspaso = recalcularAjustes({ ...cuenta, movimientos: [] })[0];
+  const ajuste = recalcularAjustes(cuenta)[0];
+  cerca(ajuste.monto, sinTraspaso.monto, 'el ajuste derivado no absorbe la transferencia');
+  // Sin hora de registro (dato viejo) sí la absorbe — es el comportamiento previo
+  const viejo = recalcularAjustes(cuentaCapturaYTraspaso(null))[0];
+  cerca(viejo.monto - sinTraspaso.monto, 1033.55, 'el dato viejo conserva el orden anterior');
+  cerca(saldoEnFecha(eventosCuenta(cuenta), '2026-10-31', configCuenta(cuenta)), 25000, 'el retiro sale del saldo capturado');
+});
+
+test('un movimiento registrado antes de la captura (o sin hora) sigue dentro del ancla', () => {
+  for (const reg of ['2026-10-31T17:00:00.000Z', null]) {
+    const cuenta = cuentaCapturaYTraspaso(reg);
+    cerca(saldoEnFecha(eventosCuenta(cuenta), '2026-10-31', configCuenta(cuenta)), 26033.55,
+      `el saldo capturado ya lo incluía (${reg || 'sin hora'})`);
+  }
+});
+
+// ── Pago anticipado de inhábiles (Mifel, estado de cuenta real oct 2026) ──────
+const cuentaMifel = (extra = {}) => ({
+  // Saldo al INICIO del 1 oct (tras el abono del 30 sep) — el ancla compone su propio día
+  montoInvertido: 25368.04, fechaActualizacion: '2026-10-01',
+  tramos: [{ hasta: 500000, tasa: 10 }, { hasta: null, tasa: 0 }],
+  isrAnual: 0.9, baseAnual: 360, baseIsr: 360,
+  redondeoDiario: REDONDEO_CENTAVOS, movimientoRinde: MOV_RINDE_SALDO_NUEVO,
+  calendarioAbono: ABONO_HABIL_ANTICIPA,
+  movimientos: [
+    { fecha: '2026-10-07', tipo: MOV_APORTE, monto: 1000 },
+    { fecha: '2026-10-31', tipo: MOV_APORTE, monto: 1217.90 },
+  ],
+  ...extra,
+});
+const FESTIVOS_MIFEL = ['2026-11-02'];
+
+test('anticipa: el viernes paga viernes a lunes festivo de un golpe, redondeando el abono completo', () => {
+  const cuenta = cuentaMifel();
+  const cfg = configCuenta(cuenta, FESTIVOS_MIFEL);
+  const filas = new Map(historialDiario(cuenta, '2026-10-31', 400, cfg).map(f => [f.fecha, f]));
+  // "Pago intereses:30-10-2026 to 02-11-2026 $29.51", ISR $2.66 — no 4 × $7.38 / 4 × $0.66
+  cerca(filas.get('2026-10-30').bruto, 29.51, 'bruto de 4 días');
+  cerca(filas.get('2026-10-30').isr, 2.66, 'ISR de 4 días');
+  cerca(filas.get('2026-10-30').saldoFinal, 26587.35, 'saldo tras el abono del viernes', 0.03);
+  cerca(filas.get('2026-10-29').saldoFinal, 26560.50, 'saldo tras el abono del jueves', 0.03);
+  // El aporte del sábado no rinde: el puente ya se pagó
+  cerca(filas.get('2026-10-31').abonado, 0, 'el sábado no abona');
+  cerca(filas.get('2026-10-31').saldoFinal - filas.get('2026-10-30').saldoFinal, 1217.90, 'el aporte del sábado entra sin interés');
+  // "Pago intereses:23-10-2026 to 25-10-2026 $22.10"
+  // El banco tiene ruido de ±1 centavo en algunos abonos (23 oct paga 22.10 con
+  // base 26513.54, que da 22.09; 16 oct paga 22.05 donde la fórmula da 22.06).
+  cerca(filas.get('2026-10-23').bruto, 22.10, 'fin de semana normal: 3 días', 0.015);
+  cerca(filas.get('2026-10-24').abonado, 0);
+  cerca(filas.get('2026-10-25').abonado, 0);
+});
+
+test('anticipa: el historial pliega el puente sobre el hábil que lo pagó', () => {
+  const cuenta = cuentaMifel();
+  const cfg = configCuenta(cuenta, FESTIVOS_MIFEL);
+  const { filas, pendientes } = plegarDiasInhabiles(historialDiario(cuenta, '2026-10-31', 400, cfg), cfg);
+  assert.equal(pendientes.length, 0, 'nunca deja nada por abonar');
+  assert.ok(!filas.some(f => f.fecha === '2026-10-24' || f.fecha === '2026-10-25'), 'el fin de semana sin eventos desaparece');
+  const vie = filas.find(f => f.fecha === '2026-10-30');
+  assert.deepEqual(vie.anticipados, ['2026-10-31', '2026-11-01', '2026-11-02'], 'incluye el lunes festivo aunque aún no llegue');
+  assert.ok(filas.some(f => f.fecha === '2026-10-31'), 'el sábado con aporte se conserva');
+});
+
+test('anticipa: "Último" es el abono del viernes aunque hoy sea sábado con aporte', () => {
+  registrarInhabiles(FESTIVOS_MIFEL);
+  const r = resumenCuenta(cuentaMifel(), '2026-10-31');
+  cerca(r.ayer, 26.85, 'neto del abono anticipado');
+  assert.equal(r.pendiente, 0);
+  registrarInhabiles([]);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

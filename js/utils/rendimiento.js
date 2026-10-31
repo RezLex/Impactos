@@ -116,6 +116,14 @@
  * confundirlas es de órdenes distintos: la primera solo retrasa la composición
  * un par de días (centavos al año), la segunda quita ~110 días de devengo.
  *
+ * `habilAnticipa` es el espejo de `habilAcumula`: los inhábiles sí cuentan,
+ * pero se pagan POR ADELANTADO el día hábil previo — el viernes abona viernes,
+ * sábado y domingo de un solo golpe, calculados sobre el saldo del viernes (el
+ * importe de los N días se redondea una sola vez, no día por día). Los
+ * inhábiles no mueven nada: un aporte que llega en sábado no rinde hasta el
+ * siguiente hábil, porque ese fin de semana ya se pagó. Así opera Mifel
+ * (verificado contra su estado de cuenta, incluidos los festivos bancarios).
+ *
  * Qué días son inhábiles sale de `registrarInhabiles()` — los fines de semana
  * son gratis y los festivos vienen de la colección `festivosMX`, la misma que
  * ya usa el ciclo de las tarjetas. Sin festivos registrados el cálculo degrada
@@ -183,6 +191,7 @@ const REMANENTE_VACIO = { bruto: 0, isr: 0 };
 export const ABONO_NATURAL      = 'natural';
 export const ABONO_HABIL_ACUMULA = 'habilAcumula';
 export const ABONO_HABIL_SOLO    = 'habilSolo';
+export const ABONO_HABIL_ANTICIPA = 'habilAnticipa';
 
 /** Por qué cambió el saldo. Ver la nota de eventos en la cabecera. */
 export const EVENTO_ANCLA      = 'ancla';
@@ -315,6 +324,15 @@ export function esInhabil(fecha, inhabiles = _inhabiles) {
   return dow === 0 || dow === 6 || !!inhabiles?.has?.(iso);
 }
 
+/** Cuántos días inhábiles consecutivos siguen a `fecha` (el puente que paga por adelantado). */
+export function inhabilesSiguientes(fecha, inhabiles = _inhabiles) {
+  let n = 0;
+  let f = sumarDias(isoDay(fecha), 1);
+  // Mismo tope que siguienteHabil
+  while (n < 10 && esInhabil(f, inhabiles)) { n++; f = sumarDias(f, 1); }
+  return n;
+}
+
 /** Primer día hábil en o después de `fecha`. */
 export function siguienteHabil(fecha, inhabiles = _inhabiles) {
   let f = isoDay(fecha);
@@ -445,14 +463,18 @@ export function vigenciaEnFecha(vigencias, fecha) {
  * @returns {{tramos:Array, modo:string, base:number, isrAnual:number, baseIsr:number}}
  */
 export function configCuenta(cuenta = {}, inhabiles) {
-  const abono = cuenta.calendarioAbono === ABONO_HABIL_ACUMULA ? ABONO_HABIL_ACUMULA
-              : cuenta.calendarioAbono === ABONO_HABIL_SOLO    ? ABONO_HABIL_SOLO
+  const abono = cuenta.calendarioAbono === ABONO_HABIL_ACUMULA  ? ABONO_HABIL_ACUMULA
+              : cuenta.calendarioAbono === ABONO_HABIL_SOLO     ? ABONO_HABIL_SOLO
+              : cuenta.calendarioAbono === ABONO_HABIL_ANTICIPA ? ABONO_HABIL_ANTICIPA
               : ABONO_NATURAL;
   return {
     abono,
-    // Derivadas del modo para que el bucle diario no vuelva a compararlo cada día
+    // Derivadas del modo para que el bucle diario no vuelva a compararlo cada día.
+    // `anticipa` devenga los inhábiles (los paga el hábil previo) y nunca deja
+    // nada pendiente, así que no es `abonaSoloHabil`.
     devengaInhabil: abono !== ABONO_HABIL_SOLO,
-    abonaSoloHabil: abono !== ABONO_NATURAL,
+    abonaSoloHabil: abono === ABONO_HABIL_ACUMULA || abono === ABONO_HABIL_SOLO,
+    anticipaInhabil: abono === ABONO_HABIL_ANTICIPA,
     inhabiles: inhabiles instanceof Set ? inhabiles
              : Array.isArray(inhabiles)
                ? new Set(inhabiles.map(f => isoDay(typeof f === 'string' ? f : f?.fecha)).filter(Boolean))
@@ -541,12 +563,18 @@ export function isrDiario(saldo, cfg, interesBruto) {
  * entero de centavos que ya se juntó y el resto queda en el remanente que
  * devuelve esta función, para que quien la llama lo encadene al día siguiente.
  *
+ * `dias` > 1 es un abono de varios días sobre el mismo saldo (pago anticipado
+ * de inhábiles): el exacto se multiplica ANTES de redondear — la institución
+ * redondea el importe del abono, no cada día por separado.
+ *
  * @param {{bruto:number, isr:number}} [remanente] - solo relevante en `acumulado`
+ * @param {number} [dias]
  * @returns {{bruto:number, isr:number, remanente:{bruto:number, isr:number}}}
  */
-function pasoDiario(saldo, cfg, remanente = REMANENTE_VACIO) {
-  const brutoEx = interesDiario(saldo, cfg);
-  const isrEx   = isrDiario(saldo, cfg, brutoEx);
+function pasoDiario(saldo, cfg, remanente = REMANENTE_VACIO, dias = 1) {
+  const brutoDia = interesDiario(saldo, cfg);
+  const brutoEx  = brutoDia * dias;
+  const isrEx    = isrDiario(saldo, cfg, brutoDia) * dias;
 
   if (cfg.redondeo === REDONDEO_CENTAVOS) {
     return { bruto: r2(brutoEx), isr: r2(isrEx), remanente: REMANENTE_VACIO };
@@ -586,7 +614,7 @@ function pasoDiario(saldo, cfg, remanente = REMANENTE_VACIO) {
  *          siguiente.
  */
 function pasoCalendario(saldo, pendiente, cfg, fecha, remanente = REMANENTE_VACIO) {
-  const conCalendario = !!fecha && (cfg.abonaSoloHabil || !cfg.devengaInhabil);
+  const conCalendario = !!fecha && (cfg.abonaSoloHabil || !cfg.devengaInhabil || cfg.anticipaInhabil);
 
   // Con una sola vigencia (el caso normal) esto es cfg tal cual — no hay nada
   // que resolver día a día. Con varias, cada día usa la tasa que estaba
@@ -595,6 +623,18 @@ function pasoCalendario(saldo, pendiente, cfg, fecha, remanente = REMANENTE_VACI
   const cfgDia = (fecha && cfg.vigencias?.length > 1)
     ? { ...cfg, ...vigenciaEnFecha(cfg.vigencias, fecha) }
     : cfg;
+
+  // Pago anticipado: el hábil abona su día más el puente que le sigue, sobre su
+  // propio saldo; el inhábil no mueve nada (ya se pagó).
+  if (conCalendario && cfg.anticipaInhabil) {
+    const inhabil = esInhabil(fecha, cfg.inhabiles);
+    const p = inhabil
+      ? { bruto: 0, isr: 0, remanente }
+      : pasoDiario(saldo, cfgDia, remanente, 1 + inhabilesSiguientes(fecha, cfg.inhabiles));
+    const neto    = p.bruto - p.isr;
+    const abonado = pendiente + neto;   // pendiente siempre es 0 en este modo
+    return { ...p, neto, abonado, pendiente: 0, saldo: Math.max(0, saldo + abonado) };
+  }
 
   const paso = (conCalendario && !cfg.devengaInhabil && esInhabil(fecha, cfg.inhabiles))
     ? { bruto: 0, isr: 0, remanente }
@@ -723,13 +763,17 @@ export function desgloseTramos(saldo, cfg) {
  */
 export function timelineCuenta(cuenta) {
   const items = [];
-  const push = (fecha, monto) => {
+  // `registrado`: cuándo se capturó (ISO con hora) — solo existe en capturas
+  // nuevas; ordena la captura contra los movimientos del mismo día.
+  const push = (fecha, monto, registrado) => {
     const f = isoDay(fecha);
-    if (f && monto != null && isFinite(Number(monto))) items.push({ fecha: f, monto: Number(monto) });
+    if (f && monto != null && isFinite(Number(monto))) {
+      items.push({ fecha: f, monto: Number(monto), ...(registrado ? { registrado } : {}) });
+    }
   };
 
-  (Array.isArray(cuenta.historial) ? cuenta.historial : []).forEach(h => h && push(h.fecha, h.monto));
-  push(cuenta.fechaActualizacion, cuenta.montoInvertido);
+  (Array.isArray(cuenta.historial) ? cuenta.historial : []).forEach(h => h && push(h.fecha, h.monto, h.registrado));
+  push(cuenta.fechaActualizacion, cuenta.montoInvertido, cuenta.capturaRegistrada);
 
   const map = new Map();
   items.sort((a, b) => a.fecha.localeCompare(b.fecha)).forEach(i => map.set(i.fecha, i));
@@ -768,12 +812,18 @@ export function historialConsistente(historial, nuevaFecha) {
     .filter(h => h && isoDay(h.fecha) && corte && isoDay(h.fecha) < corte);
 }
 
-/** Orden de aplicación dentro de una misma fecha — el ancla siempre cierra. */
+/**
+ * Orden de aplicación dentro de una misma fecha — el ancla cierra, salvo los
+ * movimientos registrados DESPUÉS de capturarla (`trasAncla`): el saldo
+ * observado no los incluía, así que van encima de él.
+ */
 const ORDEN_EVENTO = {
   [EVENTO_MOVIMIENTO]: 0,
   [EVENTO_AJUSTE]:     1,
   [EVENTO_ANCLA]:      2,
 };
+const ORDEN_TRAS_ANCLA = 3;
+const rangoEvento = e => e.trasAncla ? ORDEN_TRAS_ANCLA : ORDEN_EVENTO[e.tipo];
 
 /**
  * Todos los eventos de una cuenta —anclas, movimientos y ajustes— en el orden en
@@ -785,15 +835,20 @@ const ORDEN_EVENTO = {
  * @returns {Array<{fecha:string, tipo:string, monto:number}>}
  */
 export function eventosCuenta(cuenta = {}) {
-  const ev = timelineCuenta(cuenta)
-    .map(p => ({ fecha: p.fecha, tipo: EVENTO_ANCLA, monto: p.monto }));
+  const timeline = timelineCuenta(cuenta);
+  const ev = timeline.map(p => ({ fecha: p.fecha, tipo: EVENTO_ANCLA, monto: p.monto }));
+  // Hora de captura de cada ancla, para los movimientos registrados después el mismo día
+  const capturaDe = new Map(timeline.filter(p => p.registrado).map(p => [p.fecha, p.registrado]));
 
   (Array.isArray(cuenta.movimientos) ? cuenta.movimientos : []).forEach(m => {
     const f = isoDay(m?.fecha);
     const v = Number(m?.monto);
     if (!f || !isFinite(v) || v === 0) return;
     const signo = m.tipo === MOV_RETIRO ? -1 : 1;
-    ev.push({ fecha: f, tipo: EVENTO_MOVIMIENTO, monto: Math.abs(v) * signo, nota: m.nota || '' });
+    const captura = capturaDe.get(f);
+    const trasAncla = !!(captura && m.registrado && String(m.registrado) > String(captura));
+    ev.push({ fecha: f, tipo: EVENTO_MOVIMIENTO, monto: Math.abs(v) * signo, nota: m.nota || '',
+      ...(trasAncla ? { trasAncla } : {}) });
   });
 
   (Array.isArray(cuenta.ajustes) ? cuenta.ajustes : []).forEach(a => {
@@ -814,7 +869,7 @@ function ordenarEventos(eventos) {
   return (Array.isArray(eventos) ? eventos : [])
     .map(e => ({ ...e, tipo: e.tipo || EVENTO_ANCLA }))
     .sort((a, b) =>
-      a.fecha.localeCompare(b.fecha) || ORDEN_EVENTO[a.tipo] - ORDEN_EVENTO[b.tipo]);
+      a.fecha.localeCompare(b.fecha) || rangoEvento(a) - rangoEvento(b));
 }
 
 /**
@@ -831,7 +886,7 @@ function ordenarEventos(eventos) {
  * pasar ambos, o el interés del fin de semana / el centavo a medio juntar se
  * perdería en el corte entre un tramo y el siguiente.
  */
-function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0, remanenteInicial = REMANENTE_VACIO) {
+function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0, remanenteInicial = REMANENTE_VACIO, desdeEsCaptura = false) {
   const acc = {
     saldo: Number(saldoInicial) || 0,
     pendiente: Number(pendienteInicial) || 0,
@@ -858,6 +913,14 @@ function recorrer(eventos, desde, hasta, saldoInicial, cfg, pendienteInicial = 0
   };
 
   for (const e of eventos) {
+    // Si `desde` es el día de una captura, `saldoInicial` es ese saldo observado
+    // y los movimientos registrados DESPUÉS de capturarlo todavía no están en él:
+    // se suman sin componer (el día ya cerró).
+    if (desdeEsCaptura && e.trasAncla && e.fecha === desde) {
+      acc.saldo        = Math.max(0, acc.saldo + e.monto);
+      acc.movimientos += e.monto;
+      continue;
+    }
     if (e.fecha <= desde || e.fecha > hasta) continue;
 
     if (e.tipo === EVENTO_MOVIMIENTO && cfg.rindeSaldoNuevo) {
@@ -938,7 +1001,7 @@ function recorrerDesdeCaptura(eventos, desde, hasta, saldoCapturado, cfg, pendie
   // arranca en cero (igual que al llegar a una ancla en `recorrer`) — lo que
   // deja de centavo el propio día de la captura sí se encadena al resto.
   const p     = pasoCalendario(saldoCapturado, Number(pendienteInicial) || 0, cfg, desde);
-  const resto = recorrer(eventos, desde, hasta, p.saldo, cfg, p.pendiente, p.remanente);
+  const resto = recorrer(eventos, desde, hasta, p.saldo, cfg, p.pendiente, p.remanente, true);
   const { bruto, isr, neto } = p;
   return {
     ...resto,
@@ -967,7 +1030,7 @@ export function estadoEnFecha(eventos, fecha, cfg) {
     if (e.fecha <= dia) ancla = e; else break;
   }
   if (!ancla) return null;
-  const t = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg);
+  const t = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg, 0, REMANENTE_VACIO, true);
   return { saldo: t.saldo, pendiente: t.pendiente, remanente: t.remanente };
 }
 
@@ -1062,6 +1125,8 @@ export function movimientosTransferencia(spec = {}) {
   if (error) throw new Error(error);
 
   const { origenId, destinoId, monto, fecha, fechaDestino, nota = '' } = spec;
+  // Hora de registro: ordena la pata contra una captura de saldo del mismo día
+  const registrado = spec.registrado || new Date().toISOString();
   const id = spec.id || globalThis.crypto?.randomUUID?.()
     || `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const salida  = isoDay(fecha);
@@ -1070,8 +1135,8 @@ export function movimientosTransferencia(spec = {}) {
 
   return {
     transferenciaId: id,
-    origen:  { fecha: salida,  tipo: MOV_RETIRO, monto: v, transferenciaId: id, contraparteId: destinoId, nota },
-    destino: { fecha: llegada, tipo: MOV_APORTE, monto: v, transferenciaId: id, contraparteId: origenId,  nota },
+    origen:  { fecha: salida,  tipo: MOV_RETIRO, monto: v, transferenciaId: id, contraparteId: destinoId, nota, registrado },
+    destino: { fecha: llegada, tipo: MOV_APORTE, monto: v, transferenciaId: id, contraparteId: origenId,  nota, registrado },
   };
 }
 
@@ -1132,20 +1197,47 @@ export function conciliar(cuenta, saldoReal, fecha = hoyDeCuenta(cuenta), cfg = 
   }
   if (!ancla) return null;
 
-  const t    = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg);
+  const t    = recorrer(evs, ancla.fecha, dia, ancla.monto, cfg, 0, REMANENTE_VACIO, true);
   const dias = diasEntre(ancla.fecha, dia);
-  const residuo = real - t.saldo;
+
+  // El saldo esperado sale de la MISMA tabla día por día que muestra la tarjeta
+  // (`historialDiario`, saldo redondeado a centavos cada día y bolsa pendiente
+  // encadenada a través de las anclas), sin las capturas de `dia` en adelante.
+  // El `recorrer()` de un solo tramo compone de corrido sin redondear y se
+  // despegaba unos centavos: la tarjeta decía $X.58 y "Usar este valor" $X.57.
+  // Solo si el ancla de partida NO es la primera de la cuenta: el historial
+  // trata la primerísima captura como saldo al INICIO de su día (compone ese
+  // día), y aquí un ancla es saldo al cierre. Las cuentas creadas desde la app
+  // siempre arrancan con un ancla en $0 un día antes, así que en la práctica
+  // toda conciliación real toma este camino.
+  const anteriores = timelineCuenta(cuenta).filter(p => p.fecha < dia);
+  const raiz = anteriores[anteriores.length - 1];
+  const filas = anteriores.length < 2 ? [] : historialDiario({
+    ...cuenta,
+    historial: anteriores.slice(0, -1),
+    montoInvertido: raiz.monto, fechaActualizacion: raiz.fecha, capturaRegistrada: raiz.registrado || null,
+  }, dia, MAX_DIAS, cfg);
+  const fila = filas[filas.length - 1];
+  const delDia = fila && fila.fecha === dia;
+  const saldoEsperado = delDia ? fila.saldoFinal : t.saldo;
+  const pendiente     = delDia ? fila.pendiente  : t.pendiente;
+  const residuo = real - saldoEsperado;
 
   return {
     desde: ancla.fecha, hasta: dia, dias,
     saldoAnterior: ancla.monto,
-    rendimientoProyectado: t.rendimiento - t.ajustes, // los ajustes se listan aparte
+    // Lo devengado en el tramo (abonado + lo que sigue pendiente), sin
+    // movimientos ni ajustes — los ajustes se listan aparte
+    rendimientoProyectado: delDia
+      ? saldoEsperado + pendiente - ancla.monto - t.movimientos - t.ajustes
+        - (filas.find(f => f.fecha === ancla.fecha)?.pendiente || 0)
+      : t.rendimiento - t.ajustes,
     movimientos: t.movimientos,
     ajustes: t.ajustes,
-    saldoEsperado: t.saldo,
+    saldoEsperado,
     saldoReal: real,
     residuo,
-    pendiente: t.pendiente,
+    pendiente,
     // Deriva anualizada — sirve para detectar config equivocada, no para cobrar
     derivaAnual: (dias > 0 && ancla.monto > 0)
       ? (residuo / ancla.monto) * (cfg.base / dias) * 100
@@ -1177,6 +1269,13 @@ export function recalcularAjustes(cuenta, cfg = configCuenta(cuenta)) {
   const ajustes = Array.isArray(cuenta.ajustes) ? cuenta.ajustes : [];
   const anclas  = new Map(
     eventosCuenta(cuenta).filter(e => e.tipo === EVENTO_ANCLA).map(e => [e.fecha, e.monto]));
+  const capturaDe = new Map(timelineCuenta(cuenta).filter(p => p.registrado).map(p => [p.fecha, p.registrado]));
+  // Los movimientos registrados después de capturar el ancla no estaban en el
+  // saldo observado: no forman parte del residuo que el ajuste explica.
+  const movsAntesDe = f => (Array.isArray(cuenta.movimientos) ? cuenta.movimientos : []).filter(m => {
+    const cap = capturaDe.get(f);
+    return !(cap && m?.registrado && isoDay(m.fecha) === f && String(m.registrado) > String(cap));
+  });
 
   return ajustes.map(a => {
     const f     = isoDay(a?.fecha);
@@ -1185,7 +1284,7 @@ export function recalcularAjustes(cuenta, cfg = configCuenta(cuenta)) {
     if (!f || a?.derivado === false || !anclas.has(f)) return igual;
 
     // Sin este ajuste en juego, el residuo del ancla es justo lo que debe valer
-    const sinEste = { ...cuenta, ajustes: ajustes.filter(x => isoDay(x?.fecha) !== f) };
+    const sinEste = { ...cuenta, movimientos: movsAntesDe(f), ajustes: ajustes.filter(x => isoDay(x?.fecha) !== f) };
     const c = conciliar(sinEste, anclas.get(f), f, cfg);
     if (!c) return igual;
 
@@ -1265,7 +1364,7 @@ export function historialDiario(cuenta, hoy = hoyDeCuenta(cuenta), maxDias = 400
   // solo tirón.
   let cierreFecha = saltados > 0 ? sumarDias(primero.fecha, saltados) : primero.fecha;
   const arranque  = saltados > 0
-    ? recorrer(eventos, primero.fecha, cierreFecha, primero.monto, cfg)
+    ? recorrer(eventos, primero.fecha, cierreFecha, primero.monto, cfg, 0, REMANENTE_VACIO, true)
     : { saldo: primero.monto, pendiente: 0, remanente: REMANENTE_VACIO };
   // El saldo (dinero que ya se movió) arranca cents-precise, mismo motivo que
   // el saldoFinal del bucle. La bolsa pendiente NO: todavía no es dinero
@@ -1300,7 +1399,11 @@ export function historialDiario(cuenta, hoy = hoyDeCuenta(cuenta), maxDias = 400
       const p = pasoCalendario(cierreSaldo, cierrePendienteExacta, cfg, fecha, cierreRemanente);
       bruto = p.bruto; isr = p.isr;
       abonado = r2(p.abonado);
-      saldoFinal = r2(p.saldo);
+      // Movimientos registrados después de capturar la primera ancla, ese mismo día
+      if (saltados === 0) {
+        eventos.forEach(e => { if (e.trasAncla && e.fecha === fecha) movimiento += e.monto; });
+      }
+      saldoFinal = r2(Math.max(0, p.saldo + movimiento));
       pendiente = r2(p.pendiente);           // solo para mostrar
       cierrePendienteExacta = p.pendiente;   // lo que se encadena, sin redondear
       cierreRemanente = p.remanente;
@@ -1366,6 +1469,7 @@ export function historialDiario(cuenta, hoy = hoyDeCuenta(cuenta), maxDias = 400
  */
 export function plegarDiasInhabiles(filas, cfg) {
   const src = Array.isArray(filas) ? filas : [];
+  if (cfg?.anticipaInhabil) return plegarAnticipados(src, cfg);
   if (!cfg?.abonaSoloHabil) return { filas: src, pendientes: [] };
 
   const out = [];
@@ -1389,6 +1493,27 @@ export function plegarDiasInhabiles(filas, cfg) {
   return { filas: out, pendientes: bolsa };
 }
 
+/**
+ * Variante de `plegarDiasInhabiles` para el pago anticipado: el puente se pliega
+ * HACIA ATRÁS, sobre el hábil que ya lo pagó. El inhábil no tiene interés propio
+ * (vale $0) y desaparece; si trae movimiento o ajuste se conserva como renglón.
+ * Cada hábil gana `anticipados`: las fechas del puente que su abono ya incluye
+ * (aunque todavía no lleguen en la tabla — el viernes paga el lunes festivo).
+ */
+function plegarAnticipados(src, cfg) {
+  const out = [];
+  src.forEach(f => {
+    if (!esInhabil(f.fecha, cfg.inhabiles)) {
+      const n = inhabilesSiguientes(f.fecha, cfg.inhabiles);
+      const anticipados = Array.from({ length: n }, (_, i) => sumarDias(f.fecha, i + 1));
+      out.push({ ...f, acumulados: [], anticipados });
+    } else if (f.movimiento || f.ajuste) {
+      out.push({ ...f, acumulados: [], anticipados: [] });
+    }
+  });
+  return { filas: out, pendientes: [] };
+}
+
 // ── Resumen de una cuenta ─────────────────────────────────────────────────────
 
 /**
@@ -1403,10 +1528,19 @@ export function plegarDiasInhabiles(filas, cfg) {
  * muestra el saldo. Las proyecciones arrancan en `hoy` para que el calendario de
  * abono cuente: con `habilSolo`, el anual y el GAT bajan de verdad.
  *
- * @param {object} cuenta - documento de `inversiones`
- * @param {string} [hoy]  - fecha de corte 'YYYY-MM-DD'
+ * Los movimientos (aportes, retiros, traspasos) fechados DESPUÉS de `hoy` pero
+ * no después de `fechaReal` ya se movieron aunque el día todavía no cierre por
+ * la hora de corte: se suman a `saldoActual` al momento, sin esperar a que el
+ * historial genere el renglón de su día (que es donde se calcula su interés).
+ *
+ * @param {object} cuenta      - documento de `inversiones`
+ * @param {string} [hoy]       - fecha de corte 'YYYY-MM-DD'
+ * @param {string} [fechaReal] - fecha de calendario CDMX hasta la que cuentan los
+ *   movimientos en tránsito; por default la real si `hoy` no se pasó, si no `hoy`
  */
-export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
+export function resumenCuenta(cuenta, hoyArg, fechaRealArg) {
+  const hoy       = hoyArg ?? hoyDeCuenta(cuenta);
+  const fechaReal = fechaRealArg ?? (hoyArg == null ? hoyISO(0) : hoy);
   const cfg      = configCuenta(cuenta);
   const timeline = timelineCuenta(cuenta);
   const eventos  = eventosCuenta(cuenta);
@@ -1437,7 +1571,12 @@ export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
   // hace falta el límite, que existe solo para no pintar una tabla gigante.
   const filasHastaHoy = timeline.length ? historialDiario(cuenta, hoy, MAX_DIAS, cfg) : [];
   const filaHoy        = filasHastaHoy[filasHastaHoy.length - 1] || null;
-  const saldoActual    = filaHoy ? filaHoy.saldoFinal : capital;
+  // Movimientos ya registrados cuyo día todavía no cierra (después de `hoy` por
+  // la hora de corte): el dinero ya entró/salió, así que cuenta en el saldo ya.
+  const movEnTransito  = eventos
+    .filter(e => e.tipo === EVENTO_MOVIMIENTO && e.fecha > hoy && e.fecha <= fechaReal)
+    .reduce((s, e) => s + e.monto, 0);
+  const saldoActual    = Math.round(((filaHoy ? filaHoy.saldoFinal : capital) + movEnTransito) * 100) / 100;
   const pendiente      = filaHoy ? (filaHoy.pendiente || 0) : 0;
   // En calendario hábil, "Último" tiene que ser lo mismo que ve el usuario en el
   // renglón más reciente del historial (modal de detalle): el abono plegado, que
@@ -1445,9 +1584,13 @@ export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
   // Usar `filaHoy` sin plegar reportaría solo el devengo propio de ESE día,
   // ignorando el puente que se le sumó — más chico que lo que la institución
   // realmente abonó.
-  const filaAyer = cfg.abonaSoloHabil
-    ? plegarDiasInhabiles(filasHastaHoy, cfg).filas.slice(-1)[0] || null
-    : filaHoy;
+  // Con pago anticipado, un inhábil que sobrevive al plegado (por traer un
+  // movimiento) no abonó nada: el último abono es el del hábil que lo pagó.
+  const filaAyer = cfg.anticipaInhabil
+    ? plegarDiasInhabiles(filasHastaHoy, cfg).filas.filter(f => !esInhabil(f.fecha, cfg.inhabiles)).slice(-1)[0] || null
+    : cfg.abonaSoloHabil
+      ? plegarDiasInhabiles(filasHastaHoy, cfg).filas.slice(-1)[0] || null
+      : filaHoy;
   const brutoHastaHoy  = filasHastaHoy.reduce((s, f) => s + f.bruto, 0);
   const isrHastaHoy    = filasHastaHoy.reduce((s, f) => s + f.isr,   0);
   // Suma lo ABONADO (ya redondeado a centavos y encadenado), no el `neto`
@@ -1488,6 +1631,7 @@ export function resumenCuenta(cuenta, hoy = hoyDeCuenta(cuenta)) {
     ...cfg, timeline, eventos, fechaBase, dias,
     capital,
     saldoActual,
+    movEnTransito,
     // Devengado y todavía sin abonar, con la fecha en que la institución lo
     // acredita. En una cuenta `natural` siempre es 0 y `proximoAbono` es mañana.
     pendiente,
