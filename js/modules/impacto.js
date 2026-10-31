@@ -1,9 +1,9 @@
-import { getAll, getById, create, upsert, update, recentWhere, where } from '../utils/db.js';
+import { getAll, getById, upsert, update, recentWhere, where } from '../utils/db.js';
 import { currency, fmtDate, fmtMonth, currentYYYYMM, prevMonth, nextMonth, r2 } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { navigate } from '../router.js';
-import { calcularSaldo, limitarDisponible } from '../utils/saldo.js';
+import { calcularSaldo } from '../utils/saldo.js';
 import {
   calcularEstimadoTarjeta, getGastosDebitoMes, getGastosDebitoCompleto,
   calcularTotalesCredito, getPlazosMes, proyectarMes, recalcTotalesImpacto,
@@ -749,7 +749,7 @@ function _showModalPagar(t, idx, impacto, ctx) {
       </div>` : ''}
       <div class="alert alert-info py-2" style="font-size:0.8rem">
         <i class="bi bi-info-circle me-1"></i>
-        Actualizará el saldo disponible y registrará el pago de las mensualidades de este mes.
+        Registrará el pago de las mensualidades de este mes. El saldo de la tarjeta no se modifica.
       </div>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
@@ -757,7 +757,7 @@ function _showModalPagar(t, idx, impacto, ctx) {
   });
   document.getElementById('btn-confirmar-pago').addEventListener('click', async () => {
     closeModal();
-    await _registrarPago(t, idx, monto, impacto, ctx);
+    await _registrarPago(t, idx, impacto, ctx);
     toast('Pago registrado');
     await renderView(ctx.container, ctx.mes);
   });
@@ -765,38 +765,16 @@ function _showModalPagar(t, idx, impacto, ctx) {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-async function _registrarPago(t, idx, monto, impacto, ctx) {
+async function _registrarPago(t, idx, impacto, ctx) {
   const hoy = toISODate(new Date());
 
-  // 1. Compute live available credit as base
-  const tarjeta  = ctx.cardMap[t.tarjetaId];
-  const live     = tarjeta ? calcularSaldo(tarjeta, ctx.contado, ctx.msi, ctx.gastos, ctx.pagosDiferidos, ctx.creditosTarjeta) : null;
-  const dispActual = live ? live.disponible : Number(t.saldoDisponible ?? 0);
-
-  // 2. Update tarjeta record in impacto (no saldoDispConf — stays live until month closes)
+  // 1. Update tarjeta record in impacto (no saldoDispConf — stays live until month closes).
+  //    El saldo disponible/usado de la tarjeta no se toca: se captura a mano.
   const updatedTarjetas = [...impacto.tarjetas];
   updatedTarjetas[idx] = { ...t, pagado: true, fechaPagado: hoy };
   await upsert('impacto', impacto.mes, { tarjetas: updatedTarjetas });
 
-  // 3. Update tarjeta document with new saldo and reset reference date to now —
-  //    sin superar el límite; el excedente (si lo hay) se registra como crédito.
-  if (t.tarjetaId && monto > 0) {
-    const { disponible, excedente } = limitarDisponible(dispActual + monto, tarjeta?.limiteTotal);
-    const fechaAct = new Date().toISOString();
-    await update('tarjetas', t.tarjetaId, {
-      saldoDisponible:         disponible,
-      fechaActualizacionSaldo: fechaAct,
-    });
-    if (excedente > 0) {
-      await create('creditosTarjeta', {
-        tarjetaId: t.tarjetaId, fecha: fechaAct,
-        monto: excedente, origen: 'excedente',
-        nota: 'Excedente automático: el pago registrado superó el límite total',
-      });
-    }
-  }
-
-  // 3. Increment mesesPagados for A Plazos whose próximo pago is this month
+  // 2. Increment mesesPagados for A Plazos whose próximo pago is this month
   if (t.tarjetaId) {
     const tarjeta = ctx.tarjetas.find(tc => tc.id === t.tarjetaId);
     const ciclo   = tarjeta?.ciclo;

@@ -52,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T34`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T35`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -789,6 +789,7 @@ Gestión de compras y gastos, organizada en cuatro pestañas. **Todas** es la pe
   - **Tipo**: De Contado, A Plazos, Gastos, **Diferidos** (con botón on/off *Solo con saldo pendiente de registrar*) y **Con Bonificación** (con botón on/off *Solo sin aplicación confirmada*)
   - **Institución**
   - **Limpiar filtros** (borrador), deshabilitado si no hay nada que limpiar
+  - **Valores por defecto** (al entrar a la ruta y con *Limpiar filtros*): *Todos los meses* activo, toggle en *Compra*, buscador vacío, todos los tipos y todas las instituciones
 - Métricas: total del período (con desglose Contado · Plazos · Gastos) y número de registros
 - Columnas: Tipo · Descripción (enlaces de compra y de bonificación) · Tarjeta (punto con el color de la institución, `···últimos 4` y **F**/**D** física/digital) · **Fecha Compra/Cargo** · **Fecha Pago** · **Monto**
   - F/D se deduce buscando `numeroTarjeta` entre los números de la tarjeta (la compra no guarda el formato); si física y digital comparten número gana la física, igual que el select del modal
@@ -964,7 +965,7 @@ Rediseñado completo. Gestión del estado financiero mensual por tarjeta:
 - Tabla de tarjetas de crédito: Límite, Disponible, Corte, Pago (con badge 1Q/2Q)
 - **Disponible en tiempo real:** la columna Disponible y el total del métrico usan `calcularSaldo` (mismo cálculo que /tarjetas y /admin) — no el snapshot almacenado en el impacto. Si el campo fue confirmado manualmente (`saldoDispConf`), ese valor tiene precedencia sobre el calculado.
 - Datos confirmables individualmente por campo (✓ verde al confirmar)
-- **Registrar pago**: botón habilitado (`canPay`, `js/modules/impacto.js:460`) solo si la tarjeta no está ya `pagado` y además se cumple **al menos una** de: (a) ya pasó la fecha de corte efectiva (`fechaCorteConf ?? fechaCorte <= hoy`), o (b) el monto a pagar es `0`. Si no, el botón queda deshabilitado con tooltip "Espera al corte (fecha)". Al confirmar (`_registrarPago`, `js/modules/impacto.js:751`): marca `pagado: true` + `fechaPagado`, suma el monto al `saldoDisponible` de la tarjeta (si `monto > 0`) y avanza `mesesPagados` (reduce `restante`) de las compras A Plazos cuyo próximo pago cae en ese mes
+- **Registrar pago**: botón habilitado (`canPay`, `js/modules/impacto.js:460`) solo si la tarjeta no está ya `pagado` y además se cumple **al menos una** de: (a) ya pasó la fecha de corte efectiva (`fechaCorteConf ?? fechaCorte <= hoy`), o (b) el monto a pagar es `0`. Si no, el botón queda deshabilitado con tooltip "Espera al corte (fecha)". Al confirmar (`_registrarPago`, `js/modules/impacto.js:751`): marca `pagado: true` + `fechaPagado` y avanza `mesesPagados` (reduce `restante`) de las compras A Plazos cuyo próximo pago cae en ese mes
 - **Cerrar mes**: requiere todas las tarjetas pagadas; guarda snapshot + totales
 - Auto-creación del impacto al abrir el módulo si no existe para el mes actual
 - Estimados se recalculan al reabrir (nuevas compras quedan reflejadas)

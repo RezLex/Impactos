@@ -103,8 +103,8 @@ let ordenTodas;                // { campo: 'fecha'|'pago', dir: 'asc'|'desc' } e
 function _resetFiltrosTodas() {
   busquedaActual           = '';
   filtroTodasMes           = toISODate(new Date()).slice(0, 7);
-  filtroTodasTipo          = 'pago';
-  filtroTodasSinMes        = false;
+  filtroTodasTipo          = 'compra';
+  filtroTodasSinMes        = true;
   filtroTodasTipoReg       = '';
   filtroTodasInst          = '';
   filtroTodasSoloPendDif   = false;
@@ -115,8 +115,8 @@ _resetFiltrosTodas();
 
 /** ¿Algún filtro de Todas distinto del valor por defecto? (habilita "Limpiar filtros"). */
 function _hayFiltrosTodas() {
-  return !!(busquedaActual.trim() || filtroTodasTipoReg || filtroTodasInst || filtroTodasSinMes
-    || filtroTodasTipo !== 'pago' || ordenTodas
+  return !!(busquedaActual.trim() || filtroTodasTipoReg || filtroTodasInst || !filtroTodasSinMes
+    || filtroTodasTipo !== 'compra' || ordenTodas
     || filtroTodasMes !== toISODate(new Date()).slice(0, 7));
 }
 
