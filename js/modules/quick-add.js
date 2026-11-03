@@ -555,7 +555,7 @@ function _showContado(instituciones, tarjetas, festivosMX, contado, msi, gastos,
       <button type="button" class="btn btn-primary btn-sm" id="qa-save-contado">Guardar</button>`,
   });
 
-  wireBonifFields('qa-contado-form', null);
+  wireBonifFields('qa-contado-form', null, 'contado');
   _wireTimeToggle();
   _wireTimePicker();
 
@@ -709,7 +709,7 @@ function _showPlazos(instituciones, tarjetas, festivosMX, contado, msi, gastos, 
   document.getElementById('qa-total').addEventListener('input', recalc);
   document.getElementById('qa-meses').addEventListener('input', recalc);
 
-  wireBonifFields('qa-plazos-form', null);
+  wireBonifFields('qa-plazos-form', null, 'msi');
   _wireTimeToggle();
   _wireTimePicker();
   _wirePreview('qa-plazos-form', 'tarjetaId', 'fechaCompra', 'total', tarjetas, festivosMX,

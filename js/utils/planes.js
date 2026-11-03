@@ -4,7 +4,10 @@
  * Un plan (colección `planesCompra`): `{ nombre, notas, items: [item] }`.
  * Un item es un registro propio del plan (no se sincroniza con Lista ni con
  * otros planes): `{ id, origen: 'lista'|'personalizado', deseoId?, opcionId?,
- * nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`.
+ * nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId,
+ * tipoPago: 'contado'|'msi', meses }`. `tipoPago`/`meses` acotan qué
+ * bonificaciones de la tarjeta se pueden ligar (ver `bonifsDeTarjeta` en
+ * modules/deseos.js), igual que en una compra real de Contado o A Plazos.
  *
  * No tiene relación con Compras ni Impacto: la bonificación de cada item se
  * calcula solo contra los demás items del mismo plan, con el mismo repartidor

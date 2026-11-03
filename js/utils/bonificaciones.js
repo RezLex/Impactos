@@ -4,7 +4,13 @@
  *
  * Una bonificación: `{ nombre, institucionId, tipo: 'porcentaje'|'cantidad', valor,
  * fechaMaxima, enlace, enlaceTyc, montoMinimo, minimoPor: 'compra'|'acumulado',
- * montoMaximo, aplicada }`.
+ * montoMaximo, aplicada, aplicaA: 'contado'|'msi'|'ambos', mesesAplican }`.
+ *
+ * `aplicaA` restringe la bonificación a compras de contado, a plazos (MSI) o
+ * ambas; sin ese campo (bonificaciones anteriores a esto) se trata como 'ambos'.
+ * Con `aplicaA` distinto de 'contado', `mesesAplican` (array de números de mes,
+ * ej. `[3, 6, 12]`) puede acotarla además a esas mensualidades; vacío o ausente
+ * significa "cualquier mensualidad".
  *
  * Una compra (contado o msi) se liga con `bonificacionId`; si la bonificación
  * valida el mínimo por compra, además lleva `folioOrden` — los registros con el
@@ -12,6 +18,22 @@
  */
 
 export const IVA_FACTOR = 1.16;
+
+/** Mensualidades comunes ofrecidas al configurar a qué plazos de MSI aplica una bonificación. */
+export const MESES_COMUNES = [3, 6, 9, 12, 18, 24];
+
+/**
+ * ¿Una bonificación aplica a una compra de tipo `tipo` ('contado'|'msi')? Con
+ * 'msi', si además tiene `mesesAplican` capturados, `meses` debe estar entre ellos.
+ */
+export function aplicaBonificacion(bonif, tipo, meses = null) {
+  const aplicaA = bonif?.aplicaA || 'ambos';
+  if (aplicaA !== 'ambos' && aplicaA !== tipo) return false;
+  if (tipo === 'msi' && Array.isArray(bonif?.mesesAplican) && bonif.mesesAplican.length) {
+    return bonif.mesesAplican.includes(Number(meses));
+  }
+  return true;
+}
 
 /** Monto sobre el que se calcula la bonificación de una compra: su total original. */
 export function baseCompra(c) {
@@ -30,6 +52,10 @@ export function reglaBonificacion(b, fmt) {
   const partes = [b.tipo === 'porcentaje' ? `${b.valor}%` : fmt(b.valor)];
   if (Number(b.montoMinimo) > 0) partes.push(`mín. ${fmt(b.montoMinimo)} ${b.minimoPor === 'acumulado' ? 'acumulado' : 'por compra'}`);
   if (Number(b.montoMaximo) > 0) partes.push(`máx. ${fmt(b.montoMaximo)}`);
+  const meses = Array.isArray(b.mesesAplican) && b.mesesAplican.length ? ` a ${b.mesesAplican.join('/')} meses` : '';
+  if (b.aplicaA === 'contado') partes.push('solo de contado');
+  else if (b.aplicaA === 'msi') partes.push(`solo MSI${meses}`);
+  else if (meses) partes.push(`MSI solo${meses}`);
   return partes.join(' · ');
 }
 

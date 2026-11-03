@@ -2799,7 +2799,7 @@ export function showModalContado(compra, instituciones, tarjetas, pagosDiferidos
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-contado">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
-  wireBonifFields('contado-form', compra);
+  wireBonifFields('contado-form', compra, 'contado');
   _wireFechaEfectiva('contado', '#contado-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();
@@ -3013,7 +3013,7 @@ export function showModalMsi(msi, instituciones, tarjetas, pagosDiferidos, onSav
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-msi">${(isEdit || isSwitch) ? 'Guardar' : 'Crear'}</button>`
   });
 
-  wireBonifFields('msi-form', msi);
+  wireBonifFields('msi-form', msi, 'msi');
   _wireFechaEfectiva('msi', '#msi-form [name="fechaCompra"]');
   _wireTimeToggle();
   _wireTimePicker();

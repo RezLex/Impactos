@@ -2,7 +2,7 @@ import { getAll, create, update, remove } from '../utils/db.js';
 import { currency, fmtDate } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { toISODate } from '../utils/ciclo.js';
-import { calcularDistribucion, reglaBonificacion, estadoBonificacion, baseCompra } from '../utils/bonificaciones.js';
+import { calcularDistribucion, reglaBonificacion, estadoBonificacion, baseCompra, MESES_COMUNES } from '../utils/bonificaciones.js';
 
 const COL = 'bonificaciones';
 
@@ -243,6 +243,24 @@ function showBonifModal(bonif, instituciones, onSaved) {
               <input type="number" class="form-control" name="montoMaximo" value="${bonif?.montoMaximo || ''}" min="0" step="0.01" placeholder="Sin tope">
             </div>
           </div>
+          <div class="col-md-5">
+            <label class="form-label">Aplica a</label>
+            <select class="form-select" name="aplicaA" id="bonif-aplica-a">
+              <option value="ambos"   ${(!bonif || !bonif.aplicaA || bonif.aplicaA === 'ambos') ? 'selected' : ''}>De Contado y A Plazos (MSI)</option>
+              <option value="contado" ${bonif?.aplicaA === 'contado' ? 'selected' : ''}>Solo De Contado</option>
+              <option value="msi"     ${bonif?.aplicaA === 'msi' ? 'selected' : ''}>Solo A Plazos (MSI)</option>
+            </select>
+          </div>
+          <div class="col-md-7" id="bonif-meses-wrap" style="${bonif?.aplicaA === 'contado' ? 'display:none' : ''}">
+            <label class="form-label">Mensualidades que aplican <small class="text-muted">(ninguna = todas)</small></label>
+            <div class="d-flex flex-wrap gap-3 pt-1">
+              ${MESES_COMUNES.map(m => `
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="checkbox" name="mesesAplican" value="${m}" id="bonif-mes-${m}" ${(bonif?.mesesAplican || []).includes(m) ? 'checked' : ''}>
+                  <label class="form-check-label" for="bonif-mes-${m}">${m}</label>
+                </div>`).join('')}
+            </div>
+          </div>
           <div class="col-12 form-text mt-1">
             <strong>Por compra:</strong> cada orden (compras con el mismo folio) debe alcanzar el mínimo; con tipo cantidad, el monto se otorga por cada orden que califica.
             <strong>Acumulado:</strong> la suma de todas las compras ligadas debe alcanzarlo.
@@ -269,10 +287,14 @@ function showBonifModal(bonif, instituciones, onSaved) {
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-bonif">${isEdit ? 'Guardar' : 'Crear'}</button>`,
   });
 
+  document.getElementById('bonif-aplica-a').addEventListener('change', e =>
+    document.getElementById('bonif-meses-wrap').style.display = e.target.value === 'contado' ? 'none' : '');
+
   document.getElementById('btn-save-bonif').addEventListener('click', async () => {
     const form = document.getElementById('bonif-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const raw = Object.fromEntries(new FormData(form));
+    const aplicaA = ['contado', 'msi'].includes(raw.aplicaA) ? raw.aplicaA : 'ambos';
     const data = {
       nombre:        raw.nombre.trim(),
       institucionId: raw.institucionId,
@@ -282,6 +304,8 @@ function showBonifModal(bonif, instituciones, onSaved) {
       montoMinimo:   Number(raw.montoMinimo) || 0,
       minimoPor:     raw.minimoPor === 'acumulado' ? 'acumulado' : 'compra',
       montoMaximo:   Number(raw.montoMaximo) || 0,
+      aplicaA,
+      mesesAplican:  aplicaA === 'contado' ? [] : [...form.querySelectorAll('[name="mesesAplican"]:checked')].map(el => Number(el.value)),
       enlace:        raw.enlace || '',
       enlaceTyc:     raw.enlaceTyc || '',
       aplicada:      !!raw.aplicada,

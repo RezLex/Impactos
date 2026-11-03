@@ -2,9 +2,11 @@
  * Módulo Deseos — cálculo puro, sin Firestore ni DOM.
  *
  * Un deseo (colección `deseos`): `{ nombre, notas, opciones: [opcion] }`.
- * Una opción: `{ id, tienda, precio, enlace, historial: [{ fecha, precio }] }` —
- * `precio` es el vigente y `historial` guarda cada precio registrado (el primero
- * al crear la opción), en el orden en que se registraron.
+ * Una opción: `{ id, tienda, precio, enlace, tipoPago: 'contado'|'msi', meses,
+ * historial: [{ fecha, precio }] }` — `precio` es el vigente y `historial` guarda
+ * cada precio registrado (el primero al crear la opción), en el orden en que se
+ * registraron. `tipoPago`/`meses` son solo informativos aquí (se usan para
+ * filtrar bonificaciones al llevar la opción a un Plan, ver utils/planes.js).
  */
 
 /** Id estable para una opción (las opciones viven en un array del deseo). */

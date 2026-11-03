@@ -7,13 +7,14 @@
  *    valida el mínimo por compra, también se elige el folio de orden
  *    (`compra.folioOrden`): uno existente o "Nuevo", que se genera al guardar.
  *
- * Uso: `bonifFieldsHTML(item)` dentro del <form>, `wireBonifFields(formId, item)`
- * después de abrir el modal y `await saveBonif(data)` al guardar.
+ * Uso: `bonifFieldsHTML(item)` dentro del <form>, `wireBonifFields(formId, item, tipo)`
+ * después de abrir el modal (`tipo`: 'contado'|'msi', según el modal) y
+ * `await saveBonif(data)` al guardar.
  */
 import { getAll } from './db.js';
 import { currency, fmtDate } from './formatters.js';
 import { toISODate } from './ciclo.js';
-import { generarFolio, reglaBonificacion, estadoBonificacion, baseCompra } from './bonificaciones.js';
+import { generarFolio, reglaBonificacion, estadoBonificacion, baseCompra, aplicaBonificacion } from './bonificaciones.js';
 
 const NUEVO = '__nuevo__';
 
@@ -82,7 +83,7 @@ export function bonifFieldsHTML(item) {
     </div>`;
 }
 
-export function wireBonifFields(formId, item) {
+export function wireBonifFields(formId, item, tipo = 'contado') {
   const form = document.getElementById(formId);
   const chk  = document.getElementById('has-bonif');
   const flds = document.getElementById('bonif-fields');
@@ -95,10 +96,11 @@ export function wireBonifFields(formId, item) {
 
   const pintar = ctx => {
     const tarjetaId = (form?.querySelector('[name="tarjetaId"]')?.value || '').split('::')[0];
-    const tc   = ctx.tarjetas.find(t => t.id === tarjetaId);
-    const hoy  = toISODate(new Date());
+    const tc    = ctx.tarjetas.find(t => t.id === tarjetaId);
+    const hoy   = toISODate(new Date());
+    const meses = tipo === 'msi' ? (Number(form?.querySelector('[name="mesesTotal"]')?.value) || null) : null;
     const disponibles = ctx.bonificaciones
-      .filter(b => tc && b.institucionId === tc.institucionId && (!b.aplicada || b.id === item?.bonificacionId))
+      .filter(b => tc && b.institucionId === tc.institucionId && (!b.aplicada || b.id === item?.bonificacionId) && aplicaBonificacion(b, tipo, meses))
       .sort((a, b) => (b.fechaMaxima || '').localeCompare(a.fechaMaxima || ''));
 
     const modoWrap = document.getElementById('bonif-modo-wrap');
@@ -161,6 +163,7 @@ export function wireBonifFields(formId, item) {
   _ctxPromise.then(ctx => {
     pintar(ctx);
     form?.querySelector('[name="tarjetaId"]')?.addEventListener('change', () => pintar(ctx));
+    if (tipo === 'msi') form?.querySelector('[name="mesesTotal"]')?.addEventListener('input', () => pintar(ctx));
     document.getElementById('bonif-modo-ligada')?.addEventListener('change', () => { modo = 'ligada'; pintar(ctx); });
     document.getElementById('bonif-modo-manual')?.addEventListener('change', () => { modo = 'manual'; pintar(ctx); });
     document.getElementById('bonif-sel-wrap')?.addEventListener('change', e => {

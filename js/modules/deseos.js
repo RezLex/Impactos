@@ -7,7 +7,7 @@ import {
   editarHistorial, eliminarHistorial,
 } from '../utils/deseos.js';
 import { calcularPlan } from '../utils/planes.js';
-import { reglaBonificacion, estadoBonificacion } from '../utils/bonificaciones.js';
+import { reglaBonificacion, estadoBonificacion, aplicaBonificacion, MESES_COMUNES } from '../utils/bonificaciones.js';
 
 const COL = 'deseos';
 const COL_PLANES = 'planesCompra';
@@ -149,6 +149,7 @@ function renderDeseo(d) {
     return `<tr>
       <td>
         <span class="fw-500">${o.tienda || '—'}</span>
+        ${o.tipoPago === 'msi' ? `<span class="badge bg-primary-subtle text-primary ms-1">MSI ${o.meses || '—'}m</span>` : ''}
         ${mejor && o.id === mejor.id && opciones.length > 1 ? '<span class="badge bg-success-subtle text-success ms-1">Mejor precio</span>' : ''}
       </td>
       <td class="text-end fw-bold">${currency(o.precio)}</td>
@@ -266,9 +267,24 @@ function showOpcionModal(deseo, opcion, tiendas, onSaved) {
             ${isEdit ? '<div class="form-text">Solo se usa si cambias el precio.</div>' : ''}
           </div>
         </div>
-        <div class="mb-1">
+        <div class="mb-3">
           <label class="form-label">Enlace</label>
           <input type="url" class="form-control" name="enlace" value="${opcion?.enlace || ''}" placeholder="https://...">
+        </div>
+        <div class="row g-2">
+          <div class="col-6 mb-1">
+            <label class="form-label">Forma de pago</label>
+            <select class="form-select" name="tipoPago" id="opcion-tipo-pago">
+              <option value="contado" ${opcion?.tipoPago !== 'msi' ? 'selected' : ''}>De Contado</option>
+              <option value="msi"     ${opcion?.tipoPago === 'msi' ? 'selected' : ''}>A Plazos (MSI)</option>
+            </select>
+          </div>
+          <div class="col-6 mb-1" id="opcion-meses-wrap" style="${opcion?.tipoPago === 'msi' ? '' : 'display:none'}">
+            <label class="form-label">Meses</label>
+            <select class="form-select" name="meses">
+              ${MESES_COMUNES.map(m => `<option value="${m}" ${Number(opcion?.meses) === m ? 'selected' : ''}>${m} meses</option>`).join('')}
+            </select>
+          </div>
         </div>
       </form>`,
     footer: `
@@ -276,11 +292,19 @@ function showOpcionModal(deseo, opcion, tiendas, onSaved) {
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-opcion">${isEdit ? 'Guardar' : 'Agregar'}</button>`,
   });
 
+  document.getElementById('opcion-tipo-pago').addEventListener('change', e =>
+    document.getElementById('opcion-meses-wrap').style.display = e.target.value === 'msi' ? '' : 'none');
+
   document.getElementById('btn-save-opcion').addEventListener('click', async () => {
     const form = document.getElementById('opcion-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
     const raw = Object.fromEntries(new FormData(form));
-    const base = { ...(opcion || { id: nuevoIdOpcion(), historial: [] }), tienda: raw.tienda.trim(), enlace: raw.enlace || '' };
+    const esMsi = raw.tipoPago === 'msi';
+    const base = {
+      ...(opcion || { id: nuevoIdOpcion(), historial: [] }),
+      tienda: raw.tienda.trim(), enlace: raw.enlace || '',
+      tipoPago: esMsi ? 'msi' : 'contado', meses: esMsi ? Number(raw.meses) || null : null,
+    };
     const nueva = registrarPrecio(base, raw.precio, raw.fecha);
     const opciones = isEdit
       ? (deseo.opciones || []).map(o => o.id === opcion.id ? nueva : o)
@@ -573,11 +597,16 @@ function renderPlanes(ctx) {
   wirePlanes(ctx, root);
 }
 
-/** Bonificaciones del módulo de la institución de la tarjeta (no aplicadas, o la ya asignada). */
-function bonifsDeTarjeta(tarjetas, bonificaciones, tarjetaId, actualId = null) {
+/**
+ * Bonificaciones del módulo de la institución de la tarjeta (no aplicadas, o la
+ * ya asignada) que además apliquen a la forma de pago del item (`tipoPago` /
+ * `meses`, igual que al ligar una compra real de Contado o A Plazos).
+ */
+function bonifsDeTarjeta(tarjetas, bonificaciones, tarjetaId, actualId = null, tipoPago = 'contado', meses = null) {
   const tc = tarjetas.find(t => t.id === tarjetaId);
   if (!tc) return [];
-  return bonificaciones.filter(b => b.institucionId === tc.institucionId && (!b.aplicada || b.id === actualId));
+  return bonificaciones.filter(b =>
+    b.institucionId === tc.institucionId && (!b.aplicada || b.id === actualId) && aplicaBonificacion(b, tipoPago, meses));
 }
 
 function opcionesTarjetaHTML(tarjetas, instMap, sel) {
@@ -595,7 +624,7 @@ function opcionesTarjetaHTML(tarjetas, instMap, sel) {
  * el cupón) → artículos con sus controles. Al final, la fila para agregar.
  */
 function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, cupones, planes, tiendas }) {
-  const COLS = 10;
+  const COLS = 11;
   const hoy = toISODate(new Date());
   const normTienda = s => String(s || '').trim().toLowerCase();
   const itemsPorId = new Map(borrador.items.map(i => [i.id, i]));
@@ -617,7 +646,7 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
          </select>`
       : `<input type="text" class="form-control form-control-sm it-tienda" list="plan-tiendas-datalist" value="${(it.tienda || '').replace(/"/g, '&quot;')}" placeholder="Tienda" style="min-width:120px">`;
 
-    const disponibles = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    const disponibles = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId, it.tipoPago || 'contado', it.meses);
     let bonifCtrl = '';
     if (disponibles.length > 1) {
       bonifCtrl = `<select class="form-select form-select-sm it-bonif mb-1" style="min-width:150px">
@@ -632,9 +661,16 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
         ? `<span class="text-success fw-bold">−${currency(r.bonificacion)}</span> <small class="text-muted">(${r.pct.toFixed(1)}%)</small>`
         : `<small class="text-danger">Faltan ${currency(r.faltante)} para el mínimo</small>`;
 
+    const pagoVal = it.tipoPago === 'msi' ? `msi:${it.meses || ''}` : 'contado';
+    const pagoCtrl = `<select class="form-select form-select-sm it-pago" style="min-width:100px" title="Forma de pago">
+      <option value="contado" ${pagoVal === 'contado' ? 'selected' : ''}>Contado</option>
+      ${MESES_COMUNES.map(m => `<option value="msi:${m}" ${pagoVal === `msi:${m}` ? 'selected' : ''}>MSI ${m}m</option>`).join('')}
+    </select>`;
+
     return `<tr data-item="${it.id}">
       <td style="padding-left:28px">${articulo}${ORIGEN_BADGE[it.origen] || ''}</td>
       <td>${tienda}</td>
+      <td>${pagoCtrl}</td>
       <td><select class="form-select form-select-sm it-tarjeta" style="min-width:140px">${opcionesTarjetaHTML(tarjetas, instMap, it.tarjetaId || '')}</select></td>
       <td><input type="number" class="form-control form-control-sm text-center it-cantidad" value="${Number(it.cantidad) || 1}" min="1" step="1" style="width:64px"></td>
       <td><input type="number" class="form-control form-control-sm text-end it-precio" value="${Number(it.precio) || 0}" min="0" step="0.01" style="width:110px"></td>
@@ -720,7 +756,7 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
       <datalist id="plan-tiendas-datalist">${tiendas.map(t => `<option value="${t}">`).join('')}</datalist>
       <table class="table mb-0">
         <thead><tr>
-          <th>Artículo</th><th>Tienda</th><th>Tarjeta</th><th class="text-center">Cant.</th><th class="text-end">Precio</th>
+          <th>Artículo</th><th>Tienda</th><th>Pago</th><th>Tarjeta</th><th class="text-center">Cant.</th><th class="text-end">Precio</th>
           <th class="text-end">Subtotal</th><th class="text-end">Cupón</th><th class="text-end">Bonificación</th><th class="text-end">Total</th><th></th>
         </tr></thead>
         <tbody>
@@ -729,7 +765,7 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
         </tbody>
         ${borrador.items.length ? `
         <tfoot><tr class="fw-bold">
-          <td colspan="5" class="text-end">Totales</td>
+          <td colspan="6" class="text-end">Totales</td>
           <td class="text-end">${currency(calc.subtotal)}</td>
           <td class="text-end text-success">${calc.cupones ? '−' + currency(calc.cupones) : '—'}</td>
           <td class="text-end text-success">${calc.bonificacion ? '−' + currency(calc.bonificacion) : '—'}</td>
@@ -749,7 +785,7 @@ function wirePlanes(ctx, content) {
   // Con la tarjeta elegida, la bonificación: se conserva si sigue disponible; si
   // no, la única disponible o la primera de varias (se puede cambiar en su select).
   const ajustarBonif = it => {
-    const disp = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    const disp = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId, it.tipoPago || 'contado', it.meses);
     if (!disp.some(b => b.id === it.bonificacionId)) it.bonificacionId = disp[0]?.id || null;
   };
 
@@ -782,11 +818,21 @@ function wirePlanes(ctx, content) {
     else if (el.classList.contains('it-cantidad')) it.cantidad = Math.max(1, Math.round(Number(el.value) || 1));
     else if (el.classList.contains('it-precio'))   it.precio = Math.max(0, Number(el.value) || 0);
     else if (el.classList.contains('it-bonif'))    it.bonificacionId = el.value || null;
+    else if (el.classList.contains('it-pago')) {
+      const [tipo, meses] = el.value.split(':');
+      it.tipoPago = tipo === 'msi' ? 'msi' : 'contado';
+      it.meses    = tipo === 'msi' ? Number(meses) || null : null;
+      ajustarBonif(it);
+    }
     else if (el.classList.contains('it-tarjeta')) { it.tarjetaId = el.value || null; ajustarBonif(it); }
     else if (el.classList.contains('it-opcion')) {
       const o = (deseos.find(d => d.id === it.deseoId)?.opciones || []).find(x => x.id === el.value);
       if (!o) return;
-      Object.assign(it, { opcionId: o.id, tienda: o.tienda || '', precio: Number(o.precio) || 0, enlace: o.enlace || '' });
+      Object.assign(it, {
+        opcionId: o.id, tienda: o.tienda || '', precio: Number(o.precio) || 0, enlace: o.enlace || '',
+        tipoPago: o.tipoPago === 'msi' ? 'msi' : 'contado', meses: o.tipoPago === 'msi' ? (Number(o.meses) || null) : null,
+      });
+      ajustarBonif(it);
     } else return;
     marcar();
   });
@@ -807,14 +853,15 @@ function wirePlanes(ctx, content) {
       const o = mejorOpcion(d?.opciones) || d?.opciones?.[0];
       if (!d || !o) return;
       nuevo = { origen: 'lista', deseoId: d.id, opcionId: o.id, nombre: d.nombre, tienda: o.tienda || '',
-                enlace: o.enlace || '', precio: Number(o.precio) || 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null };
+                enlace: o.enlace || '', precio: Number(o.precio) || 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null,
+                tipoPago: o.tipoPago === 'msi' ? 'msi' : 'contado', meses: o.tipoPago === 'msi' ? (Number(o.meses) || null) : null };
     } else if (tipo === 'plan') {
       const src = planes.find(p => p.id === a)?.items?.find(i => i.id === b);
       if (!src) return;
       nuevo = { ...src };
     } else {
       nuevo = { origen: 'personalizado', deseoId: null, opcionId: null, nombre: '', tienda: '', enlace: '',
-                precio: 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null };
+                precio: 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null, tipoPago: 'contado', meses: null };
     }
     nuevo.id = nuevoIdOpcion();
     if (tipo !== 'plan') ajustarBonif(nuevo);
