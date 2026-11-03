@@ -52,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T36`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T37`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -1085,14 +1085,19 @@ Lista de deseos y planeación de compras (sección **Principal** del nav). No ti
 - Una tarjeta por artículo deseado con su mejor precio, y una tabla de **opciones** (tienda, precio, enlace) de la más barata a la más cara, con la etiqueta *Mejor precio*
 - **Variación** del último cambio de precio (rojo si subió, verde si bajó, igual que el inventario de Artículos Recurrentes) con el precio anterior
 - **Actualizar precio** (con vista previa de la variación) e **Historial** (del más reciente al más antiguo, cada uno con su % contra el anterior)
+- En el Historial cada entrada se puede **editar** en línea (fecha y precio) o **eliminar** (salvo la única que quede). Se guarda al momento sin cerrar el modal; el historial se reordena por fecha y el precio vigente de la opción pasa a ser el de la entrada más reciente (`editarHistorial` / `eliminarHistorial`, `js/utils/deseos.js`)
 - Se agrega una entrada al historial solo si el precio cambia — también al editar la opción (`registrarPrecio`, `js/utils/deseos.js`)
 
 **Planes** (colecciones [`planesCompra`](#planescompraid) y [`cuponesPlan`](#cuponesplanid))
-- **Cupones**: catálogo arriba de la pestaña (nombre, tienda obligatoria, porcentaje o cantidad fija, compra mínima, descuento máximo solo para porcentaje). Se asignan a carritos de cualquier plan
-- **Comparativa** (con 2+ planes con artículos): subtotal, cupones, bonificación, total y diferencia contra el mejor; el más barato se marca *Más conveniente*
-- Cada plan agrupa sus artículos **por tarjeta** y dentro **por tienda** (carrito). En cada carrito se elige el cupón (solo los de esa tienda)
-- **Agregar artículo**: *De Lista* (precarga la opción elegida con su precio vigente, editable), *De otro plan* (copia independiente) o *Personalizado*. En todos se elige cantidad, tarjeta y bonificación del módulo Bonificaciones (las de la institución de la tarjeta)
-- **Duplicar plan** para armar variantes
+- Se trabaja **un plan a la vez** en una sola tabla; un **selector** cambia de plan. Arriba, si hay 2+ planes guardados con artículos, la **Comparativa** (subtotal, cupones, bonificación, total y diferencia contra el mejor, con *Más conveniente*); clic en una fila abre ese plan
+- La tabla agrupa por **tarjeta** y dentro por **tienda** (carrito, donde se elige el cupón — solo los de esa tienda). Todo se edita **en la tabla**:
+  - *Tienda*: en artículos de Lista, un select con las opciones del deseo (cambiarla actualiza precio y enlace); en personalizados, texto con autocompletado
+  - *Tarjeta*: select; al cambiarla se conserva la bonificación si sigue disponible, si no se asigna la de la institución (la primera si hay varias)
+  - *Bonificación*: select solo si la institución de la tarjeta tiene más de una; con una se muestra su nombre
+  - *Cantidad* y *Precio* (el precio es del plan: no toca la opción en Lista); *Nombre* en personalizados
+- **Agregar artículo** desde la última fila, sin modal: un deseo de Lista (entra con su opción más barata), una copia de un artículo de otro plan o un artículo personalizado. **Nuevo Plan** abre la tabla vacía
+- Los cambios son un **borrador** hasta **Guardar** (badge *Cambios sin guardar*). **Guardar como nuevo plan** crea otro plan con los artículos y los cambios sin guardar y deja el original como estaba. **Descartar** vuelve a lo guardado. Cambiar de plan con cambios pendientes pide confirmación. El borrador vive en el módulo: sobrevive a cambiar de pestaña
+- **Cupones**: botón junto a *Nuevo Plan* que abre su administración en un modal (nombre, tienda obligatoria, porcentaje o cantidad fija, compra mínima, descuento máximo solo para porcentaje; muestra en cuántos carritos está asignado). Al eliminar uno se quita de los planes
 
 **Cálculo de un plan** (`calcularPlan`, `js/utils/planes.js`, probado en `test/planes.test.mjs`):
 1. Carrito = misma tienda (sin importar mayúsculas/espacios) + misma tarjeta

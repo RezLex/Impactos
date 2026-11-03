@@ -32,14 +32,48 @@ export function registrarPrecio(opcion, precio, fecha) {
 }
 
 /**
- * Historial de más reciente a más antiguo, cada entrada con `variacion`: el % de
- * diferencia contra la entrada registrada justo antes (null en la primera).
+ * Historial de más reciente a más antiguo, cada entrada con `variacion` (el % de
+ * diferencia contra la entrada registrada justo antes, null en la primera) e `idx`
+ * (su posición en el historial guardado, para editarla o eliminarla).
  */
 export function historialConVariacion(historial) {
   const lista = Array.isArray(historial) ? historial : [];
   return lista
-    .map((h, i) => ({ ...h, variacion: i === 0 ? null : variacionPct(lista[i - 1].precio, h.precio) }))
+    .map((h, i) => ({ ...h, idx: i, variacion: i === 0 ? null : variacionPct(lista[i - 1].precio, h.precio) }))
     .reverse();
+}
+
+/**
+ * Deja la opción consistente tras tocar su historial a mano: entradas ordenadas
+ * por fecha (estable: mismo día conserva el orden en que se registraron) y el
+ * precio vigente igual al de la más reciente.
+ */
+function normalizarHistorial(opcion, historial) {
+  const ordenado = historial
+    .map((h, i) => ({ h, i }))
+    .sort((a, b) => String(a.h.fecha || '').localeCompare(String(b.h.fecha || '')) || a.i - b.i)
+    .map(x => x.h);
+  const ultimo = ordenado[ordenado.length - 1];
+  return { ...opcion, historial: ordenado, precio: ultimo ? Number(ultimo.precio) || 0 : Number(opcion.precio) || 0 };
+}
+
+/** Corrige la fecha y/o el precio de la entrada `idx` del historial. Devuelve una opción nueva. */
+export function editarHistorial(opcion, idx, { fecha, precio }) {
+  const historial = [...(opcion?.historial || [])];
+  if (!historial[idx]) return opcion;
+  historial[idx] = { ...historial[idx], fecha, precio: Number(precio) || 0 };
+  return normalizarHistorial(opcion, historial);
+}
+
+/**
+ * Quita la entrada `idx` del historial. No permite dejarlo vacío (la opción
+ * siempre tiene un precio): en ese caso devuelve la opción sin cambios.
+ */
+export function eliminarHistorial(opcion, idx) {
+  const historial = [...(opcion?.historial || [])];
+  if (historial.length <= 1 || !historial[idx]) return opcion;
+  historial.splice(idx, 1);
+  return normalizarHistorial(opcion, historial);
 }
 
 /** Variación del último cambio de precio de la opción (null si solo tiene un precio). */

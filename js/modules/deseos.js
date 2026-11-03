@@ -4,6 +4,7 @@ import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { toISODate } from '../utils/ciclo.js';
 import {
   nuevoIdOpcion, variacionPct, registrarPrecio, historialConVariacion, ultimaVariacion, mejorOpcion,
+  editarHistorial, eliminarHistorial,
 } from '../utils/deseos.js';
 import { calcularPlan } from '../utils/planes.js';
 import { reglaBonificacion, estadoBonificacion } from '../utils/bonificaciones.js';
@@ -51,9 +52,14 @@ async function renderView(container) {
           <h2>Deseos</h2>
           <p id="deseos-subtitle">${subtitulo[tabActivo]}</p>
         </div>
-        <button class="btn btn-primary btn-sm" id="btn-nuevo-deseo">
-          <i class="bi bi-plus-lg me-1"></i><span id="btn-nuevo-deseo-label">${boton[tabActivo]}</span>
-        </button>
+        <div class="d-flex gap-2">
+          <button class="btn btn-outline-primary btn-sm ${tabActivo === 'planes' ? '' : 'd-none'}" id="btn-cupones">
+            <i class="bi bi-ticket-perforated me-1"></i>Cupones
+          </button>
+          <button class="btn btn-primary btn-sm" id="btn-nuevo-deseo">
+            <i class="bi bi-plus-lg me-1"></i><span id="btn-nuevo-deseo-label">${boton[tabActivo]}</span>
+          </button>
+        </div>
       </div>
       <ul class="nav nav-tabs mb-3" id="deseos-tabs">
         <li class="nav-item"><button class="nav-link ${tabActivo === 'lista'  ? 'active' : ''}" data-tab="lista">Lista</button></li>
@@ -72,6 +78,7 @@ async function renderView(container) {
       document.querySelectorAll('#deseos-tabs .nav-link').forEach(b => b.classList.toggle('active', b.dataset.tab === tabActivo));
       document.getElementById('deseos-subtitle').textContent = subtitulo[tabActivo];
       document.getElementById('btn-nuevo-deseo-label').textContent = boton[tabActivo];
+      document.getElementById('btn-cupones').classList.toggle('d-none', tabActivo !== 'planes');
       if (tabActivo === 'planes') renderPlanes(ctx);
       else                        renderLista(ctx);
     };
@@ -84,9 +91,10 @@ async function renderView(container) {
       pintarTab();
     });
     document.getElementById('btn-nuevo-deseo').addEventListener('click', () => {
-      if (tabActivo === 'planes') showPlanModal(null, recargar);
+      if (tabActivo === 'planes') nuevoPlan(ctx);
       else                        showDeseoModal(null, recargar);
     });
+    document.getElementById('btn-cupones').addEventListener('click', () => abrirCupones(ctx));
   } catch (e) {
     container.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
   }
@@ -117,7 +125,7 @@ function renderLista({ deseos, tiendas, recargar }) {
   on('.btn-add-opcion', btn => showOpcionModal(deseoDe(btn), null, tiendas, recargar));
   on('.btn-edit-opcion', btn => { const d = deseoDe(btn); showOpcionModal(d, opcionDe(d, btn), tiendas, recargar); });
   on('.btn-precio-opcion', btn => { const d = deseoDe(btn); showPrecioModal(d, opcionDe(d, btn), recargar); });
-  on('.btn-historial-opcion', btn => { const d = deseoDe(btn); showHistorialModal(d, opcionDe(d, btn)); });
+  on('.btn-historial-opcion', btn => { const d = deseoDe(btn); showHistorialModal(d, opcionDe(d, btn), recargar); });
   on('.btn-del-opcion', async btn => {
     const d = deseoDe(btn);
     const o = opcionDe(d, btn);
@@ -331,25 +339,92 @@ function showPrecioModal(deseo, opcion, onSaved) {
   });
 }
 
-function showHistorialModal(deseo, opcion) {
-  const filas = historialConVariacion(opcion.historial);
+/**
+ * Historial de precios de una opción, con edición en línea (fecha y precio) y
+ * eliminación de entradas. Cada cambio se guarda al momento y repinta el modal sin
+ * cerrarlo; el precio vigente de la opción queda siempre en el de la entrada más
+ * reciente (ver editarHistorial / eliminarHistorial).
+ */
+function showHistorialModal(deseo, opcion, onSaved) {
+  let actual = opcion;
+  let editando = null; // idx de la entrada en edición
   openModal({
     title: `${deseo.nombre} — ${opcion.tienda}`,
-    body: filas.length === 0
+    body: '<div id="historial-body"></div>',
+  });
+  const cont = document.getElementById('historial-body');
+
+  const guardar = async (nueva, mensaje) => {
+    const opciones = (deseo.opciones || []).map(o => o.id === actual.id ? nueva : o);
+    try {
+      await update(COL, deseo.id, { opciones });
+      deseo = { ...deseo, opciones };
+      actual = nueva;
+      editando = null;
+      toast(mensaje);
+      pintar();
+      onSaved?.();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  };
+
+  const pintar = () => {
+    const filas = historialConVariacion(actual.historial);
+    const unica = filas.length <= 1;
+    cont.innerHTML = filas.length === 0
       ? '<p class="text-muted mb-0">Sin precios registrados.</p>'
       : `<div class="table-wrapper">
           <table class="table mb-0">
-            <thead><tr><th>Fecha</th><th class="text-end">Precio</th><th class="text-end">Variación</th></tr></thead>
+            <thead><tr><th>Fecha</th><th class="text-end">Precio</th><th class="text-end">Variación</th><th></th></tr></thead>
             <tbody>
-              ${filas.map((h, i) => `<tr>
-                <td style="white-space:nowrap">${fmtDate(h.fecha)}${i === 0 ? ' <span class="badge bg-primary-subtle text-primary ms-1">Actual</span>' : ''}</td>
-                <td class="text-end fw-bold">${currency(h.precio)}</td>
-                <td class="text-end">${variacionHTML(h.variacion)}</td>
-              </tr>`).join('')}
+              ${filas.map((h, i) => h.idx === editando
+                ? `<tr>
+                    <td><input type="date" class="form-control form-control-sm" id="hist-fecha" value="${String(h.fecha || '').slice(0, 10)}" required></td>
+                    <td><input type="number" class="form-control form-control-sm text-end" id="hist-precio" value="${h.precio}" min="0" step="0.01" required style="min-width:100px"></td>
+                    <td class="text-end text-muted">—</td>
+                    <td>
+                      <div class="d-flex gap-1 justify-content-end">
+                        <button class="btn-icon btn-hist-guardar" title="Guardar"><i class="bi bi-check-lg"></i></button>
+                        <button class="btn-icon btn-hist-cancelar" title="Cancelar"><i class="bi bi-x-lg"></i></button>
+                      </div>
+                    </td>
+                  </tr>`
+                : `<tr>
+                    <td style="white-space:nowrap">${fmtDate(h.fecha)}${i === 0 ? ' <span class="badge bg-primary-subtle text-primary ms-1">Actual</span>' : ''}</td>
+                    <td class="text-end fw-bold">${currency(h.precio)}</td>
+                    <td class="text-end">${variacionHTML(h.variacion)}</td>
+                    <td>
+                      <div class="d-flex gap-1 justify-content-end">
+                        <button class="btn-icon btn-hist-editar" data-idx="${h.idx}" title="Editar" ${editando != null ? 'disabled' : ''}><i class="bi bi-pencil"></i></button>
+                        <button class="btn-icon danger btn-hist-eliminar" data-idx="${h.idx}" ${unica || editando != null ? 'disabled' : ''}
+                                title="${unica ? 'La opción necesita al menos un precio' : 'Eliminar'}"><i class="bi bi-trash3"></i></button>
+                      </div>
+                    </td>
+                  </tr>`).join('')}
             </tbody>
           </table>
-        </div>`,
-  });
+        </div>
+        <div class="form-text mt-2">El precio vigente de la opción es siempre el del registro más reciente.</div>`;
+
+    cont.querySelectorAll('.btn-hist-editar').forEach(btn => btn.addEventListener('click', () => {
+      editando = Number(btn.dataset.idx);
+      pintar();
+      document.getElementById('hist-precio')?.select();
+    }));
+    cont.querySelector('.btn-hist-cancelar')?.addEventListener('click', () => { editando = null; pintar(); });
+    cont.querySelector('.btn-hist-guardar')?.addEventListener('click', () => {
+      const fecha  = document.getElementById('hist-fecha');
+      const precio = document.getElementById('hist-precio');
+      if (!fecha.checkValidity()) { fecha.reportValidity(); return; }
+      if (!precio.checkValidity() || precio.value === '') { precio.reportValidity(); return; }
+      guardar(editarHistorial(actual, editando, { fecha: fecha.value, precio: precio.value }), 'Precio actualizado');
+    });
+    cont.querySelectorAll('.btn-hist-eliminar').forEach(btn => btn.addEventListener('click', () => {
+      const h = actual.historial[Number(btn.dataset.idx)];
+      if (!confirm(`¿Eliminar el precio de ${currency(h.precio)} del ${fmtDate(h.fecha)}?`)) return;
+      guardar(eliminarHistorial(actual, Number(btn.dataset.idx)), 'Precio eliminado del historial');
+    }));
+  };
+  pintar();
 }
 
 async function guardarOpciones(deseo, opciones, mensaje, onSaved) {
@@ -364,27 +439,64 @@ async function guardarOpciones(deseo, opciones, mensaje, onSaved) {
 // ── Tab Planes ────────────────────────────────────────────────────────────────
 // Planes de compra para comparar: solo planeación, sin relación con Compras ni
 // Impacto. Cada item es un registro propio del plan (ver utils/planes.js).
+//
+// Se edita un plan a la vez (selector) sobre un BORRADOR: los cambios en la tabla
+// no se guardan hasta "Guardar"; "Guardar como nuevo plan" crea otro plan con el
+// borrador y deja intacto el original. El borrador vive en el módulo, así que
+// sobrevive a cambiar de pestaña y a las recargas tras administrar cupones.
 
 const ORIGEN_BADGE = {
   lista:         '<span class="badge bg-warning-subtle text-warning-emphasis" title="Tomado de la tab Lista">Lista</span>',
   personalizado: '<span class="badge bg-secondary-subtle text-secondary-emphasis" title="Artículo propio del plan">Personalizado</span>',
 };
 
+let planSelId = null;   // plan elegido en el selector (null = plan nuevo sin guardar)
+let borrador  = null;   // { id|null, nombre, notas, items, cupones } — copia editable
+let sucio     = false;  // hay cambios sin guardar en el borrador
+
+const copiarPlan = p => ({
+  id: p.id, nombre: p.nombre || '', notas: p.notas || '',
+  items: (p.items || []).map(i => ({ ...i })),
+  cupones: { ...(p.cupones || {}) },
+});
+const planVacio = n => ({ id: null, nombre: `Plan ${n}`, notas: '', items: [], cupones: {} });
+
+/** Botón "Nuevo Plan" del encabezado: abre una tabla vacía (no se guarda hasta "Guardar"). */
+function nuevoPlan(ctx) {
+  if (sucio && !confirm('Hay cambios sin guardar en el plan actual. ¿Descartarlos?')) return;
+  planSelId = null;
+  borrador  = planVacio(ctx.planes.length + 1);
+  sucio     = false;
+  renderPlanes(ctx);
+}
+
 function renderPlanes(ctx) {
-  const { planes, cupones, tarjetas, instituciones, bonificaciones, tiendas, recargar } = ctx;
-  const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const cardMap = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
+  const { planes, cupones, tarjetas, instituciones, bonificaciones, deseos, tiendas, recargar } = ctx;
+  const instMap  = Object.fromEntries(instituciones.map(i => [i.id, i]));
+  const cardMap  = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
   const conIvaDe = instId => !!instMap[instId]?.bonificacionConIva;
+
+  // Borrador: se conserva si tiene cambios o si es un plan nuevo sin guardar; si no,
+  // se toma del plan guardado elegido (o del primero, o uno vacío si no hay planes).
+  const guardado = planSelId ? planes.find(p => p.id === planSelId) : null;
+  if (borrador && (sucio || !borrador.id)) { /* se conserva */ }
+  else if (guardado)      borrador = copiarPlan(guardado);
+  else if (planes.length) { planSelId = planes[0].id; borrador = copiarPlan(planes[0]); }
+  else                    borrador = planVacio(1);
+  // Cupones borrados del catálogo dejan de estar asignados.
+  const cuponIds = new Set(cupones.map(c => c.id));
+  borrador.cupones = Object.fromEntries(Object.entries(borrador.cupones || {}).filter(([, id]) => cuponIds.has(id)));
+
   const calculos = new Map(planes.map(p => [p.id, calcularPlan(p, bonificaciones, conIvaDe, cupones)]));
+  const calc = calcularPlan(borrador, bonificaciones, conIvaDe, cupones);
 
-  // El más conveniente: menor total neto entre los planes con artículos.
-  const conItems = planes.filter(p => (p.items || []).length);
+  // Comparativa entre planes guardados (clic en una fila para abrirlo).
+  const conItems  = planes.filter(p => (p.items || []).length);
   const mejorNeto = conItems.length ? Math.min(...conItems.map(p => calculos.get(p.id).neto)) : null;
-  const esMejor = p => conItems.length > 1 && (p.items || []).length > 0 && calculos.get(p.id).neto === mejorNeto;
-
+  const esMejor   = p => conItems.length > 1 && calculos.get(p.id).neto === mejorNeto;
   const comparativa = conItems.length < 2 ? '' : `
     <div class="data-card">
-      <div class="data-card-header"><span><i class="bi bi-bar-chart-steps me-2"></i>Comparativa</span></div>
+      <div class="data-card-header"><span><i class="bi bi-bar-chart-steps me-2"></i>Comparativa</span><small class="fw-normal">Planes guardados · clic para abrir</small></div>
       <div class="table-wrapper">
         <table class="table mb-0">
           <thead><tr>
@@ -395,8 +507,8 @@ function renderPlanes(ctx) {
             ${[...conItems].sort((a, b) => calculos.get(a.id).neto - calculos.get(b.id).neto).map(p => {
               const c = calculos.get(p.id);
               const dif = c.neto - mejorNeto;
-              return `<tr class="${esMejor(p) ? 'table-success' : ''}">
-                <td class="fw-500">${p.nombre}${esMejor(p) ? ' <span class="badge bg-success ms-1">Más conveniente</span>' : ''}</td>
+              return `<tr class="${esMejor(p) ? 'table-success' : ''}" data-abrir-plan="${p.id}" style="cursor:pointer">
+                <td class="fw-500">${p.id === borrador.id ? '<i class="bi bi-caret-right-fill text-primary me-1"></i>' : ''}${p.nombre}${esMejor(p) ? ' <span class="badge bg-success ms-1">Más conveniente</span>' : ''}</td>
                 <td class="text-center">${(p.items || []).reduce((s, i) => s + (Number(i.cantidad) || 1), 0)}</td>
                 <td class="text-end">${currency(c.subtotal)}</td>
                 <td class="text-end text-success">${c.cupones ? '−' + currency(c.cupones) : '—'}</td>
@@ -410,164 +522,127 @@ function renderPlanes(ctx) {
       </div>
     </div>`;
 
+  const esNuevo = !borrador.id;
   const content = document.getElementById('deseos-tab-content');
-  content.innerHTML = renderCupones(cupones, planes)
-    + (planes.length === 0
-      ? `<div class="empty-state"><i class="bi bi-clipboard-check"></i><p>Sin planes de compra.<br>Crea varios con distintas tiendas, tarjetas, cupones y bonificaciones para ver cuál conviene.</p></div>`
-      : comparativa + planes.map(p => renderPlan(p, calculos.get(p.id), cardMap, cupones, esMejor(p))).join(''));
 
-  const planDe = el => planes.find(p => p.id === el.closest('[data-plan]').dataset.plan);
-  const on = (sel, fn) => content.querySelectorAll(sel).forEach(btn => btn.addEventListener('click', () => fn(btn)));
+  // Foco a restaurar tras repintar (los cambios repintan la tabla completa).
+  const activo = document.activeElement;
+  const focoItem  = activo?.closest?.('[data-item]')?.dataset.item;
+  const focoClase = activo && [...(activo.classList || [])].find(c => c.startsWith('it-'));
 
-  // Cupones (catálogo de la tab)
-  on('.btn-nuevo-cupon', () => showCuponModal(null, tiendas, recargar));
-  on('.btn-edit-cupon', btn => showCuponModal(cupones.find(c => c.id === btn.dataset.cupon), tiendas, recargar));
-  on('.btn-del-cupon', async btn => {
-    const c = cupones.find(x => x.id === btn.dataset.cupon);
-    if (!confirmDelete(c.nombre)) return;
-    try {
-      // Se quita de los carritos donde estaba asignado.
-      const usados = planes.filter(p => Object.values(p.cupones || {}).includes(c.id));
-      await Promise.all(usados.map(p => update(COL_PLANES, p.id, {
-        cupones: Object.fromEntries(Object.entries(p.cupones).filter(([, id]) => id !== c.id)),
-      })));
-      await remove(COL_CUPONES, c.id);
-      toast('Cupón eliminado');
-      recargar();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-  content.querySelectorAll('.sel-cupon').forEach(sel => sel.addEventListener('change', async () => {
-    const p = planDe(sel);
-    const asignados = { ...(p.cupones || {}) };
-    if (sel.value) asignados[sel.dataset.clave] = sel.value;
-    else delete asignados[sel.dataset.clave];
-    try {
-      await update(COL_PLANES, p.id, { cupones: asignados });
-      recargar();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  }));
-
-  // Planes
-  on('.btn-edit-plan', btn => showPlanModal(planDe(btn), recargar));
-  on('.btn-dup-plan', async btn => {
-    const p = planDe(btn);
-    try {
-      await create(COL_PLANES, {
-        nombre: `${p.nombre} (copia)`, notas: p.notas || '',
-        items: (p.items || []).map(i => ({ ...i, id: nuevoIdOpcion() })),
-        cupones: { ...(p.cupones || {}) },
-      });
-      toast('Plan duplicado');
-      recargar();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-  on('.btn-del-plan', async btn => {
-    const p = planDe(btn);
-    if (!confirmDelete(p.nombre)) return;
-    try {
-      await remove(COL_PLANES, p.id);
-      toast('Plan eliminado');
-      recargar();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-  on('.btn-add-item', btn => showItemModal(planDe(btn), null, ctx));
-  on('.btn-edit-item', btn => {
-    const p = planDe(btn);
-    showItemModal(p, (p.items || []).find(i => i.id === btn.dataset.item), ctx);
-  });
-  on('.btn-del-item', async btn => {
-    const p = planDe(btn);
-    const it = (p.items || []).find(i => i.id === btn.dataset.item);
-    if (!confirmDelete(it.nombre)) return;
-    try {
-      await update(COL_PLANES, p.id, { items: (p.items || []).filter(i => i.id !== it.id) });
-      toast('Artículo quitado del plan');
-      recargar();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-}
-
-/** Texto corto de un cupón: "20% (máx. $150) · mín. $1,000". */
-function reglaCupon(c) {
-  const partes = [c.tipo === 'porcentaje'
-    ? `${c.valor}%${Number(c.montoMaximo) > 0 ? ` (máx. ${currency(c.montoMaximo)})` : ''}`
-    : currency(c.valor)];
-  if (Number(c.montoMinimo) > 0) partes.push(`mín. ${currency(c.montoMinimo)}`);
-  return partes.join(' · ');
-}
-
-/** Catálogo de cupones de la tab: se asignan después a los carritos (tarjeta + tienda) de cualquier plan. */
-function renderCupones(cupones, planes) {
-  const usos = id => planes.reduce((s, p) => s + Object.values(p.cupones || {}).filter(x => x === id).length, 0);
-  return `
+  content.innerHTML = `<div id="planes-root">` + comparativa + `
     <div class="data-card">
-      <div class="data-card-header">
-        <span><i class="bi bi-ticket-perforated me-2"></i>Cupones</span>
-        <button class="btn btn-sm btn-light btn-nuevo-cupon"><i class="bi bi-plus-lg me-1"></i>Nuevo cupón</button>
+      <div class="d-flex flex-wrap gap-2 align-items-center p-3">
+        <select class="form-select form-select-sm" id="plan-sel" style="width:auto;max-width:240px" title="Plan">
+          ${esNuevo ? '<option value="" selected>— Plan nuevo —</option>' : ''}
+          ${planes.map(p => `<option value="${p.id}" ${p.id === borrador.id ? 'selected' : ''}>${p.nombre}</option>`).join('')}
+        </select>
+        <input type="text" class="form-control form-control-sm" id="plan-nombre" value="${(borrador.nombre || '').replace(/"/g, '&quot;')}"
+               placeholder="Nombre del plan" style="width:auto;min-width:180px;max-width:260px" title="Nombre del plan">
+        ${esNuevo ? '<span class="badge bg-info-subtle text-info-emphasis">Sin guardar</span>'
+          : sucio ? '<span class="badge bg-warning-subtle text-warning-emphasis"><i class="bi bi-pencil me-1"></i>Cambios sin guardar</span>' : ''}
+        <div class="ms-auto d-flex flex-wrap gap-1">
+          <button class="btn btn-primary btn-sm" id="plan-guardar" ${!esNuevo && !sucio ? 'disabled' : ''}>
+            <i class="bi bi-floppy me-1"></i>Guardar
+          </button>
+          ${esNuevo ? '' : `
+          <button class="btn btn-outline-primary btn-sm" id="plan-guardar-nuevo"
+                  title="Crea otro plan con estos artículos y los cambios sin guardar; este plan queda como estaba">
+            <i class="bi bi-copy me-1"></i>Guardar como nuevo plan
+          </button>`}
+          <button class="btn btn-outline-secondary btn-sm" id="plan-descartar" ${sucio ? '' : 'disabled'}>Descartar</button>
+          ${esNuevo ? '' : '<button class="btn-icon danger" id="plan-eliminar" title="Eliminar plan"><i class="bi bi-trash3"></i></button>'}
+        </div>
       </div>
-      ${cupones.length === 0
-        ? `<div class="p-3 text-muted" style="font-size:0.85rem">Sin cupones. Dalos de alta con su tienda y asígnalos a los carritos de esa tienda en tus planes.</div>`
-        : `<div class="table-wrapper">
-            <table class="table mb-0">
-              <thead><tr><th>Cupón</th><th>Tienda</th><th>Descuento</th><th class="text-center">Asignado en</th><th></th></tr></thead>
-              <tbody>
-                ${cupones.map(c => {
-                  const n = usos(c.id);
-                  return `<tr>
-                    <td class="fw-500"><i class="bi bi-ticket-perforated me-1 text-success"></i>${c.nombre}</td>
-                    <td>${c.tienda || '<span class="text-muted">—</span>'}</td>
-                    <td>${reglaCupon(c)}</td>
-                    <td class="text-center">${n ? `${n} carrito${n !== 1 ? 's' : ''}` : '<span class="text-muted">—</span>'}</td>
-                    <td>
-                      <div class="d-flex gap-1 justify-content-end">
-                        <button class="btn-icon btn-edit-cupon" data-cupon="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
-                        <button class="btn-icon danger btn-del-cupon" data-cupon="${c.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
-                      </div>
-                    </td>
-                  </tr>`;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>`}
-    </div>`;
+      <div class="px-3 pb-2 text-muted" style="font-size:0.85rem">
+        Subtotal ${currency(calc.subtotal)}
+        ${calc.cupones ? ` · Cupones <span class="text-success">−${currency(calc.cupones)}</span>` : ''}
+        ${calc.bonificacion ? ` · Bonificación <span class="text-success">−${currency(calc.bonificacion)}</span>` : ''}
+        · Total <strong class="text-body">${currency(calc.neto)}</strong>
+        ${calc.porBonificacion.filter(b => b.topado).map(b => ` <span class="badge bg-secondary-subtle text-secondary-emphasis" title="Sin tope serían ${currency(b.sinTope)}">${b.bonif.nombre}: tope ${currency(b.esperado)}</span>`).join('')}
+      </div>
+      ${tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, cupones, planes, tiendas })}
+    </div>
+  </div>`;
+
+  // Los listeners van en #planes-root, que se recrea en cada repintado (en el
+  // contenedor de la pestaña se acumularían).
+  const root = document.getElementById('planes-root');
+  if (focoItem && focoClase) root.querySelector(`[data-item="${focoItem}"] .${focoClase}`)?.focus();
+
+  wirePlanes(ctx, root);
+}
+
+/** Bonificaciones del módulo de la institución de la tarjeta (no aplicadas, o la ya asignada). */
+function bonifsDeTarjeta(tarjetas, bonificaciones, tarjetaId, actualId = null) {
+  const tc = tarjetas.find(t => t.id === tarjetaId);
+  if (!tc) return [];
+  return bonificaciones.filter(b => b.institucionId === tc.institucionId && (!b.aplicada || b.id === actualId));
+}
+
+function opcionesTarjetaHTML(tarjetas, instMap, sel) {
+  const porInst = {};
+  tarjetas.filter(t => !t.oculta || t.id === sel).forEach(t => { (porInst[t.institucionId || '__'] ||= []).push(t); });
+  return `<option value="">Sin tarjeta</option>` + Object.entries(porInst)
+    .sort(([a], [b]) => (instMap[a]?.nombre || '').localeCompare(instMap[b]?.nombre || '', 'es'))
+    .map(([instId, ts]) => `<optgroup label="${instMap[instId]?.nombre || 'Sin institución'}">
+        ${ts.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(t => `<option value="${t.id}" ${t.id === sel ? 'selected' : ''}>${t.nombre}</option>`).join('')}
+      </optgroup>`).join('');
 }
 
 /**
- * Tarjeta de un plan: items agrupados por tarjeta y, dentro, por tienda (cada
- * tienda es un carrito: ahí se asigna el cupón y se valida su mínimo).
+ * Tabla del plan en edición: grupos por tarjeta → tienda (carrito, donde se elige
+ * el cupón) → artículos con sus controles. Al final, la fila para agregar.
  */
-function renderPlan(p, calc, cardMap, cupones, mejor) {
-  const items = p.items || [];
-  const COLS = 8;
+function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, cupones, planes, tiendas }) {
+  const COLS = 10;
+  const hoy = toISODate(new Date());
   const normTienda = s => String(s || '').trim().toLowerCase();
+  const itemsPorId = new Map(borrador.items.map(i => [i.id, i]));
 
   const filaItem = it => {
     const r = calc.porItem.get(it.id);
-    let bonifCell = '<span class="text-muted">—</span>';
-    if (r.bonif) {
-      bonifCell = r.califica
-        ? `<span class="text-success fw-bold">−${currency(r.bonificacion)}</span> <small class="text-muted">(${r.pct.toFixed(1)}%)</small>
-           <br><small class="text-muted"><i class="bi bi-gift me-1"></i>${r.bonif.nombre}</small>`
-        : `<span class="text-muted">$0.00</span>
-           <br><small class="text-danger" title="${r.bonif.nombre}"><i class="bi bi-gift me-1"></i>Faltan ${currency(r.faltante)} para el mínimo</small>`;
+    const deseo = it.origen === 'lista' ? deseos.find(d => d.id === it.deseoId) : null;
+    const opciones = deseo?.opciones || [];
+
+    const articulo = it.origen === 'lista' && deseo
+      ? `<div class="fw-500">${it.nombre}${it.enlace ? ` <a href="${it.enlace}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}</div>`
+      : `<input type="text" class="form-control form-control-sm it-nombre" value="${(it.nombre || '').replace(/"/g, '&quot;')}" placeholder="Artículo" style="min-width:140px">`;
+
+    const tienda = opciones.length
+      ? `<select class="form-select form-select-sm it-opcion" style="min-width:150px" title="Opción del deseo">
+           ${opciones.some(o => o.id === it.opcionId) ? '' : `<option value="" selected>${it.tienda || '—'} (otra)</option>`}
+           ${[...opciones].sort((a, b) => (Number(a.precio) || 0) - (Number(b.precio) || 0))
+             .map(o => `<option value="${o.id}" ${o.id === it.opcionId ? 'selected' : ''}>${o.tienda || '—'} · ${currency(o.precio)}</option>`).join('')}
+         </select>`
+      : `<input type="text" class="form-control form-control-sm it-tienda" list="plan-tiendas-datalist" value="${(it.tienda || '').replace(/"/g, '&quot;')}" placeholder="Tienda" style="min-width:120px">`;
+
+    const disponibles = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    let bonifCtrl = '';
+    if (disponibles.length > 1) {
+      bonifCtrl = `<select class="form-select form-select-sm it-bonif mb-1" style="min-width:150px">
+          <option value="">Sin bonificación</option>
+          ${disponibles.map(b => `<option value="${b.id}" ${b.id === it.bonificacionId ? 'selected' : ''}>${b.nombre}${estadoBonificacion(b, hoy) === 'vencida' ? ' (vencida)' : ''}</option>`).join('')}
+        </select>`;
+    } else if (r.bonif) {
+      bonifCtrl = `<small class="text-muted d-block" title="${reglaBonificacion(r.bonif, currency)}"><i class="bi bi-gift me-1"></i>${r.bonif.nombre}</small>`;
     }
-    return `<tr>
-      <td style="padding-left:32px">
-        <div class="fw-500">${it.nombre}${it.enlace ? ` <a href="${it.enlace}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}</div>
-        ${ORIGEN_BADGE[it.origen] || ''}
-      </td>
-      <td class="text-center">${Number(it.cantidad) || 1}</td>
-      <td class="text-end">${currency(it.precio)}</td>
+    const bonifMonto = !r.bonif ? (disponibles.length > 1 ? '' : '<span class="text-muted">—</span>')
+      : r.califica
+        ? `<span class="text-success fw-bold">−${currency(r.bonificacion)}</span> <small class="text-muted">(${r.pct.toFixed(1)}%)</small>`
+        : `<small class="text-danger">Faltan ${currency(r.faltante)} para el mínimo</small>`;
+
+    return `<tr data-item="${it.id}">
+      <td style="padding-left:28px">${articulo}${ORIGEN_BADGE[it.origen] || ''}</td>
+      <td>${tienda}</td>
+      <td><select class="form-select form-select-sm it-tarjeta" style="min-width:140px">${opcionesTarjetaHTML(tarjetas, instMap, it.tarjetaId || '')}</select></td>
+      <td><input type="number" class="form-control form-control-sm text-center it-cantidad" value="${Number(it.cantidad) || 1}" min="1" step="1" style="width:64px"></td>
+      <td><input type="number" class="form-control form-control-sm text-end it-precio" value="${Number(it.precio) || 0}" min="0" step="0.01" style="width:110px"></td>
       <td class="text-end">${currency(r.subtotal)}</td>
       <td class="text-end">${r.cupon ? `<span class="text-success">−${currency(r.cupon)}</span>` : '<span class="text-muted">—</span>'}</td>
-      <td class="text-end">${bonifCell}</td>
+      <td class="text-end">${bonifCtrl}${bonifMonto}</td>
       <td class="text-end fw-bold">${currency(r.neto)}</td>
-      <td>
-        <div class="d-flex gap-1 justify-content-end">
-          <button class="btn-icon btn-edit-item" data-item="${it.id}" title="Editar"><i class="bi bi-pencil"></i></button>
-          <button class="btn-icon danger btn-del-item" data-item="${it.id}" title="Quitar del plan"><i class="bi bi-trash3"></i></button>
-        </div>
-      </td>
+      <td><button class="btn-icon danger it-quitar" title="Quitar del plan"><i class="bi bi-trash3"></i></button></td>
     </tr>`;
   };
 
@@ -582,17 +657,18 @@ function renderPlan(p, calc, cardMap, cupones, mejor) {
         <div class="d-flex align-items-center flex-wrap gap-2">
           <i class="bi bi-shop text-muted"></i><span class="fw-500">${c.tienda || 'Sin tienda'}</span>
           <small class="text-muted">· ${currency(c.subtotal)}</small>
+          ${disponibles.length ? `
           <select class="form-select form-select-sm sel-cupon ms-auto" data-clave="${c.clave}" style="width:auto;max-width:260px" title="Cupón para esta tienda con esta tarjeta">
             <option value="">Sin cupón</option>
             ${disponibles.map(cu => `<option value="${cu.id}" ${cu.id === c.cupon?.id ? 'selected' : ''}>${cu.nombre} · ${reglaCupon(cu)}</option>`).join('')}
-          </select>
+          </select>` : '<small class="text-muted ms-auto">Sin cupones para esta tienda</small>'}
           ${estado}
         </div>
       </td>
     </tr>`;
   };
 
-  // Tarjeta → carritos (tiendas), ordenados por nombre.
+  // Tarjeta → carritos (tiendas). Dentro del carrito, los items en el orden del plan.
   const porTarjeta = new Map();
   calc.carritos.forEach(c => {
     const k = c.tarjetaId || '';
@@ -604,7 +680,6 @@ function renderPlan(p, calc, cardMap, cupones, mejor) {
     .sort(([a], [b]) => nombreTarjeta(a).localeCompare(nombreTarjeta(b), 'es'))
     .map(([tarjetaId, carritos]) => {
       const tc = cardMap[tarjetaId];
-      const totalTarjeta = carritos.reduce((s, c) => s + c.neto, 0);
       return `<tr style="background:rgba(127,127,127,.12)">
           <td colspan="${COLS}">
             <div class="d-flex align-items-center gap-2">
@@ -612,67 +687,279 @@ function renderPlan(p, calc, cardMap, cupones, mejor) {
                 ? `<span class="d-inline-block rounded-circle" style="width:10px;height:10px;background:${tc.inst?.color || '#607d8b'}"></span>
                    <span class="fw-bold">${tc.nombre}</span><small class="text-muted">${tc.inst?.nombre || ''}</small>`
                 : '<i class="bi bi-credit-card text-muted"></i><span class="fw-bold text-muted">Sin tarjeta</span>'}
-              <span class="ms-auto fw-bold">${currency(totalTarjeta)}</span>
+              <span class="ms-auto fw-bold">${currency(carritos.reduce((s, c) => s + c.neto, 0))}</span>
             </div>
           </td>
         </tr>`
         + carritos
           .sort((a, b) => (a.tienda || '').localeCompare(b.tienda || '', 'es'))
-          .map(c => filaCarrito(c) + c.items.map(filaItem).join(''))
+          .map(c => filaCarrito(c) + c.items.map(i => filaItem(itemsPorId.get(i.id))).join(''))
           .join('');
     }).join('');
 
-  const topes = calc.porBonificacion.filter(b => b.topado)
-    .map(b => `<span class="badge bg-secondary-subtle text-secondary-emphasis" title="Sin tope serían ${currency(b.sinTope)}">${b.bonif.nombre}: tope ${currency(b.esperado)}</span>`)
-    .join(' ');
+  const deseosConOpciones = deseos.filter(d => (d.opciones || []).length);
+  const otros = planes.filter(p => p.id !== borrador.id && (p.items || []).length);
+  const agregar = `
+    <tr>
+      <td colspan="${COLS}">
+        <select class="form-select form-select-sm" id="plan-agregar" style="width:auto;max-width:100%">
+          <option value="">＋ Agregar artículo…</option>
+          ${deseosConOpciones.length ? `<optgroup label="De Lista">
+            ${deseosConOpciones.map(d => `<option value="lista::${d.id}">${d.nombre}</option>`).join('')}
+          </optgroup>` : ''}
+          ${otros.map(p => `<optgroup label="De ${p.nombre}">
+            ${(p.items || []).map(i => `<option value="plan::${p.id}::${i.id}">${i.nombre} · ${i.tienda || '—'} · ${currency(i.precio)}</option>`).join('')}
+          </optgroup>`).join('')}
+          <optgroup label="Otro"><option value="pers">Artículo personalizado</option></optgroup>
+        </select>
+      </td>
+    </tr>`;
 
   return `
-    <div class="data-card" data-plan="${p.id}">
-      <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 p-3">
-        <div>
-          <div class="fw-bold d-flex align-items-center gap-2 flex-wrap">
-            <i class="bi bi-clipboard-check text-primary"></i>${p.nombre}
-            ${mejor ? '<span class="badge bg-success">Más conveniente</span>' : ''}
-          </div>
-          ${p.notas ? `<small class="text-muted d-block">${p.notas}</small>` : ''}
-          <small class="text-muted">
-            Subtotal ${currency(calc.subtotal)}
-            ${calc.cupones ? ` · Cupones <span class="text-success">−${currency(calc.cupones)}</span>` : ''}
-            ${calc.bonificacion ? ` · Bonificación <span class="text-success">−${currency(calc.bonificacion)}</span>` : ''}
-            · Total <strong>${currency(calc.neto)}</strong>
-          </small>
-          ${topes ? `<div class="mt-1">${topes}</div>` : ''}
-        </div>
-        <div class="d-flex gap-1">
-          <button class="btn btn-outline-primary btn-sm btn-add-item"><i class="bi bi-plus-lg me-1"></i>Artículo</button>
-          <button class="btn-icon btn-dup-plan" title="Duplicar plan (para armar una variante)"><i class="bi bi-copy"></i></button>
-          <button class="btn-icon btn-edit-plan" title="Editar plan"><i class="bi bi-pencil"></i></button>
-          <button class="btn-icon danger btn-del-plan" title="Eliminar plan"><i class="bi bi-trash3"></i></button>
-        </div>
-      </div>
-      ${items.length === 0
-        ? `<div class="px-3 pb-3 text-muted" style="font-size:0.85rem">Sin artículos. Agrega deseos de la Lista, de otro plan o uno personalizado.</div>`
-        : `<div class="table-wrapper">
-            <table class="table mb-0">
-              <thead><tr>
-                <th>Artículo</th><th class="text-center">Cant.</th><th class="text-end">Precio</th><th class="text-end">Subtotal</th>
-                <th class="text-end">Cupón</th><th class="text-end">Bonificación</th><th class="text-end">Total</th><th></th>
-              </tr></thead>
-              <tbody>${cuerpo}</tbody>
-              <tfoot><tr class="fw-bold">
-                <td colspan="3" class="text-end">Totales</td>
-                <td class="text-end">${currency(calc.subtotal)}</td>
-                <td class="text-end text-success">${calc.cupones ? '−' + currency(calc.cupones) : '—'}</td>
-                <td class="text-end text-success">${calc.bonificacion ? '−' + currency(calc.bonificacion) : '—'}</td>
-                <td class="text-end">${currency(calc.neto)}</td>
-                <td></td>
-              </tr></tfoot>
-            </table>
-          </div>`}
+    <div class="table-wrapper">
+      <datalist id="plan-tiendas-datalist">${tiendas.map(t => `<option value="${t}">`).join('')}</datalist>
+      <table class="table mb-0">
+        <thead><tr>
+          <th>Artículo</th><th>Tienda</th><th>Tarjeta</th><th class="text-center">Cant.</th><th class="text-end">Precio</th>
+          <th class="text-end">Subtotal</th><th class="text-end">Cupón</th><th class="text-end">Bonificación</th><th class="text-end">Total</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${borrador.items.length ? cuerpo : `<tr><td colspan="${COLS}" class="text-muted text-center py-3">Sin artículos. Agrégalos desde la fila de abajo.</td></tr>`}
+          ${agregar}
+        </tbody>
+        ${borrador.items.length ? `
+        <tfoot><tr class="fw-bold">
+          <td colspan="5" class="text-end">Totales</td>
+          <td class="text-end">${currency(calc.subtotal)}</td>
+          <td class="text-end text-success">${calc.cupones ? '−' + currency(calc.cupones) : '—'}</td>
+          <td class="text-end text-success">${calc.bonificacion ? '−' + currency(calc.bonificacion) : '—'}</td>
+          <td class="text-end">${currency(calc.neto)}</td>
+          <td></td>
+        </tr></tfoot>` : ''}
+      </table>
     </div>`;
 }
 
-function showCuponModal(cupon, tiendas, onSaved) {
+function wirePlanes(ctx, content) {
+  const { planes, deseos, tarjetas, bonificaciones, recargar } = ctx;
+  const repintar = () => renderPlanes(ctx);
+  const marcar = () => { sucio = true; repintar(); };
+  const itemDe = el => borrador.items.find(i => i.id === el.closest('[data-item]')?.dataset.item);
+
+  // Con la tarjeta elegida, la bonificación: se conserva si sigue disponible; si
+  // no, la única disponible o la primera de varias (se puede cambiar en su select).
+  const ajustarBonif = it => {
+    const disp = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    if (!disp.some(b => b.id === it.bonificacionId)) it.bonificacionId = disp[0]?.id || null;
+  };
+
+  const abrirPlan = id => {
+    if (id === borrador.id) return;
+    if (sucio && !confirm('Hay cambios sin guardar en el plan actual. ¿Descartarlos?')) { repintar(); return; }
+    planSelId = id;
+    borrador  = copiarPlan(planes.find(p => p.id === id));
+    sucio     = false;
+    repintar();
+  };
+  content.querySelector('#plan-sel').addEventListener('change', e => { if (e.target.value) abrirPlan(e.target.value); });
+  content.querySelectorAll('[data-abrir-plan]').forEach(tr => tr.addEventListener('click', () => abrirPlan(tr.dataset.abrirPlan)));
+
+  content.querySelector('#plan-nombre').addEventListener('change', e => { borrador.nombre = e.target.value.trim(); marcar(); });
+
+  // Cambios en los controles de los artículos (change, no input: se repinta la tabla).
+  content.addEventListener('change', e => {
+    const el = e.target;
+    if (el.classList.contains('sel-cupon')) {
+      if (el.value) borrador.cupones[el.dataset.clave] = el.value;
+      else delete borrador.cupones[el.dataset.clave];
+      marcar();
+      return;
+    }
+    const it = itemDe(el);
+    if (!it) return;
+    if (el.classList.contains('it-nombre'))   it.nombre = el.value.trim();
+    else if (el.classList.contains('it-tienda'))   it.tienda = el.value.trim();
+    else if (el.classList.contains('it-cantidad')) it.cantidad = Math.max(1, Math.round(Number(el.value) || 1));
+    else if (el.classList.contains('it-precio'))   it.precio = Math.max(0, Number(el.value) || 0);
+    else if (el.classList.contains('it-bonif'))    it.bonificacionId = el.value || null;
+    else if (el.classList.contains('it-tarjeta')) { it.tarjetaId = el.value || null; ajustarBonif(it); }
+    else if (el.classList.contains('it-opcion')) {
+      const o = (deseos.find(d => d.id === it.deseoId)?.opciones || []).find(x => x.id === el.value);
+      if (!o) return;
+      Object.assign(it, { opcionId: o.id, tienda: o.tienda || '', precio: Number(o.precio) || 0, enlace: o.enlace || '' });
+    } else return;
+    marcar();
+  });
+  content.querySelectorAll('.it-quitar').forEach(btn => btn.addEventListener('click', () => {
+    const it = itemDe(btn);
+    borrador.items = borrador.items.filter(i => i !== it);
+    marcar();
+  }));
+
+  // Agregar: de Lista (opción más barata), copia de otro plan o personalizado.
+  content.querySelector('#plan-agregar').addEventListener('change', e => {
+    const [tipo, a, b] = e.target.value.split('::');
+    if (!tipo) return;
+    const ultimaTarjeta = borrador.items[borrador.items.length - 1]?.tarjetaId || null;
+    let nuevo;
+    if (tipo === 'lista') {
+      const d = deseos.find(x => x.id === a);
+      const o = mejorOpcion(d?.opciones) || d?.opciones?.[0];
+      if (!d || !o) return;
+      nuevo = { origen: 'lista', deseoId: d.id, opcionId: o.id, nombre: d.nombre, tienda: o.tienda || '',
+                enlace: o.enlace || '', precio: Number(o.precio) || 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null };
+    } else if (tipo === 'plan') {
+      const src = planes.find(p => p.id === a)?.items?.find(i => i.id === b);
+      if (!src) return;
+      nuevo = { ...src };
+    } else {
+      nuevo = { origen: 'personalizado', deseoId: null, opcionId: null, nombre: '', tienda: '', enlace: '',
+                precio: 0, cantidad: 1, tarjetaId: ultimaTarjeta, bonificacionId: null };
+    }
+    nuevo.id = nuevoIdOpcion();
+    if (tipo !== 'plan') ajustarBonif(nuevo);
+    borrador.items.push(nuevo);
+    sucio = true;
+    repintar();
+    if (tipo === 'pers') content.querySelector(`[data-item="${nuevo.id}"] .it-nombre`)?.focus();
+  });
+
+  // Guardar / Guardar como nuevo / Descartar / Eliminar.
+  const validar = () => {
+    if (!borrador.nombre.trim()) { toast('Ponle nombre al plan', 'warning'); content.querySelector('#plan-nombre').focus(); return false; }
+    const incompleto = borrador.items.find(i => !String(i.nombre || '').trim() || !String(i.tienda || '').trim());
+    if (incompleto) {
+      toast('Completa el nombre y la tienda de todos los artículos', 'warning');
+      content.querySelector(`[data-item="${incompleto.id}"] .it-nombre, [data-item="${incompleto.id}"] .it-tienda`)?.focus();
+      return false;
+    }
+    return true;
+  };
+  const datos = nombre => ({ nombre, notas: borrador.notas || '', items: borrador.items, cupones: borrador.cupones });
+
+  content.querySelector('#plan-guardar').addEventListener('click', async () => {
+    if (!validar()) return;
+    try {
+      if (borrador.id) await update(COL_PLANES, borrador.id, datos(borrador.nombre));
+      else             planSelId = await create(COL_PLANES, datos(borrador.nombre));
+      sucio = false;
+      borrador = null;
+      toast('Plan guardado');
+      recargar();
+    } catch (err) { toast('Error: ' + err.message, 'danger'); }
+  });
+  content.querySelector('#plan-guardar-nuevo')?.addEventListener('click', async () => {
+    if (!validar()) return;
+    const nombre = prompt('Nombre del nuevo plan:', `${borrador.nombre} (variante)`);
+    if (!nombre || !nombre.trim()) return;
+    try {
+      const items = borrador.items.map(i => ({ ...i, id: nuevoIdOpcion() }));
+      planSelId = await create(COL_PLANES, { ...datos(nombre.trim()), items });
+      sucio = false;
+      borrador = null;
+      toast('Plan nuevo creado; el original quedó sin cambios');
+      recargar();
+    } catch (err) { toast('Error: ' + err.message, 'danger'); }
+  });
+  content.querySelector('#plan-descartar').addEventListener('click', () => {
+    if (!confirm('¿Descartar los cambios sin guardar?')) return;
+    const guardado = planes.find(p => p.id === borrador.id);
+    borrador = guardado ? copiarPlan(guardado) : planVacio(planes.length + 1);
+    sucio = false;
+    repintar();
+  });
+  content.querySelector('#plan-eliminar')?.addEventListener('click', async () => {
+    if (!confirmDelete(borrador.nombre)) return;
+    try {
+      await remove(COL_PLANES, borrador.id);
+      planSelId = null;
+      borrador  = null;
+      sucio     = false;
+      toast('Plan eliminado');
+      recargar();
+    } catch (err) { toast('Error: ' + err.message, 'danger'); }
+  });
+}
+
+/** Texto corto de un cupón: "20% (máx. $150) · mín. $1,000". */
+function reglaCupon(c) {
+  const partes = [c.tipo === 'porcentaje'
+    ? `${c.valor}%${Number(c.montoMaximo) > 0 ? ` (máx. ${currency(c.montoMaximo)})` : ''}`
+    : currency(c.valor)];
+  if (Number(c.montoMinimo) > 0) partes.push(`mín. ${currency(c.montoMinimo)}`);
+  return partes.join(' · ');
+}
+
+// ── Cupones (modal desde el botón "Cupones" del encabezado) ───────────────────
+
+/** Lee de nuevo cupones y planes (tras un cambio) y abre la lista de cupones. */
+async function abrirCupones(ctx) {
+  const [cupones, planes] = await Promise.all([getAll(COL_CUPONES), getAll(COL_PLANES)]);
+  cupones.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+  showCuponesModal({ ...ctx, cupones, planes });
+}
+
+function showCuponesModal(ctx) {
+  const { cupones, planes, tiendas, recargar } = ctx;
+  const usos = id => planes.reduce((s, p) => s + Object.values(p.cupones || {}).filter(x => x === id).length, 0);
+  // Tras crear/editar/borrar: se repinta la página (el borrador se conserva) y se vuelve a la lista.
+  const alTerminar = async () => { await recargar(); abrirCupones(ctx); };
+
+  openModal({
+    title: '<i class="bi bi-ticket-perforated me-2"></i>Cupones',
+    size: 'lg',
+    body: cupones.length === 0
+      ? '<p class="text-muted mb-0">Sin cupones. Dalos de alta con su tienda y asígnalos a los carritos de esa tienda en tus planes.</p>'
+      : `<div class="table-wrapper">
+          <table class="table mb-0">
+            <thead><tr><th>Cupón</th><th>Tienda</th><th>Descuento</th><th class="text-center">Asignado en</th><th></th></tr></thead>
+            <tbody>
+              ${cupones.map(c => {
+                const n = usos(c.id);
+                return `<tr>
+                  <td class="fw-500">${c.nombre}</td>
+                  <td>${c.tienda || '<span class="text-muted">—</span>'}</td>
+                  <td>${reglaCupon(c)}</td>
+                  <td class="text-center">${n ? `${n} carrito${n !== 1 ? 's' : ''}` : '<span class="text-muted">—</span>'}</td>
+                  <td>
+                    <div class="d-flex gap-1 justify-content-end">
+                      <button class="btn-icon btn-edit-cupon" data-cupon="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
+                      <button class="btn-icon danger btn-del-cupon" data-cupon="${c.id}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                    </div>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="form-text mt-2">El cupón se asigna en la tabla del plan, en la fila de cada tienda (carrito).</div>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cerrar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-nuevo-cupon"><i class="bi bi-plus-lg me-1"></i>Nuevo cupón</button>`,
+  });
+
+  const back = () => abrirCupones(ctx);
+  document.getElementById('btn-nuevo-cupon').addEventListener('click', () => showCuponModal(null, tiendas, alTerminar, back));
+  document.querySelectorAll('#app-modal .btn-edit-cupon').forEach(btn => btn.addEventListener('click', () =>
+    showCuponModal(cupones.find(c => c.id === btn.dataset.cupon), tiendas, alTerminar, back)));
+  document.querySelectorAll('#app-modal .btn-del-cupon').forEach(btn => btn.addEventListener('click', async () => {
+    const c = cupones.find(x => x.id === btn.dataset.cupon);
+    if (!confirmDelete(c.nombre)) return;
+    try {
+      // Se quita de los carritos de los planes guardados; el borrador lo limpia al repintar.
+      const usados = planes.filter(p => Object.values(p.cupones || {}).includes(c.id));
+      await Promise.all(usados.map(p => update(COL_PLANES, p.id, {
+        cupones: Object.fromEntries(Object.entries(p.cupones).filter(([, id]) => id !== c.id)),
+      })));
+      await remove(COL_CUPONES, c.id);
+      toast('Cupón eliminado');
+      alTerminar();
+    } catch (e) { toast('Error: ' + e.message, 'danger'); }
+  }));
+}
+
+/** Alta / edición de un cupón. `onCancel` regresa a la lista de cupones. */
+function showCuponModal(cupon, tiendas, onSaved, onCancel) {
   const isEdit = !!cupon;
   openModal({
     title: isEdit ? 'Editar Cupón' : 'Nuevo Cupón',
@@ -712,7 +999,7 @@ function showCuponModal(cupon, tiendas, onSaved) {
         <div class="form-text">En cada plan, el cupón solo se ofrece en los carritos de su tienda; el mínimo se valida contra el subtotal de ese carrito.</div>
       </form>`,
     footer: `
-      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="btn-cancel-cupon">Cancelar</button>
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-cupon">${isEdit ? 'Guardar' : 'Crear'}</button>`,
   });
 
@@ -722,6 +1009,7 @@ function showCuponModal(cupon, tiendas, onSaved) {
   selTipo.addEventListener('change', sync);
   sync();
 
+  document.getElementById('btn-cancel-cupon').addEventListener('click', () => { if (onCancel) onCancel(); else closeModal(); });
   document.getElementById('btn-save-cupon').addEventListener('click', async () => {
     const form = document.getElementById('cupon-form');
     if (!form.checkValidity()) { form.reportValidity(); return; }
@@ -737,252 +1025,8 @@ function showCuponModal(cupon, tiendas, onSaved) {
     try {
       if (isEdit) await update(COL_CUPONES, cupon.id, data);
       else        await create(COL_CUPONES, data);
-      closeModal();
       toast(isEdit ? 'Cupón actualizado' : 'Cupón creado');
       onSaved?.();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-}
-
-function showPlanModal(plan, onSaved) {
-  const isEdit = !!plan;
-  openModal({
-    title: isEdit ? 'Editar Plan' : 'Nuevo Plan de Compra',
-    body: `
-      <form id="plan-form">
-        <div class="mb-3">
-          <label class="form-label">Nombre *</label>
-          <input type="text" class="form-control" name="nombre" value="${plan?.nombre || ''}" required placeholder="Ej: Buen Fin con BBVA">
-        </div>
-        <div class="mb-1">
-          <label class="form-label">Notas</label>
-          <textarea class="form-control" name="notas" rows="2" placeholder="Opcional">${plan?.notas || ''}</textarea>
-        </div>
-      </form>`,
-    footer: `
-      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-save-plan">${isEdit ? 'Guardar' : 'Crear'}</button>`,
-  });
-
-  document.getElementById('btn-save-plan').addEventListener('click', async () => {
-    const form = document.getElementById('plan-form');
-    if (!form.checkValidity()) { form.reportValidity(); return; }
-    const raw = Object.fromEntries(new FormData(form));
-    const data = { nombre: raw.nombre.trim(), notas: (raw.notas || '').trim() };
-    try {
-      if (isEdit) await update(COL_PLANES, plan.id, data);
-      else        await create(COL_PLANES, { ...data, items: [] });
-      closeModal();
-      toast(isEdit ? 'Plan actualizado' : 'Plan creado');
-      onSaved?.();
-    } catch (e) { toast('Error: ' + e.message, 'danger'); }
-  });
-}
-
-/**
- * Alta / edición de un artículo del plan. Al agregar se elige de dónde viene:
- * un deseo de Lista (precarga la opción elegida con su precio vigente), un
- * artículo de otro plan (copia su configuración) o uno personalizado. En todos
- * los casos los campos quedan editables y se guardan como registro propio del plan.
- */
-function showItemModal(plan, item, ctx) {
-  const { deseos, planes, tiendas, tarjetas, instituciones, bonificaciones, recargar } = ctx;
-  const isEdit = !!item;
-  const hoy = toISODate(new Date());
-  const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const deseosConOpciones = deseos.filter(d => (d.opciones || []).length);
-  const otrosPlanes = planes.filter(p => p.id !== plan.id && (p.items || []).length);
-
-  const opcionesTarjeta = (() => {
-    const porInst = {};
-    tarjetas.filter(t => !t.oculta).forEach(t => { (porInst[t.institucionId || '__'] ||= []).push(t); });
-    return Object.entries(porInst)
-      .sort(([a], [b]) => (instMap[a]?.nombre || '').localeCompare(instMap[b]?.nombre || '', 'es'))
-      .map(([instId, ts]) => `<optgroup label="${instMap[instId]?.nombre || 'Sin institución'}">
-          ${ts.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(t => `<option value="${t.id}">${t.nombre}</option>`).join('')}
-        </optgroup>`).join('');
-  })();
-
-  openModal({
-    title: `${plan.nombre} — ${isEdit ? 'Editar artículo' : 'Agregar artículo'}`,
-    size: 'lg',
-    body: `
-      <form id="item-form">
-        ${isEdit ? '' : `
-        <div class="btn-group btn-group-sm w-100 mb-3" role="group">
-          <input type="radio" class="btn-check" name="origenSel" id="orig-lista" value="lista" ${deseosConOpciones.length ? 'checked' : 'disabled'}>
-          <label class="btn btn-outline-primary" for="orig-lista"><i class="bi bi-stars me-1"></i>De Lista</label>
-          <input type="radio" class="btn-check" name="origenSel" id="orig-plan" value="plan" ${otrosPlanes.length ? '' : 'disabled'}>
-          <label class="btn btn-outline-primary" for="orig-plan"><i class="bi bi-copy me-1"></i>De otro plan</label>
-          <input type="radio" class="btn-check" name="origenSel" id="orig-pers" value="personalizado" ${deseosConOpciones.length ? '' : 'checked'}>
-          <label class="btn btn-outline-primary" for="orig-pers"><i class="bi bi-pencil me-1"></i>Personalizado</label>
-        </div>
-        <div id="src-lista" class="row g-2 mb-3">
-          <div class="col-md-6">
-            <label class="form-label">Deseo</label>
-            <select class="form-select" id="sel-deseo">
-              ${deseosConOpciones.map(d => `<option value="${d.id}">${d.nombre}</option>`).join('')}
-            </select>
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Opción</label>
-            <select class="form-select" id="sel-opcion"></select>
-          </div>
-        </div>
-        <div id="src-plan" class="mb-3" style="display:none">
-          <label class="form-label">Artículo de otro plan</label>
-          <select class="form-select" id="sel-item-otro">
-            ${otrosPlanes.map(p => `
-              <optgroup label="${p.nombre}">
-                ${(p.items || []).map(i => `<option value="${p.id}::${i.id}">${i.nombre} · ${i.tienda || '—'} · ${currency(i.precio)}</option>`).join('')}
-              </optgroup>`).join('')}
-          </select>
-        </div>
-        <hr class="mt-0">`}
-        <div class="row g-2">
-          <div class="col-md-7 mb-2">
-            <label class="form-label">Artículo *</label>
-            <input type="text" class="form-control" name="nombre" value="${item?.nombre || ''}" required>
-          </div>
-          <div class="col-md-5 mb-2">
-            <label class="form-label">Tienda *</label>
-            <input type="text" class="form-control" name="tienda" list="plan-tiendas-datalist" value="${item?.tienda || ''}" required>
-            <datalist id="plan-tiendas-datalist">${tiendas.map(t => `<option value="${t}">`).join('')}</datalist>
-          </div>
-          <div class="col-md-4 mb-2">
-            <label class="form-label">Precio *</label>
-            <div class="input-group">
-              <span class="input-group-text">$</span>
-              <input type="number" class="form-control" name="precio" value="${item?.precio ?? ''}" required min="0" step="0.01">
-            </div>
-          </div>
-          <div class="col-md-2 mb-2">
-            <label class="form-label">Cant.</label>
-            <input type="number" class="form-control" name="cantidad" value="${item?.cantidad || 1}" required min="1" step="1">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Enlace</label>
-            <input type="url" class="form-control" name="enlace" value="${item?.enlace || ''}" placeholder="https://...">
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Tarjeta</label>
-            <select class="form-select" name="tarjetaId" id="sel-item-tarjeta">
-              <option value="">— Sin definir —</option>
-              ${opcionesTarjeta}
-            </select>
-          </div>
-          <div class="col-md-6 mb-2">
-            <label class="form-label">Bonificación</label>
-            <select class="form-select" name="bonificacionId" id="sel-item-bonif"></select>
-            <div class="form-text" id="item-bonif-detalle"></div>
-          </div>
-        </div>
-      </form>`,
-    footer: `
-      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-save-item">${isEdit ? 'Guardar' : 'Agregar'}</button>`,
-  });
-
-  const form   = document.getElementById('item-form');
-  const campo  = n => form.querySelector(`[name="${n}"]`);
-  const selTc  = document.getElementById('sel-item-tarjeta');
-  const selBon = document.getElementById('sel-item-bonif');
-  // Origen y referencias del item que se va a guardar (se ajustan al elegir la fuente).
-  let origen = item?.origen || 'personalizado';
-  let refs   = { deseoId: item?.deseoId || null, opcionId: item?.opcionId || null };
-
-  // Bonificaciones del módulo de la institución de la tarjeta elegida (no aplicadas, o la ya asignada).
-  const pintarBonif = seleccion => {
-    const tc = tarjetas.find(t => t.id === selTc.value);
-    const disponibles = tc
-      ? bonificaciones.filter(b => b.institucionId === tc.institucionId && (!b.aplicada || b.id === seleccion))
-      : [];
-    selBon.disabled = !disponibles.length;
-    selBon.innerHTML = `<option value="">${!tc ? 'Elige una tarjeta' : disponibles.length ? 'Sin bonificación' : 'La institución no tiene bonificaciones'}</option>`
-      + disponibles.map(b => `<option value="${b.id}" ${b.id === seleccion ? 'selected' : ''}>${b.nombre}${estadoBonificacion(b, hoy) === 'vencida' ? ' (vencida)' : ''}</option>`).join('');
-    const b = disponibles.find(x => x.id === selBon.value);
-    document.getElementById('item-bonif-detalle').textContent = b ? `${reglaBonificacion(b, currency)} · vence ${fmtDate(b.fechaMaxima)}` : '';
-  };
-  selTc.value = item?.tarjetaId || '';
-  pintarBonif(item?.bonificacionId || '');
-  selTc.addEventListener('change', () => pintarBonif(''));
-  selBon.addEventListener('change', () => pintarBonif(selBon.value));
-
-  if (!isEdit) {
-    const selDeseo  = document.getElementById('sel-deseo');
-    const selOpcion = document.getElementById('sel-opcion');
-    const selOtro   = document.getElementById('sel-item-otro');
-
-    const precargarOpcion = () => {
-      const d = deseos.find(x => x.id === selDeseo.value);
-      const o = (d?.opciones || []).find(x => x.id === selOpcion.value);
-      if (!d || !o) return;
-      origen = 'lista';
-      refs   = { deseoId: d.id, opcionId: o.id };
-      campo('nombre').value = d.nombre;
-      campo('tienda').value = o.tienda || '';
-      campo('precio').value = o.precio ?? '';
-      campo('enlace').value = o.enlace || '';
-    };
-    const pintarOpciones = () => {
-      const d = deseos.find(x => x.id === selDeseo.value);
-      selOpcion.innerHTML = [...(d?.opciones || [])]
-        .sort((a, b) => (Number(a.precio) || 0) - (Number(b.precio) || 0))
-        .map(o => `<option value="${o.id}">${o.tienda || '—'} · ${currency(o.precio)}</option>`).join('');
-      precargarOpcion();
-    };
-    const precargarOtro = () => {
-      const [planId, itemId] = (selOtro.value || '').split('::');
-      const src = planes.find(p => p.id === planId)?.items?.find(i => i.id === itemId);
-      if (!src) return;
-      origen = src.origen || 'personalizado';
-      refs   = { deseoId: src.deseoId || null, opcionId: src.opcionId || null };
-      ['nombre', 'tienda', 'precio', 'enlace'].forEach(k => { campo(k).value = src[k] ?? ''; });
-      campo('cantidad').value = src.cantidad || 1;
-      selTc.value = src.tarjetaId || '';
-      pintarBonif(src.bonificacionId || '');
-    };
-    const elegirFuente = fuente => {
-      document.getElementById('src-lista').style.display = fuente === 'lista' ? '' : 'none';
-      document.getElementById('src-plan').style.display  = fuente === 'plan'  ? '' : 'none';
-      if (fuente === 'lista') pintarOpciones();
-      else if (fuente === 'plan') precargarOtro();
-      else {
-        origen = 'personalizado';
-        refs   = { deseoId: null, opcionId: null };
-        ['nombre', 'tienda', 'precio', 'enlace'].forEach(k => { campo(k).value = ''; });
-      }
-    };
-    form.querySelectorAll('[name="origenSel"]').forEach(r => r.addEventListener('change', () => elegirFuente(r.value)));
-    selDeseo.addEventListener('change', pintarOpciones);
-    selOpcion.addEventListener('change', precargarOpcion);
-    selOtro.addEventListener('change', precargarOtro);
-    elegirFuente(form.querySelector('[name="origenSel"]:checked')?.value || 'personalizado');
-  }
-
-  document.getElementById('btn-save-item').addEventListener('click', async () => {
-    if (!form.checkValidity()) { form.reportValidity(); return; }
-    const raw = Object.fromEntries(new FormData(form));
-    const nuevo = {
-      id:             item?.id || nuevoIdOpcion(),
-      origen,
-      ...refs,
-      nombre:         raw.nombre.trim(),
-      tienda:         raw.tienda.trim(),
-      enlace:         raw.enlace || '',
-      precio:         Number(raw.precio) || 0,
-      cantidad:       Math.max(1, Number(raw.cantidad) || 1),
-      tarjetaId:      raw.tarjetaId || null,
-      bonificacionId: raw.bonificacionId || null,
-    };
-    const items = isEdit
-      ? (plan.items || []).map(i => i.id === item.id ? nuevo : i)
-      : [...(plan.items || []), nuevo];
-    try {
-      await update(COL_PLANES, plan.id, { items });
-      closeModal();
-      toast(isEdit ? 'Artículo actualizado' : 'Artículo agregado al plan');
-      recargar();
     } catch (e) { toast('Error: ' + e.message, 'danger'); }
   });
 }

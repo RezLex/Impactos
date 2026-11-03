@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import {
   variacionPct, registrarPrecio, historialConVariacion, ultimaVariacion, mejorOpcion, nuevoIdOpcion,
+  editarHistorial, eliminarHistorial,
 } from '../js/utils/deseos.js';
 
 let pasadas = 0, fallidas = 0;
@@ -58,6 +59,44 @@ test('más reciente primero, cada una contra la anterior registrada', () => {
 test('última variación', () => {
   cerca(ultimaVariacion({ historial: [{ precio: 100 }, { precio: 80 }] }), -20, '100 → 80');
   assert.equal(ultimaVariacion({ historial: [{ precio: 100 }] }), null);
+});
+
+grupo('editarHistorial / eliminarHistorial');
+const conHist = () => ({ id: 'x', precio: 90, historial: [
+  { fecha: '2026-10-01', precio: 100 }, { fecha: '2026-10-05', precio: 120 }, { fecha: '2026-10-09', precio: 90 },
+] });
+test('historialConVariacion expone el idx original', () => {
+  assert.deepEqual(historialConVariacion(conHist().historial).map(h => h.idx), [2, 1, 0]);
+});
+test('editar el precio de la más reciente cambia el vigente', () => {
+  const o = editarHistorial(conHist(), 2, { fecha: '2026-10-09', precio: 95 });
+  assert.equal(o.precio, 95);
+  assert.equal(o.historial[2].precio, 95);
+});
+test('editar una antigua no cambia el vigente', () => {
+  const o = editarHistorial(conHist(), 0, { fecha: '2026-10-01', precio: 110 });
+  assert.equal(o.precio, 90);
+});
+test('editar la fecha reordena por fecha y el vigente sigue a la más reciente', () => {
+  const o = editarHistorial(conHist(), 0, { fecha: '2026-10-20', precio: 100 });
+  assert.deepEqual(o.historial.map(h => h.fecha), ['2026-10-05', '2026-10-09', '2026-10-20']);
+  assert.equal(o.precio, 100);
+});
+test('eliminar la más reciente: el vigente pasa a la anterior', () => {
+  const o = eliminarHistorial(conHist(), 2);
+  assert.equal(o.historial.length, 2);
+  assert.equal(o.precio, 120);
+});
+test('no se puede eliminar la única entrada', () => {
+  const sola = { id: 'x', precio: 50, historial: [{ fecha: 'f', precio: 50 }] };
+  assert.equal(eliminarHistorial(sola, 0), sola);
+});
+test('no muta la opción original', () => {
+  const orig = conHist();
+  editarHistorial(orig, 0, { fecha: '2026-12-01', precio: 1 });
+  eliminarHistorial(orig, 1);
+  assert.equal(orig.historial.length, 3);
+  assert.equal(orig.historial[0].precio, 100);
 });
 
 grupo('mejorOpcion / nuevoIdOpcion');
