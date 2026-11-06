@@ -1,6 +1,7 @@
 import { getAll, create, update, remove } from '../utils/db.js';
 import { currency, bankClass, fmtDate } from '../utils/formatters.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
+import { esTarjetaActiva, numerosSeleccionables, numeroPorDefecto } from '../utils/tarjetas.js';
 
 const SEMANAS    = { 1: '1er', 2: '2do', 3: '3er', 4: '4to', [-1]: 'Último' };
 const DIAS_SEM   = { 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado', 7: 'Domingo' };
@@ -34,10 +35,10 @@ async function renderView(container) {
         ? String(f.numeroTarjeta).replace(/\s/g, '').slice(-4)
         : (() => {
             const nums = Array.isArray(t.numeros) ? t.numeros : [];
-            const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const n = numeroPorDefecto(nums);
             return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
           })();
-      return `${t.nombre}${lastFour ? ' ···' + lastFour : ''}`;
+      return `${t.nombre}${lastFour ? ' ···' + lastFour : ''}${t.baja ? ' (baja)' : ''}`;
     }
 
     function instLabel(f) {
@@ -135,7 +136,7 @@ function showModal(fijo, instituciones, tarjetas, container) {
   const _opts = cards => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .flatMap(t => {
-      const numeros    = Array.isArray(t.numeros) ? t.numeros : [];
+      const numeros    = numerosSeleccionables(t, fijo?.tarjetaId === t.id ? fijo?.numeroTarjeta : null);
       const all        = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
                           ...numeros.filter(n => n.formato === 'digital' && n.numero)];
       const instPrefix = instMap[t.institucionId]?.nombre
@@ -156,12 +157,16 @@ function showModal(fijo, instituciones, tarjetas, container) {
         const coincide = fijo?.tarjetaId === t.id && fijo?.numeroTarjeta === n.numero;
         const sel = coincide && !yaMarcado ? 'selected' : '';
         if (coincide) yaMarcado = true;
-        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
+        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo}${n.baja ? ', baja' : ''})</option>`;
       });
     }).join('');
 
-  const favoritas = tarjetas.filter(t => t.favorita);
-  const normales  = tarjetas.filter(t => !t.favorita);
+  // La dada de baja solo aparece si es la que ya tiene este gasto fijo.
+  const elegibles = tarjetas
+    .filter(t => esTarjetaActiva(t) || t.id === fijo?.tarjetaId)
+    .map(t => (t.baja ? { ...t, nombre: `${t.nombre} (baja)` } : t));
+  const favoritas = elegibles.filter(t => t.favorita);
+  const normales  = elegibles.filter(t => !t.favorita);
   const byInst = {};
   normales.forEach(t => {
     const id = t.institucionId || '__';

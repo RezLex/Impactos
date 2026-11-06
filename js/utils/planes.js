@@ -2,8 +2,9 @@
  * Planes de compra (tab "Planes" del módulo Deseos) — cálculo puro.
  *
  * Un plan (colección `planesCompra`): `{ nombre, notas, items: [item] }`.
- * Un item es un registro propio del plan (no se sincroniza con Lista ni con
- * otros planes): `{ id, origen: 'lista'|'personalizado', deseoId?, opcionId?,
+ * Un item es un registro propio del plan (no se sincroniza con otros planes, y de
+ * Lista solo toma precio y forma de pago, ver `conDatosDeLista`): `{ id,
+ * origen: 'lista'|'personalizado', deseoId?, opcionId?,
  * nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId,
  * tipoPago: 'contado'|'msi', meses }`. `tipoPago`/`meses` acotan qué
  * bonificaciones de la tarjeta se pueden ligar (ver `bonifsDeTarjeta` en
@@ -14,7 +15,31 @@
  * que el módulo Bonificaciones (mínimo, tope, IVA). Con mínimo "por compra",
  * los items de la misma tienda pagados con la misma tarjeta son una sola orden.
  */
-import { calcularDistribucion } from './bonificaciones.js';
+import { calcularDistribucion, aplicaBonificacion } from './bonificaciones.js';
+
+/** La opción de la tab Lista de la que viene un item, o null si es personalizado o ya no existe. */
+export function opcionDeItem(item, deseos) {
+  if (item?.origen !== 'lista') return null;
+  const deseo = (deseos || []).find(d => d.id === item.deseoId);
+  return (deseo?.opciones || []).find(o => o.id === item.opcionId) || null;
+}
+
+/**
+ * El plan con el último precio y la forma de pago registrados en Lista para sus items
+ * vinculados: esos datos no se editan en Planes. Si la opción ya no existe, el item
+ * conserva los suyos.
+ */
+export function conDatosDeLista(plan, deseos) {
+  return {
+    ...plan,
+    items: (plan?.items || []).map(it => {
+      const o = opcionDeItem(it, deseos);
+      if (!o) return it;
+      const esMsi = o.tipoPago === 'msi';
+      return { ...it, precio: Number(o.precio) || 0, tipoPago: esMsi ? 'msi' : 'contado', meses: esMsi ? (Number(o.meses) || null) : null };
+    }),
+  };
+}
 
 export function subtotalItem(item) {
   return (Number(item?.precio) || 0) * (Number(item?.cantidad) || 1);
@@ -28,10 +53,27 @@ export function claveOrden(item) {
 const r2 = n => Math.round(n * 100) / 100;
 
 /**
- * Descuento de un cupón (catálogo `cuponesPlan`: `{ nombre, tienda, tipo:
- * 'porcentaje'|'cantidad', valor, montoMinimo, montoMaximo }`) sobre el subtotal
- * de un carrito. Si no alcanza `montoMinimo` no aplica. `montoMaximo` solo topa
- * los de porcentaje; uno de cantidad fija descuenta su valor. Nunca más que el subtotal.
+ * Qué items de un carrito pueden usar un cupón (catálogo `cuponesPlan`), según sus
+ * restricciones opcionales: `institucionId` (la de la tarjeta del carrito; vacío =
+ * cualquiera) y `aplicaA` ('contado'|'msi'|'ambos'; ausente = 'ambos', comparado
+ * contra el `tipoPago` de cada item, porque un carrito puede mezclar ambos).
+ *
+ * @returns {{elegibles: object[], motivo: null|'institucion'|'pago'}} `motivo` dice
+ *   por qué no aplica a ninguno.
+ */
+export function evaluarCupon(cupon, items, institucionId = null) {
+  if (cupon?.institucionId && cupon.institucionId !== institucionId) return { elegibles: [], motivo: 'institucion' };
+  const aplicaA = cupon?.aplicaA || 'ambos';
+  const elegibles = (items || []).filter(it => aplicaA === 'ambos' || aplicaA === (it.tipoPago === 'msi' ? 'msi' : 'contado'));
+  return { elegibles, motivo: elegibles.length ? null : 'pago' };
+}
+
+/**
+ * Descuento de un cupón (`{ nombre, tienda, tipo: 'porcentaje'|'cantidad', valor,
+ * montoMinimo, montoMaximo, institucionId, aplicaA }`) sobre el subtotal de los
+ * items elegibles de un carrito. Si no alcanza `montoMinimo` no aplica.
+ * `montoMaximo` solo topa los de porcentaje; uno de cantidad fija descuenta su
+ * valor. Nunca más que el subtotal.
  */
 export function descuentoCupon(cupon, subtotal) {
   if (!cupon) return { descuento: 0, aplica: false, faltante: 0 };
@@ -48,29 +90,34 @@ export function descuentoCupon(cupon, subtotal) {
  * Totales de un plan.
  *
  * Los items se agrupan en carritos (misma tarjeta + misma tienda, `claveOrden`).
- * 1. El cupón asignado al carrito (`plan.cupones[clave]`) se descuenta de su
- *    subtotal y se reparte entre sus items en proporción a su subtotal.
- * 2. La bonificación se calcula sobre lo que se paga ya con el cupón.
+ * 1. El cupón asignado al carrito (`plan.cupones[clave]`) se valida (`evaluarCupon`)
+ *    y se descuenta del subtotal de sus items elegibles, repartido entre ellos en
+ *    proporción a su subtotal. El mínimo también se mide contra esos items.
+ * 2. La bonificación se calcula sobre lo que se paga ya con el cupón. Al ser una
+ *    simulación, el mínimo y "Aplica a" no la anulan: sin el mínimo se reparte como si
+ *    ya se hubiera alcanzado (ver `simularMinimo`), y ambos quedan como advertencia en
+ *    cada item (`califica` false, `noAplica` true).
  *
  * @param {object}   plan
  * @param {object[]} bonificaciones  catálogo del módulo Bonificaciones
  * @param {(institucionId:string)=>boolean} conIvaDe  si la institución bonifica con IVA
  * @param {object[]} cupones  catálogo de cupones de la tab Planes
+ * @param {(tarjetaId:string|null)=>string|null} institucionDe  institución de una tarjeta
  * @returns {{
- *   porItem: Map<string, {subtotal:number, cupon:number, pagado:number, bonificacion:number, neto:number, pct:number, califica:boolean|null, faltante:number, bonif:object|null}>,
- *   carritos: {clave:string, tarjetaId:string|null, tienda:string, items:object[], subtotal:number, cupon:object|null, descuento:number, aplica:boolean, faltante:number, bonificacion:number, neto:number}[],
- *   subtotal:number, cupones:number, bonificacion:number, neto:number,
+ *   porItem: Map<string, {subtotal:number, cupon:number, pagado:number, bonificacion:number, neto:number, pct:number, califica:boolean|null, faltante:number, noAplica:boolean, bonif:object|null}>,
+ *   carritos: {clave:string, tarjetaId:string|null, tienda:string, items:object[], subtotal:number, cupon:object|null, descuento:number, aplica:boolean, faltante:number, motivo:null|'institucion'|'pago', elegibles:number, bonificacion:number, neto:number}[],
+ *   subtotal:number, cupones:number, bonificacion:number, neto:number, advertencias:number,
  *   porBonificacion: {bonif:object, esperado:number, topado:boolean, sinTope:number}[]
  * }}
  */
-export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupones = []) {
+export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupones = [], institucionDe = () => null) {
   const items = Array.isArray(plan?.items) ? plan.items : [];
   const bonifMap = new Map((bonificaciones || []).map(b => [b.id, b]));
   const cuponMap = new Map((cupones || []).map(c => [c.id, c]));
   const porItem = new Map();
   items.forEach(it => {
     const subtotal = subtotalItem(it);
-    porItem.set(it.id, { subtotal, cupon: 0, pagado: subtotal, bonificacion: 0, neto: subtotal, pct: 0, califica: null, faltante: 0, bonif: null });
+    porItem.set(it.id, { subtotal, cupon: 0, pagado: subtotal, bonificacion: 0, neto: subtotal, pct: 0, califica: null, faltante: 0, noAplica: false, bonif: null });
   });
 
   // 1. Carritos y cupones.
@@ -83,20 +130,22 @@ export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupon
   const carritos = [...carritosMap.values()].map(c => {
     const subtotal = c.items.reduce((s, it) => s + subtotalItem(it), 0);
     const cupon = cuponMap.get(plan?.cupones?.[c.clave]) || null;
-    const { descuento, aplica, faltante } = descuentoCupon(cupon, subtotal);
+    const { elegibles, motivo } = cupon ? evaluarCupon(cupon, c.items, institucionDe(c.tarjetaId)) : { elegibles: [], motivo: null };
+    const base = elegibles.reduce((s, it) => s + subtotalItem(it), 0);
+    const { descuento, aplica, faltante } = descuentoCupon(motivo ? null : cupon, base);
     // Reparto proporcional; el redondeo sobrante va al último item para que sume exacto.
     let asignado = 0;
-    c.items.forEach((it, i) => {
+    elegibles.forEach((it, i) => {
       const r = porItem.get(it.id);
-      const parte = i === c.items.length - 1
+      const parte = i === elegibles.length - 1
         ? r2(descuento - asignado)
-        : (subtotal > 0 ? r2(descuento * r.subtotal / subtotal) : 0);
+        : (base > 0 ? r2(descuento * r.subtotal / base) : 0);
       asignado += parte;
       r.cupon  = parte;
       r.pagado = r.subtotal - parte;
       r.neto   = r.pagado;
     });
-    return { ...c, subtotal, cupon, descuento, aplica, faltante };
+    return { ...c, subtotal, cupon, descuento, aplica, faltante, motivo, elegibles: elegibles.length };
   });
 
   const porBonificacion = [];
@@ -111,7 +160,7 @@ export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupon
     const bonif = bonifMap.get(bonifId);
     const porOrden = bonif.minimoPor !== 'acumulado';
     const compras = suyos.map(it => ({ id: it.id, total: porItem.get(it.id).pagado, folioOrden: porOrden ? claveOrden(it) : null }));
-    const dist = calcularDistribucion(bonif, compras, !!conIvaDe(bonif.institucionId));
+    const dist = calcularDistribucion(bonif, compras, !!conIvaDe(bonif.institucionId), { simularMinimo: true });
     const faltantePorClave = new Map(dist.grupos.map(g => [g.clave, g.faltante]));
     suyos.forEach(it => {
       const d = dist.porCompra.get(it.id);
@@ -122,6 +171,7 @@ export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupon
       r.califica     = d.califica;
       r.faltante     = faltantePorClave.get(porOrden ? claveOrden(it) : '__todas__') || 0;
       r.neto         = r.pagado - d.monto;
+      r.noAplica     = !aplicaBonificacion(bonif, it.tipoPago === 'msi' ? 'msi' : 'contado', it.meses);
     });
     porBonificacion.push({ bonif, esperado: dist.esperado, topado: dist.topado, sinTope: dist.sinTope });
   });
@@ -135,5 +185,6 @@ export function calcularPlan(plan, bonificaciones, conIvaDe = () => false, cupon
   const subtotal     = valores.reduce((s, r) => s + r.subtotal, 0);
   const cuponesTot   = valores.reduce((s, r) => s + r.cupon, 0);
   const bonificacion = valores.reduce((s, r) => s + r.bonificacion, 0);
-  return { porItem, carritos, subtotal, cupones: cuponesTot, bonificacion, neto: subtotal - cuponesTot - bonificacion, porBonificacion };
+  const advertencias = valores.filter(r => r.bonif && (r.califica === false || r.noAplica)).length;
+  return { porItem, carritos, subtotal, cupones: cuponesTot, bonificacion, neto: subtotal - cuponesTot - bonificacion, advertencias, porBonificacion };
 }

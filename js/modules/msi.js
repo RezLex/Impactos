@@ -65,6 +65,7 @@ import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from '../utils/ciclo.js';
 import { getGastosFijosPendientes, getContadoMes, getPlazosMes, calcularCicloParaMes } from '../utils/impacto-calc.js';
 import { limitarDisponible } from '../utils/saldo.js';
+import { tarjetasSeleccionables, numerosSeleccionables, numeroPorDefecto } from '../utils/tarjetas.js';
 import { calcularDistribucion } from '../utils/bonificaciones.js';
 import { bonifFieldsHTML, wireBonifFields, saveBonif } from '../utils/bonif-form.js';
 
@@ -679,7 +680,7 @@ async function renderView(container, initialTab = 'todas', query = null) {
           const _cardLabel = c => {
             const tc   = cardMap[c.tarjetaId];
             const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-            const n    = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const n    = numeroPorDefecto(nums);
             const l4   = n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
             return { tc, label: tc ? `${tc.nombre}${l4 ? ' ···' + l4 : ''}` : '' };
           };
@@ -998,7 +999,7 @@ async function renderView(container, initialTab = 'todas', query = null) {
           const _cardLabel = m => {
             const tc   = cardMap[m.tarjetaId];
             const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-            const n    = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const n    = numeroPorDefecto(nums);
             const l4   = n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
             return { tc, label: tc ? `${tc.nombre}${l4 ? ' ···' + l4 : ''}` : '' };
           };
@@ -1108,7 +1109,7 @@ async function renderView(container, initialTab = 'todas', query = null) {
         const n = ordenados.find(x => limpio(x.numero) === limpio(item.numeroTarjeta));
         return { l4: limpio(item.numeroTarjeta).slice(-4), formato: n?.formato || null };
       }
-      const n = ordenados[0];
+      const n = numeroPorDefecto(nums);
       return n ? { l4: limpio(n.numero).slice(-4), formato: n.formato } : { l4: '', formato: null };
     };
 
@@ -1271,7 +1272,7 @@ async function renderView(container, initialTab = 'todas', query = null) {
       const { l4, formato } = _numeroCargo(item, tc);
       const df = formato === 'digital' ? 'D' : formato === 'fisica' ? 'F' : '';
       return `<td style="white-space:nowrap">
-        <span class="d-inline-block rounded-circle me-1" style="width:9px;height:9px;background:${tc?.inst?.color || '#607d8b'}" title="${tc?.inst?.nombre || 'Sin institución'}"></span>${tc?.nombre || '—'}
+        <span class="d-inline-block rounded-circle me-1" style="width:9px;height:9px;background:${tc?.inst?.color || '#607d8b'}" title="${tc?.inst?.nombre || 'Sin institución'}"></span>${tc?.nombre || '—'}${tc?.baja ? ' <small class="text-muted" title="Tarjeta dada de baja">(baja)</small>' : ''}
         ${l4 ? `<br><small class="text-muted" style="padding-left:14px">···${l4}${df ? ` <span class="badge bg-secondary-subtle text-secondary-emphasis" style="font-size:var(--fs-nano)" title="${formato === 'digital' ? 'Digital' : 'Física'}">${df}</span>` : ''}</small>` : ''}
       </td>`;
     };
@@ -1795,7 +1796,7 @@ async function renderView(container, initialTab = 'todas', query = null) {
         ? String(g.numeroTarjeta).replace(/\s/g, '').slice(-4)
         : (() => {
             const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-            const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+            const n = numeroPorDefecto(nums);
             return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
           })();
 
@@ -2104,7 +2105,7 @@ function renderGroupContado({ inst, items }, idx, cardMap, festivosMX, collapsed
                       ? String(c.numeroTarjeta).replace(/\s/g, '').slice(-4)
                       : (() => {
                           const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-                          const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+                          const n = numeroPorDefecto(nums);
                           return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
                         })();
 
@@ -2297,7 +2298,7 @@ function renderGroupMsi({ inst, items }, idx, cardMap, festivosMX, filtro, colla
                       ? String(m.numeroTarjeta).replace(/\s/g, '').slice(-4)
                       : (() => {
                           const nums = Array.isArray(tc?.numeros) ? tc.numeros : [];
-                          const n = nums.find(x => x.formato === 'fisica' && x.numero) || nums.find(x => x.numero);
+                          const n = numeroPorDefecto(nums);
                           return n ? String(n.numero).replace(/\s/g, '').slice(-4) : '';
                         })();
 
@@ -2551,7 +2552,7 @@ function _prefillDesdeQuery(query, tarjetas, contadoItems, msiItems) {
 
 function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
+  const lista   = tarjetasSeleccionables(soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas, item?.tarjetaId);
 
   // El texto del <option> se muestra tal cual cuando el <select> colapsa a la
   // opción elegida — ahí se pierde el <optgroup> que hoy da el nombre del
@@ -2559,7 +2560,7 @@ function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const _cardOpts = cards => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .flatMap(t => {
-      const numeros  = Array.isArray(t.numeros) ? t.numeros : [];
+      const numeros  = numerosSeleccionables(t, item?.tarjetaId === t.id ? item?.numeroTarjeta : null);
       const all      = [...numeros.filter(n => n.formato === 'fisica'  && n.numero),
                         ...numeros.filter(n => n.formato === 'digital' && n.numero)];
       const instPrefix = instMap[t.institucionId]?.nombre
@@ -2581,7 +2582,7 @@ function buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
         const coincide = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero;
         const sel = coincide && !yaMarcado ? 'selected' : '';
         if (coincide) yaMarcado = true;
-        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
+        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo}${n.baja ? ', baja' : ''})</option>`;
       });
     }).join('');
 

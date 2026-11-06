@@ -20,7 +20,7 @@
 export const IVA_FACTOR = 1.16;
 
 /** Mensualidades comunes ofrecidas al configurar a qué plazos de MSI aplica una bonificación. */
-export const MESES_COMUNES = [3, 6, 9, 12, 18, 24];
+export const MESES_COMUNES = [3, 4, 6, 9, 12, 15, 18, 24];
 
 /**
  * ¿Una bonificación aplica a una compra de tipo `tipo` ('contado'|'msi')? Con
@@ -82,7 +82,7 @@ export function reglaBonificacion(b, fmt) {
  *   sumaBase:number, esperado:number, sinTope:number, topado:boolean
  * }}
  */
-export function calcularDistribucion(bonif, compras, conIva = false) {
+export function calcularDistribucion(bonif, compras, conIva = false, { simularMinimo = false } = {}) {
   const minimo  = Number(bonif?.montoMinimo) || 0;
   const maximo  = Number(bonif?.montoMaximo) || 0;
   const valor   = Number(bonif?.valor) || 0;
@@ -114,6 +114,13 @@ export function calcularDistribucion(bonif, compras, conIva = false) {
           ? base * valor / 100
           : (g.base > 0 ? valor * base / g.base : 0);
         monto *= factor;
+      } else if (simularMinimo && g.base > 0) {
+        // Simulación de Planes: la bonificación se reparte como si ya se hubiera llegado
+        // al mínimo, y lo que falta para alcanzarlo se queda con su parte. Con porcentaje
+        // equivale al % sobre el precio; con cantidad, a la parte proporcional al mínimo.
+        // `califica` sigue en false para que quien llama pueda advertirlo.
+        const bonifGrupo = bonif.tipo === 'porcentaje' ? minimo * valor / 100 : valor;
+        monto = Math.min(bonifGrupo * factor * base / minimo, base);
       }
       sinTope += monto;
       porCompra.set(c.id, { monto, pct: 0, base, califica: g.califica, folio: g.folio, grupoBase: g.base });

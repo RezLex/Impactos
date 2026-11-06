@@ -2,6 +2,7 @@ import { getAll, create, update, remove, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtDate, textoLegibleSobre, rgbLegibleSobre, rgbInversoSobre } from '../utils/formatters.js';
 import { calcularSaldo, limitarDisponible, detalleEventosPosteriores } from '../utils/saldo.js';
 import { toast, confirmDelete, openModal, closeModal } from '../utils/ui.js';
+import { toISODate } from '../utils/ciclo.js';
 
 const REDES = ['Visa', 'Mastercard', 'Maestro', 'Amex', 'Carnet', 'Discover'];
 const TIPO_LABEL = { credito: 'Crédito', debito: 'Débito', prestamo: 'Préstamo' };
@@ -62,7 +63,7 @@ function wireCopyButtons(root) {
 }
 
 function renderNumsCell(numeros) {
-  const items = (numeros || []).filter(n => n.numero);
+  const items = (numeros || []).filter(n => n.numero && !n.baja);
   if (!items.length) return '<span class="text-muted">—</span>';
   return items.map(n => `
     <div class="d-flex align-items-center gap-1 mb-1">
@@ -106,7 +107,7 @@ async function renderView(container) {
       <div class="page-header">
         <div class="page-header-text">
           <h2>Instituciones y Tarjetas</h2>
-          <p>${instituciones.length} instituciones · ${tarjetas.length} tarjetas</p>
+          <p>${instituciones.length} instituciones · ${tarjetas.filter(t => !t.baja).length} tarjetas</p>
         </div>
         <div class="d-flex gap-2">
           <button class="btn btn-link btn-sm p-0 text-muted" id="btn-toggle-all-inst">
@@ -123,7 +124,9 @@ async function renderView(container) {
           <i class="bi bi-building"></i>
           <p>No hay instituciones registradas. Agrega una para comenzar.</p>
         </div>` : instituciones.map(inst => {
-          const cards = tarjetasPorInst[inst.id] || [];
+          const todas = tarjetasPorInst[inst.id] || [];
+          const cards = todas.filter(t => !t.baja);
+          const bajas = todas.filter(t => t.baja);
           const color = inst.color || '#607d8b';
           const headVars = `--on-color:${textoLegibleSobre(color)};--on-color-rgb:${rgbLegibleSobre(color)};--on-color-inv-rgb:${rgbInversoSobre(color)}`;
           return `
@@ -151,7 +154,7 @@ async function renderView(container) {
                 </button>
                 <button class="btn btn-sm btn-outline-light btn-del-inst"
                   data-id="${inst.id}" data-nombre="${inst.nombre}"
-                  ${cards.length > 0 ? 'disabled title="Elimina las tarjetas primero"' : ''}>
+                  ${todas.length > 0 ? `disabled title="${bajas.length ? 'Tiene tarjetas, activas o dadas de baja, con historial' : 'Da de baja las tarjetas primero'}"` : ''}>
                   <i class="bi bi-trash3"></i>
                 </button>
               </div>
@@ -211,13 +214,25 @@ async function renderView(container) {
                         ${c.saldoDisponible != null ? `<button class="btn-icon btn-csv-saldo" data-id="${c.id}" title="Descargar CSV movimientos"><i class="bi bi-download"></i></button>` : ''}
                         ${c.tipo !== 'debito' ? `<button class="btn-icon btn-creditos-card" data-id="${c.id}" title="Saldo a favor"><i class="bi bi-arrow-return-left"></i></button>` : ''}
                         <button class="btn-icon btn-edit-card" data-id="${c.id}" title="Editar"><i class="bi bi-pencil"></i></button>
-                        <button class="btn-icon danger btn-del-card" data-id="${c.id}" data-nombre="${c.nombre}" title="Eliminar"><i class="bi bi-trash3"></i></button>
+                        <button class="btn-icon danger btn-baja-card" data-id="${c.id}" title="Dar de baja"><i class="bi bi-archive"></i></button>
                       </div>
                     </td>
                   </tr>`).join('')}
                 </tbody>
               </table>
             </div>`}
+            ${bajas.length ? `
+            <div class="px-3 py-2 border-top" style="font-size:0.85rem">
+              <div class="text-muted mb-1"><i class="bi bi-archive me-1"></i>Dadas de baja</div>
+              ${bajas.map(c => `
+              <div class="d-flex align-items-center gap-2 py-1">
+                <span>${c.nombre}</span>
+                <small class="text-muted">${c.fechaBaja ? fmtDate(c.fechaBaja) : ''}</small>
+                <button class="btn btn-sm btn-outline-secondary ms-auto btn-reactivar-card" data-id="${c.id}">
+                  <i class="bi bi-arrow-counterclockwise me-1"></i>Reactivar
+                </button>
+              </div>`).join('')}
+            </div>` : ''}
             </div>
           </div>`;
         }).join('')}
@@ -301,12 +316,35 @@ async function renderView(container) {
         showCardModal(container, instituciones, card.institucionId, card, liveSinCreditos, detalleSaldo);
       }));
 
-    document.querySelectorAll('.btn-del-card').forEach(btn =>
+    // Baja lógica: el documento se conserva para que sus compras y gastos sigan
+    // resolviendo nombre, institución y ciclo (ver utils/tarjetas.js).
+    document.querySelectorAll('.btn-baja-card').forEach(btn =>
       btn.addEventListener('click', async () => {
-        if (!confirmDelete(btn.dataset.nombre)) return;
-        await remove('tarjetas', btn.dataset.id);
-        toast('Tarjeta eliminada');
-        renderView(container);
+        const card = tarjetas.find(t => t.id === btn.dataset.id);
+        if (!card) return;
+        try {
+          const fijos = (await getAll('gastosFijos')).filter(f => f.tarjetaId === card.id);
+          const ligados = [...contado, ...msi, ...gastos].filter(r => r.tarjetaId === card.id).length;
+          const aviso = [
+            `¿Dar de baja "${card.nombre}"?`,
+            'Ya no se podrá elegir para registros nuevos. Se puede reactivar después.',
+            ligados ? `Sus ${ligados} compras y gastos se conservan.` : '',
+            fijos.length ? `Tiene ${fijos.length} gasto(s) fijo(s) que seguirán generándose con esta tarjeta: cámbialos en Gastos Fijos si ya no se cobran ahí.` : '',
+          ].filter(Boolean).join('\n\n');
+          if (!confirm(aviso)) return;
+          await update('tarjetas', card.id, { baja: true, fechaBaja: toISODate(new Date()), favorita: false });
+          toast('Tarjeta dada de baja');
+          renderView(container);
+        } catch (e) { toast('Error: ' + e.message, 'danger'); }
+      }));
+
+    document.querySelectorAll('.btn-reactivar-card').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        try {
+          await update('tarjetas', btn.dataset.id, { baja: false, fechaBaja: null });
+          toast('Tarjeta reactivada');
+          renderView(container);
+        } catch (e) { toast('Error: ' + e.message, 'danger'); }
       }));
 
     document.querySelectorAll('.btn-creditos-card').forEach(btn =>
@@ -466,14 +504,32 @@ function addNumeroRow(list, num = {}, redEl) {
       data-f="numero" value="${num.numero || ''}" maxlength="19">
     <input type="text" class="form-control form-control-sm fw-mono" style="width:82px;flex-shrink:0"
       placeholder="MM/AA" data-f="fechaVencimiento" value="${num.fechaVencimiento || ''}" maxlength="5">
-    <button type="button" class="btn btn-sm btn-outline-danger flex-shrink-0" title="Eliminar">
-      <i class="bi bi-trash3"></i>
-    </button>`;
+    <small class="text-muted flex-shrink-0 num-baja-fecha"></small>
+    <button type="button" class="btn btn-sm flex-shrink-0 num-accion"><i class="bi"></i></button>`;
   row.querySelector('[data-f="numero"]').addEventListener('input', e => {
     const det = detectarRed(e.target.value);
     if (det && redEl) redEl.value = det;
   });
-  row.querySelector('button').addEventListener('click', () => row.remove());
+  // Un número ya guardado puede estar en compras: se da de baja, no se borra. Uno
+  // recién capturado todavía no tiene historial y simplemente se quita.
+  const guardado = !!num.numero;
+  const accion   = row.querySelector('.num-accion');
+  const pintarBaja = () => {
+    const baja = !!row.dataset.fechaBaja;
+    row.classList.toggle('opacity-50', baja);
+    row.querySelectorAll('select, input').forEach(el => { el.disabled = baja; });
+    row.querySelector('.num-baja-fecha').textContent = baja ? `Baja ${fmtDate(row.dataset.fechaBaja)}` : '';
+    accion.className = `btn btn-sm flex-shrink-0 num-accion ${baja ? 'btn-outline-secondary' : 'btn-outline-danger'}`;
+    accion.title = baja ? 'Reactivar número' : guardado ? 'Dar de baja' : 'Quitar';
+    accion.querySelector('i').className = `bi ${baja ? 'bi-arrow-counterclockwise' : guardado ? 'bi-archive' : 'bi-trash3'}`;
+  };
+  accion.addEventListener('click', () => {
+    if (!guardado) { row.remove(); return; }
+    row.dataset.fechaBaja = row.dataset.fechaBaja ? '' : toISODate(new Date());
+    pintarBaja();
+  });
+  row.dataset.fechaBaja = num.baja ? (num.fechaBaja || toISODate(new Date())) : '';
+  pintarBaja();
   list.appendChild(row);
 }
 
@@ -542,6 +598,7 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
             </button>
           </div>
           <div id="numeros-list"></div>
+          <div class="form-text">Dar de baja un número (al guardar) lo quita de los selectores; las compras que lo usaron lo conservan.</div>
         </div>
 
         <!-- Número de pago (préstamo) -->
@@ -759,9 +816,11 @@ function showCardModal(container, instituciones, preInstId, card = null, liveSal
       const formato          = row.querySelector('[data-f="formato"]').value;
       const numero           = row.querySelector('[data-f="numero"]').value.trim();
       const fechaVencimiento = row.querySelector('[data-f="fechaVencimiento"]').value.trim();
-      if (numero || fechaVencimiento) numeros.push({ formato, numero, fechaVencimiento });
+      const fechaBaja        = row.dataset.fechaBaja;
+      if (numero || fechaVencimiento) numeros.push({ formato, numero, fechaVencimiento, ...(fechaBaja ? { baja: true, fechaBaja } : {}) });
     });
-    if (numeros.length) data.numeros = numeros;
+    // Al editar siempre se manda: si no, quitar todos los números no se aplicaría.
+    if (numeros.length || editing) data.numeros = numeros;
 
     // Límite (crédito y préstamo)
     if (raw.limiteTotal) data.limiteTotal = Number(raw.limiteTotal);

@@ -2,6 +2,7 @@ import { getAll, recentWhere } from '../utils/db.js';
 import { maskCard, currency, fmtShortDate, currentYYYYMM, nextMonth, textoLegibleSobre } from '../utils/formatters.js';
 import { toISODate, calcularMes } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
+import { esTarjetaActiva } from '../utils/tarjetas.js';
 
 const COLORS = {
   'Banamex':'#e31837','Banorte':'#da1c2b','BBVA':'#004481',
@@ -115,7 +116,7 @@ async function renderView(container) {
       <div class="page-header">
         <div class="page-header-text">
           <h2>Tarjetas</h2>
-          <p>${tarjetas.filter(t => !t.oculta).length} tarjetas</p>
+          <p>${tarjetas.filter(t => !t.oculta && esTarjetaActiva(t)).length} tarjetas</p>
         </div>
       </div>
       ${saldoOffline ? `
@@ -148,14 +149,14 @@ async function renderView(container) {
 
       const filtered = tarjetas
         .filter(t => {
-          if (t.oculta) return false;
+          if (t.oculta || !esTarjetaActiva(t)) return false;
           if (filtroTipo !== 'todos' && t.tipo !== filtroTipo) return false;
           if (filtroInst && t.institucionId !== filtroInst) return false;
           if (filtroDigitos) {
             const d     = filtroDigitos;
             const last4 = s => (s || '').replace(/\s/g, '').slice(-4);
             const matchClabe = last4(t.clabe).startsWith(d);
-            const matchNums  = (t.numeros || []).some(n => last4(n.numero).startsWith(d));
+            const matchNums  = (t.numeros || []).some(n => !n.baja && last4(n.numero).startsWith(d));
             if (!matchClabe && !matchNums) return false;
           }
           return true;
@@ -291,7 +292,7 @@ function renderWalletCard(c, inst, festivosMX, saldo = null) {
   const color  = inst?.color || COLORS[inst?.nombre] || '#607d8b';
   const dark   = darkenHex(color, 45);
   const badge  = TIPO_BADGE[c.tipo] ?? TIPO_BADGE.debito;
-  const numeros  = (Array.isArray(c.numeros) ? c.numeros : []).filter(n => n.numero || n.fechaVencimiento);
+  const numeros  = (Array.isArray(c.numeros) ? c.numeros : []).filter(n => !n.baja && (n.numero || n.fechaVencimiento));
   const fisicas  = numeros.filter(n => n.formato === 'fisica');
   const digitales = numeros.filter(n => n.formato === 'digital');
 

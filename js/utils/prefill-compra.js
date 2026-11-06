@@ -14,6 +14,7 @@
  */
 
 import { toISODate } from './ciclo.js';
+import { esTarjetaActiva } from './tarjetas.js';
 
 /**
  * Busca la tarjeta que termina en esos 4 dígitos.
@@ -26,9 +27,9 @@ export function matchTarjetaPorTerminacion(terminacion, tarjetas) {
   // tarjetas de crédito, así que casar con una de débito daría un tarjetaId
   // sin opción correspondiente y el campo quedaría vacío sin explicación.
   const coincidencias = [];
-  for (const t of tarjetas.filter(x => !x.oculta && x.tipo === 'credito')) {
+  for (const t of tarjetas.filter(x => !x.oculta && esTarjetaActiva(x) && x.tipo === 'credito')) {
     (Array.isArray(t.numeros) ? t.numeros : []).forEach(n => {
-      if (n.numero && String(n.numero).replace(/\D/g, '').slice(-4) === digits)
+      if (n.numero && !n.baja && String(n.numero).replace(/\D/g, '').slice(-4) === digits)
         coincidencias.push({ tarjetaId: t.id, numero: n.numero, formato: n.formato });
     });
   }

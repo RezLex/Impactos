@@ -1,5 +1,6 @@
 import { calcularMes, toISODate, anteriorNomina, gastoFijoDisponible } from './ciclo.js';
 import { calcularSaldo } from './saldo.js';
+import { esTarjetaActiva } from './tarjetas.js';
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -471,6 +472,17 @@ export function calcularEstimadoTarjeta(tarjeta, contadoItems, msiItems, gastosI
     // verdad arrastra el crédito hacia adelante.
     estimadoTotal: r2(Math.max(0, estimadoContado + estimadoPlazos + estimadoGastos + pagosDifContado + pagosDifPlazos - creditosAplicados)),
   };
+}
+
+/**
+ * Tarjetas de crédito/préstamo que cuentan en `mes`: todas las activas, y las dadas
+ * de baja solo mientras tengan cargos ese mes (mensualidades pendientes, por ejemplo):
+ * ese dinero se sigue debiendo. Sin cargos desaparecen, para no dejar filas en $0 que
+ * bloqueen el cierre del mes ni sumar su límite al crédito total.
+ */
+export function tarjetasCreditoDelMes(tarjetas, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos = [], creditosTarjeta = []) {
+  return tarjetas.filter(t => (t.tipo === 'credito' || t.tipo === 'prestamo') && (esTarjetaActiva(t)
+    || calcularEstimadoTarjeta(t, contadoItems, msiItems, gastosItems, festivosMX, mes, pagosDiferidos, creditosTarjeta).estimadoTotal > 0));
 }
 
 /** Calculates credit summary totals from an impacto's tarjetas[] array. */

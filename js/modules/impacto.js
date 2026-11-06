@@ -8,6 +8,7 @@ import {
   calcularEstimadoTarjeta, getGastosDebitoMes, getGastosDebitoCompleto,
   calcularTotalesCredito, getPlazosMes, proyectarMes, recalcTotalesImpacto,
   calcularCicloParaMes, getPagosDiferidosMes,
+  tarjetasCreditoDelMes,
 } from '../utils/impacto-calc.js';
 
 export async function render(container, mesParam) {
@@ -52,7 +53,7 @@ async function renderView(container, mes) {
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap         = Object.fromEntries(tarjetas.map(t => [t.id, t]));
-    const tarjetasCredito = tarjetas.filter(t => t.tipo === 'credito' || t.tipo === 'prestamo');
+    const tarjetasCredito = tarjetasCreditoDelMes(tarjetas, contado, msi, gastos, festivosMX, mes, pagosDiferidos, creditosTarjeta);
     const debitoIds       = new Set(tarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
     const nominaAprox     = Number(configGen?.nominaAprox) || 0;
 
@@ -118,7 +119,12 @@ async function renderView(container, mes) {
             return t;
           }),
           ...nuevasTarjetas,
-        ];
+        ].filter(t => {
+          // Dada de baja, sin pago registrado y ya sin cargos: sale del mes activo.
+          const sobra = cardMap[t.tarjetaId]?.baja && !t.pagado && !(Number(t.estimadoTotal) > 0);
+          if (sobra) changed = true;
+          return !sobra;
+        });
 
         if (changed) {
           impacto = { ...impacto, tarjetas: updatedTarjetas };

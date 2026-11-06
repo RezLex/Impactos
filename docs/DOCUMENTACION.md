@@ -52,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T38`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T39`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -244,6 +244,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `numeros` | array | Números de tarjeta (ver estructura abajo) |
 | `favorita` | boolean? | Si está marcada como favorita para aparecer primero en los selects |
 | `oculta` | boolean? | Si está oculta — no aparece en `/tarjetas` ni en ningún selector. Una tarjeta favorita no puede ocultarse y una oculta no puede marcarse como favorita |
+| `baja` / `fechaBaja` | boolean? / string? | Baja lógica (`YYYY-MM-DD`): ver *Baja de tarjetas* en [Instituciones y Tarjetas](#instituciones-y-tarjetas-admin) |
 
 **Campos de `credito` y `prestamo`:**
 
@@ -269,6 +270,7 @@ Todos los datos del usuario se almacenan bajo la ruta `users/{uid}/`, lo que gar
 | `formato` | string | `fisica` o `digital` |
 | `numero` | string? | Número completo de la tarjeta |
 | `fechaVencimiento` | string? | Vencimiento en formato `MM/AA` |
+| `baja` / `fechaBaja` | boolean? / string? | Baja lógica del número (`YYYY-MM-DD`). Se hace desde el modal de la tarjeta y se aplica al guardar; un número sin guardar simplemente se quita. Sale de los selectores, de la búsqueda de `/tarjetas` y de la detección por terminación (`js/utils/tarjetas.js`), salvo en el selector de un registro que ya lo usa, donde aparece como `(Física, baja)` |
 
 > Física y digital pueden guardar el **mismo** `numero` (p.ej. una tarjeta física dada de alta
 > también como digital para un wallet, con la misma terminación). Al resolver una compra por
@@ -678,7 +680,7 @@ Planes de la pestaña **Planes** de Deseos. Solo planeación: no tienen relació
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nombre` / `notas` | string | Identificación del plan |
-| `items` | array | Registros propios del plan: `{ id, origen: lista\|personalizado, deseoId?, opcionId?, nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`. Los tomados de Lista guardan su propia copia de los datos: editarlos no toca el deseo |
+| `items` | array | Registros propios del plan: `{ id, origen: lista\|personalizado, deseoId?, opcionId?, nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`. Los tomados de Lista guardan su propia copia de los datos, salvo `precio`, `tipoPago` y `meses`, que se toman en vivo de su opción (los guardados solo se usan si la opción ya no existe). Editarlos no toca el deseo |
 | `cupones` | object | Cupón asignado a cada carrito: `{ "<tienda en minúsculas>\|<tarjetaId>": cuponId }` |
 
 ### `cuponesPlan/{id}`
@@ -691,8 +693,10 @@ Catálogo de cupones de la pestaña Planes (un cupón se puede asignar a varios 
 | `tienda` | string | Tienda donde aplica; solo se ofrece en carritos de esa tienda |
 | `tipo` | string | `porcentaje` o `cantidad` |
 | `valor` | number | Porcentaje o monto fijo |
-| `montoMinimo` | number | Compra mínima del carrito (0 = sin mínimo) |
+| `montoMinimo` | number | Compra mínima, medida contra los artículos del carrito que pueden usar el cupón (0 = sin mínimo) |
 | `montoMaximo` | number | Tope del descuento; solo para `porcentaje` (0 = sin tope) |
+| `institucionId` | string | Solo con tarjetas de esa institución (vacío = cualquiera) |
+| `aplicaA` | string | `contado`, `msi` o `ambos` (ausente = `ambos`); se compara contra la forma de pago de cada artículo |
 
 ### `_config/owner` *(fuera del namespace de usuario)*
 
@@ -766,6 +770,8 @@ CRUD completo de instituciones y tarjetas:
 > Las tarjetas marcadas como favoritas aparecen en un grupo `⭐ Favoritas` al inicio de todos los selectores del proyecto (Compras, Gastos Fijos, Registro Rápido). Las tarjetas del grupo Favoritas no se duplican en los grupos de institución del mismo selector.
 >
 > Cada opción de tarjeta muestra el nombre de la institución como prefijo (`Institución — Tarjeta ···4118`), en todos los grupos y no solo en Favoritas: el `<optgroup>` que agrupa por institución no aparece en el texto colapsado del `<select>` una vez elegida una opción, así que sin el prefijo la tarjeta seleccionada quedaría sin decir a qué banco pertenece.
+
+> **Baja de tarjetas:** el botón de archivo marca `baja: true` y `fechaBaja`; el documento **no se borra**, para que sus compras y gastos sigan resolviendo nombre, institución y ciclo. Se lista al final de su institución con **Reactivar**. Sale de `/tarjetas`, de los selectores y de la detección por terminación (`js/utils/tarjetas.js`), salvo en el selector de un registro que ya la usa, donde aparece como `Nombre (baja)` para no perderla al guardar. En Impacto y Dashboard solo cuenta mientras tenga cargos en ese mes (`tarjetasCreditoDelMes`): sin cargos desaparece y no bloquea el cierre. Sus gastos fijos siguen generándose hasta cambiarlos de tarjeta (se avisa al dar de baja). Una institución con tarjetas, activas o dadas de baja, no se puede eliminar.
 
 > Las tarjetas **ocultas** (`oculta: true`) se excluyen automáticamente de `/tarjetas` y de todos los selectores del sistema. Para **De Contado** y **A Plazos** (formulario normal y registro rápido) los selectores muestran únicamente tarjetas de **crédito** (no débito ni préstamo).
 
@@ -1093,16 +1099,18 @@ Lista de deseos y planeación de compras (sección **Principal** del nav). No ti
 - La tabla agrupa por **tarjeta** y dentro por **tienda** (carrito, donde se elige el cupón — solo los de esa tienda). Todo se edita **en la tabla**:
   - *Tienda*: en artículos de Lista, un select con las opciones del deseo (cambiarla actualiza precio y enlace); en personalizados, texto con autocompletado
   - *Tarjeta*: select; al cambiarla se conserva la bonificación si sigue disponible, si no se asigna la de la institución (la primera si hay varias)
-  - *Bonificación*: select solo si la institución de la tarjeta tiene más de una; con una se muestra su nombre
-  - *Cantidad* y *Precio* (el precio es del plan: no toca la opción en Lista); *Nombre* en personalizados
+  - *Bonificación*: select si la institución de la tarjeta tiene más de una, o si la única no aplica a la forma de pago del artículo; con una que aplica se muestra su nombre. Lista también las que no aplican, marcadas `(no aplica)`
+  - *Cantidad*; *Nombre* en personalizados
+  - *Precio* y *Pago*: en artículos de Lista son de solo lectura y siempre son los registrados en su opción (`conDatosDeLista`, `js/utils/planes.js`); los planes se recalculan solos al actualizarlos en Lista, sin marcar cambios sin guardar. Solo se editan en personalizados, o si la opción ya no existe
+  - *Enlace*: se edita en un modal con el botón de cadena de la columna de acciones (excepción a la edición en la tabla) y queda en el borrador. Es del plan: no toca la opción en Lista, y elegir otra opción del deseo lo reemplaza por el de esa opción
 - **Agregar artículo** desde la última fila, sin modal: un deseo de Lista (entra con su opción más barata), una copia de un artículo de otro plan o un artículo personalizado. **Nuevo Plan** abre la tabla vacía
 - Los cambios son un **borrador** hasta **Guardar** (badge *Cambios sin guardar*). **Guardar como nuevo plan** crea otro plan con los artículos y los cambios sin guardar y deja el original como estaba. **Descartar** vuelve a lo guardado. Cambiar de plan con cambios pendientes pide confirmación. El borrador vive en el módulo: sobrevive a cambiar de pestaña
-- **Cupones**: botón junto a *Nuevo Plan* que abre su administración en un modal (nombre, tienda obligatoria, porcentaje o cantidad fija, compra mínima, descuento máximo solo para porcentaje; muestra en cuántos carritos está asignado). Al eliminar uno se quita de los planes
+- **Cupones**: botón junto a *Nuevo Plan* que abre su administración en un modal (nombre, tienda obligatoria, porcentaje o cantidad fija, compra mínima, descuento máximo solo para porcentaje, forma de pago e institución; muestra en cuántos carritos está asignado). Al eliminar uno se quita de los planes
 
 **Cálculo de un plan** (`calcularPlan`, `js/utils/planes.js`, probado en `test/planes.test.mjs`):
 1. Carrito = misma tienda (sin importar mayúsculas/espacios) + misma tarjeta
-2. El cupón se aplica al subtotal del carrito si alcanza su mínimo y se reparte entre sus artículos por subtotal
-3. La bonificación se calcula sobre lo pagado ya con cupón, con el mismo reparto que el módulo Bonificaciones, pero **solo contra los artículos del mismo plan**. Con mínimo por compra, cada carrito es una orden
+2. El cupón se valida (`evaluarCupon`): la institución de la tarjeta del carrito debe coincidir, y solo cuentan los artículos con la forma de pago permitida (un carrito puede mezclar contado y MSI). Se aplica al subtotal de esos artículos si alcanza su mínimo y se reparte entre ellos por subtotal. El selector solo ofrece cupones que el carrito puede usar; uno ya asignado que deja de cumplir sigue listado, no descuenta y explica por qué
+3. La bonificación se calcula sobre lo pagado ya con cupón, con el mismo reparto que el módulo Bonificaciones, pero **solo contra los artículos del mismo plan**. Con mínimo por compra, cada carrito es una orden. Como es una simulación, el **mínimo** y **Aplica a** no anulan la bonificación y quedan como advertencia en el artículo, en el resumen del plan y en la Comparativa. Sin alcanzar el mínimo, la bonificación se reparte **como si ya se hubiera alcanzado**, y lo que falta se queda con su parte: cada artículo recibe `bonificación × precio ÷ mínimo`, sin pasar de su precio. Con porcentaje equivale al % sobre su precio; con cantidad fija, $200 con mínimo de $1,000 dan $120 a un artículo de $600 y $60 a uno de $300 (los $20 restantes corresponden a lo que falta). Los cupones sí validan sus condiciones, y las compras reales (módulo Bonificaciones y tablas de Compras) siguen exigiendo el mínimo
 
 ### Eventos de Ofertas (`#/eventos`)
 Lista de eventos registrados con acceso rápido a cada uno.

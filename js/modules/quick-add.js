@@ -94,7 +94,8 @@ import { currency, fmtDate, fmtMonth } from '../utils/formatters.js';
 import { toast, openModal, closeModal } from '../utils/ui.js';
 import { calcularMes, toISODate, anteriorNomina } from '../utils/ciclo.js';
 import { calcularSaldo } from '../utils/saldo.js';
-import { proyectarMes, getGastosDebitoCompleto } from '../utils/impacto-calc.js';
+import { proyectarMes, getGastosDebitoCompleto, tarjetasCreditoDelMes } from '../utils/impacto-calc.js';
+import { tarjetasSeleccionables, numerosSeleccionables } from '../utils/tarjetas.js';
 import { showRegistroModal } from './articulo-detalle.js';
 
 async function _loadData() {
@@ -114,7 +115,7 @@ async function _loadData() {
 
 function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
-  const lista   = (soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas).filter(t => !t.oculta);
+  const lista   = tarjetasSeleccionables(soloCredito ? tarjetas.filter(t => t.tipo === 'credito') : tarjetas, item?.tarjetaId);
 
   // El texto del <option> se muestra tal cual cuando el <select> colapsa a la
   // opción elegida — ahí se pierde el <optgroup> que hoy da el nombre del
@@ -122,7 +123,7 @@ function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
   const _opts = cards => cards
     .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
     .flatMap(t => {
-      const numeros    = Array.isArray(t.numeros) ? t.numeros : [];
+      const numeros    = numerosSeleccionables(t, item?.tarjetaId === t.id ? item?.numeroTarjeta : null);
       const all        = [...numeros.filter(n => n.formato === 'fisica' && n.numero),
                           ...numeros.filter(n => n.formato === 'digital' && n.numero)];
       const instPrefix = instMap[t.institucionId]?.nombre
@@ -144,7 +145,7 @@ function _buildCardOptions(item, instituciones, tarjetas, soloCredito = false) {
         const coincide = item?.tarjetaId === t.id && item?.numeroTarjeta === n.numero;
         const sel = coincide && !yaMarcado ? 'selected' : '';
         if (coincide) yaMarcado = true;
-        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo})</option>`;
+        return `<option value="${t.id}::${n.numero}" ${sel}>${instPrefix}${t.nombre} ···${last4} (${tipo}${n.baja ? ', baja' : ''})</option>`;
       });
     }).join('');
 
@@ -397,7 +398,7 @@ async function _updatePreview(tarjetaId, fecha, total, monthlyAmount, tarjetas, 
 
     // For future months without stored impacto, calculate projection
     if (!impacto && impactoMes > toISODate(new Date()).slice(0, 7)) {
-      const tarjetasCredito = tarjetas.filter(t => t.tipo === 'credito' || t.tipo === 'prestamo');
+      const tarjetasCredito = tarjetasCreditoDelMes(tarjetas, contado, msi, gastos, festivosMX, impactoMes, pagosDiferidos, creditosTarjeta);
       impacto = proyectarMes(impactoMes, toISODate(new Date()).slice(0, 7),
         msi, contado, gastos, tarjetasCredito, 0, festivosMX, gastosFijos, tarjetas);
     }

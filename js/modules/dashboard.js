@@ -6,6 +6,7 @@ import {
   calcularCicloParaMes, calcularEstimadoTarjeta,
   getPlazosMes, getGastosDebitoCompleto, calcularTotalesCredito,
   recalcTotalesImpacto, getGastosFijosPendientes,
+  tarjetasCreditoDelMes,
 } from '../utils/impacto-calc.js';
 import { resumenCuenta, totalizarResumenes, registrarInhabiles } from '../utils/rendimiento.js';
 import { showAvanceModal } from './articulo-detalle.js';
@@ -71,7 +72,7 @@ export async function render(container) {
 
     const instMap         = Object.fromEntries(instituciones.map(i => [i.id, i]));
     const cardMap         = Object.fromEntries(tarjetas.map(t => [t.id, t]));
-    const tarjetasCredito = tarjetas.filter(t => t.tipo === 'credito' || t.tipo === 'prestamo');
+    const tarjetasCredito = tarjetasCreditoDelMes(tarjetas, contado, msi, gastos, festivosMX, mes, pagosDiferidos, creditosTarjeta);
     const debitoIds       = new Set(tarjetas.filter(t => t.tipo === 'debito').map(t => t.id));
     const nominaAprox     = Number(configGen?.nominaAprox) || 0;
     const hoy             = toISODate(new Date());

@@ -1,4 +1,4 @@
-const CACHE = 'impactos-v56';
+const CACHE = 'impactos-v57';
 
 const SHELL = [
   './',
@@ -37,6 +37,7 @@ const SHELL = [
   './js/utils/prefill-compra.js',
   './js/utils/rendimiento.js',
   './js/utils/saldo.js',
+  './js/utils/tarjetas.js',
   './js/utils/ui.js',
 ];
 

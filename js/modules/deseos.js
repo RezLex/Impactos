@@ -6,7 +6,8 @@ import {
   nuevoIdOpcion, variacionPct, registrarPrecio, historialConVariacion, ultimaVariacion, mejorOpcion,
   editarHistorial, eliminarHistorial,
 } from '../utils/deseos.js';
-import { calcularPlan } from '../utils/planes.js';
+import { calcularPlan, evaluarCupon, opcionDeItem, conDatosDeLista } from '../utils/planes.js';
+import { tarjetasSeleccionables } from '../utils/tarjetas.js';
 import { reglaBonificacion, estadoBonificacion, aplicaBonificacion, MESES_COMUNES } from '../utils/bonificaciones.js';
 
 const COL = 'deseos';
@@ -495,7 +496,9 @@ function nuevoPlan(ctx) {
 }
 
 function renderPlanes(ctx) {
-  const { planes, cupones, tarjetas, instituciones, bonificaciones, deseos, tiendas, recargar } = ctx;
+  const { cupones, tarjetas, instituciones, bonificaciones, deseos, tiendas, recargar } = ctx;
+  // Totales y comparativa siempre con el último precio y el pago de la tab Lista.
+  const planes   = ctx.planes.map(p => conDatosDeLista(p, deseos));
   const instMap  = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const cardMap  = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
   const conIvaDe = instId => !!instMap[instId]?.bonificacionConIva;
@@ -507,12 +510,15 @@ function renderPlanes(ctx) {
   else if (guardado)      borrador = copiarPlan(guardado);
   else if (planes.length) { planSelId = planes[0].id; borrador = copiarPlan(planes[0]); }
   else                    borrador = planVacio(1);
+  // No marca cambios sin guardar: los datos de Lista no son una edición del plan.
+  borrador = conDatosDeLista(borrador, deseos);
   // Cupones borrados del catálogo dejan de estar asignados.
   const cuponIds = new Set(cupones.map(c => c.id));
   borrador.cupones = Object.fromEntries(Object.entries(borrador.cupones || {}).filter(([, id]) => cuponIds.has(id)));
 
-  const calculos = new Map(planes.map(p => [p.id, calcularPlan(p, bonificaciones, conIvaDe, cupones)]));
-  const calc = calcularPlan(borrador, bonificaciones, conIvaDe, cupones);
+  const institucionDe = tarjetaId => cardMap[tarjetaId]?.institucionId || null;
+  const calculos = new Map(planes.map(p => [p.id, calcularPlan(p, bonificaciones, conIvaDe, cupones, institucionDe)]));
+  const calc = calcularPlan(borrador, bonificaciones, conIvaDe, cupones, institucionDe);
 
   // Comparativa entre planes guardados (clic en una fila para abrirlo).
   const conItems  = planes.filter(p => (p.items || []).length);
@@ -532,7 +538,7 @@ function renderPlanes(ctx) {
               const c = calculos.get(p.id);
               const dif = c.neto - mejorNeto;
               return `<tr class="${esMejor(p) ? 'table-success' : ''}" data-abrir-plan="${p.id}" style="cursor:pointer">
-                <td class="fw-500">${p.id === borrador.id ? '<i class="bi bi-caret-right-fill text-primary me-1"></i>' : ''}${p.nombre}${esMejor(p) ? ' <span class="badge bg-success ms-1">Más conveniente</span>' : ''}</td>
+                <td class="fw-500">${p.id === borrador.id ? '<i class="bi bi-caret-right-fill text-primary me-1"></i>' : ''}${p.nombre}${esMejor(p) ? ' <span class="badge bg-success ms-1">Más conveniente</span>' : ''}${c.advertencias ? ` <i class="bi bi-exclamation-triangle text-warning ms-1" title="${c.advertencias} artículo(s) con una bonificación que no cumple sus condiciones"></i>` : ''}</td>
                 <td class="text-center">${(p.items || []).reduce((s, i) => s + (Number(i.cantidad) || 1), 0)}</td>
                 <td class="text-end">${currency(c.subtotal)}</td>
                 <td class="text-end text-success">${c.cupones ? '−' + currency(c.cupones) : '—'}</td>
@@ -548,6 +554,9 @@ function renderPlanes(ctx) {
 
   const esNuevo = !borrador.id;
   const content = document.getElementById('deseos-tab-content');
+
+  // El tooltip vive en <body>: si su ícono se repinta sin cerrarlo, queda flotando.
+  content.querySelectorAll('.aviso-bonif').forEach(el => bootstrap.Tooltip.getInstance(el)?.dispose());
 
   // Foco a restaurar tras repintar (los cambios repintan la tabla completa).
   const activo = document.activeElement;
@@ -583,6 +592,7 @@ function renderPlanes(ctx) {
         ${calc.cupones ? ` · Cupones <span class="text-success">−${currency(calc.cupones)}</span>` : ''}
         ${calc.bonificacion ? ` · Bonificación <span class="text-success">−${currency(calc.bonificacion)}</span>` : ''}
         · Total <strong class="text-body">${currency(calc.neto)}</strong>
+        ${calc.advertencias ? ` <span class="badge bg-warning-subtle text-warning-emphasis" title="Se calcularon, pero no cumplen el mínimo o &quot;Aplica a&quot;"><i class="bi bi-exclamation-triangle me-1"></i>${calc.advertencias} con advertencia</span>` : ''}
         ${calc.porBonificacion.filter(b => b.topado).map(b => ` <span class="badge bg-secondary-subtle text-secondary-emphasis" title="Sin tope serían ${currency(b.sinTope)}">${b.bonif.nombre}: tope ${currency(b.esperado)}</span>`).join('')}
       </div>
       ${tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, cupones, planes, tiendas })}
@@ -602,16 +612,18 @@ function renderPlanes(ctx) {
  * ya asignada) que además apliquen a la forma de pago del item (`tipoPago` /
  * `meses`, igual que al ligar una compra real de Contado o A Plazos).
  */
-function bonifsDeTarjeta(tarjetas, bonificaciones, tarjetaId, actualId = null, tipoPago = 'contado', meses = null) {
+function bonifsDeTarjeta(tarjetas, bonificaciones, tarjetaId, actualId = null) {
   const tc = tarjetas.find(t => t.id === tarjetaId);
   if (!tc) return [];
-  return bonificaciones.filter(b =>
-    b.institucionId === tc.institucionId && (!b.aplicada || b.id === actualId) && aplicaBonificacion(b, tipoPago, meses));
+  return bonificaciones.filter(b => b.institucionId === tc.institucionId && (!b.aplicada || b.id === actualId));
 }
+
+/** ¿La bonificación aplica a la forma de pago del item? En Planes solo genera una advertencia. */
+const bonifAplicaAItem = (b, it) => aplicaBonificacion(b, it.tipoPago === 'msi' ? 'msi' : 'contado', it.meses);
 
 function opcionesTarjetaHTML(tarjetas, instMap, sel) {
   const porInst = {};
-  tarjetas.filter(t => !t.oculta || t.id === sel).forEach(t => { (porInst[t.institucionId || '__'] ||= []).push(t); });
+  tarjetasSeleccionables(tarjetas, sel).forEach(t => { (porInst[t.institucionId || '__'] ||= []).push(t); });
   return `<option value="">Sin tarjeta</option>` + Object.entries(porInst)
     .sort(([a], [b]) => (instMap[a]?.nombre || '').localeCompare(instMap[b]?.nombre || '', 'es'))
     .map(([instId, ts]) => `<optgroup label="${instMap[instId]?.nombre || 'Sin institución'}">
@@ -634,59 +646,105 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
     const deseo = it.origen === 'lista' ? deseos.find(d => d.id === it.deseoId) : null;
     const opciones = deseo?.opciones || [];
 
-    const articulo = it.origen === 'lista' && deseo
-      ? `<div class="fw-500">${it.nombre}${it.enlace ? ` <a href="${it.enlace}" target="_blank" rel="noopener" class="ms-1 text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}</div>`
-      : `<input type="text" class="form-control form-control-sm it-nombre" value="${(it.nombre || '').replace(/"/g, '&quot;')}" placeholder="Artículo" style="min-width:140px">`;
+    // Todo en una línea: así la celda mide lo mismo con o sin input y los controles
+    // de las demás columnas quedan alineados en todas las filas.
+    const articulo = `<div class="d-flex align-items-center gap-2">
+        ${it.origen === 'lista' && deseo
+          ? `<span class="fw-500">${it.nombre}</span>`
+          : `<input type="text" class="form-control form-control-sm it-nombre" value="${(it.nombre || '').replace(/"/g, '&quot;')}" placeholder="Artículo" style="min-width:140px">`}
+        <div class="d-flex align-items-center gap-2 ms-auto flex-shrink-0">
+          ${it.enlace ? `<a href="${it.enlace}" target="_blank" rel="noopener" class="text-muted" title="Abrir enlace"><i class="bi bi-box-arrow-up-right" style="font-size:0.72rem"></i></a>` : ''}
+          <span class="text-end" style="min-width:92px">${ORIGEN_BADGE[it.origen] || ''}</span>
+        </div>
+      </div>`;
 
     const tienda = opciones.length
-      ? `<select class="form-select form-select-sm it-opcion" style="min-width:150px" title="Opción del deseo">
-           ${opciones.some(o => o.id === it.opcionId) ? '' : `<option value="" selected>${it.tienda || '—'} (otra)</option>`}
-           ${[...opciones].sort((a, b) => (Number(a.precio) || 0) - (Number(b.precio) || 0))
-             .map(o => `<option value="${o.id}" ${o.id === it.opcionId ? 'selected' : ''}>${o.tienda || '—'} · ${currency(o.precio)}</option>`).join('')}
-         </select>`
-      : `<input type="text" class="form-control form-control-sm it-tienda" list="plan-tiendas-datalist" value="${(it.tienda || '').replace(/"/g, '&quot;')}" placeholder="Tienda" style="min-width:120px">`;
+      // Cerrado solo se ve la tienda (etiqueta encima); el precio aparece al desplegar.
+      ? `<div class="select-etiqueta" title="${(it.tienda || '').replace(/"/g, '&quot;')}">
+           <select class="form-select form-select-sm it-opcion" aria-label="Opción del deseo">
+             ${opciones.some(o => o.id === it.opcionId) ? '' : `<option value="" selected>${it.tienda || '—'} (otra)</option>`}
+             ${[...opciones].sort((a, b) => (Number(a.precio) || 0) - (Number(b.precio) || 0))
+               .map(o => `<option value="${o.id}" ${o.id === it.opcionId ? 'selected' : ''}>${o.tienda || '—'} · ${currency(o.precio)}</option>`).join('')}
+           </select>
+           <span class="select-etiqueta-texto">${it.tienda || '—'}</span>
+         </div>`
+      : `<input type="text" class="form-control form-control-sm it-tienda" list="plan-tiendas-datalist" value="${(it.tienda || '').replace(/"/g, '&quot;')}" placeholder="Tienda" style="width:130px">`;
 
-    const disponibles = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId, it.tipoPago || 'contado', it.meses);
+    const disponibles = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    const aplicaAlItem = b => bonifAplicaAItem(b, it);
+    // Una sola que aplica se muestra como texto; si es la única pero no aplica, se usa
+    // el select para poder elegirla o dejar "Sin bonificación" a propósito.
+    const conSelect = disponibles.length > 1 || (disponibles.length === 1 && !aplicaAlItem(disponibles[0]));
     let bonifCtrl = '';
-    if (disponibles.length > 1) {
-      bonifCtrl = `<select class="form-select form-select-sm it-bonif mb-1" style="min-width:150px">
+    if (conSelect) {
+      bonifCtrl = `<select class="form-select form-select-sm it-bonif" style="width:140px">
           <option value="">Sin bonificación</option>
-          ${disponibles.map(b => `<option value="${b.id}" ${b.id === it.bonificacionId ? 'selected' : ''}>${b.nombre}${estadoBonificacion(b, hoy) === 'vencida' ? ' (vencida)' : ''}</option>`).join('')}
+          ${disponibles.map(b => `<option value="${b.id}" ${b.id === it.bonificacionId ? 'selected' : ''}>${b.nombre}${estadoBonificacion(b, hoy) === 'vencida' ? ' (vencida)' : ''}${aplicaAlItem(b) ? '' : ' (no aplica)'}</option>`).join('')}
         </select>`;
     } else if (r.bonif) {
-      bonifCtrl = `<small class="text-muted d-block" title="${reglaBonificacion(r.bonif, currency)}"><i class="bi bi-gift me-1"></i>${r.bonif.nombre}</small>`;
+      bonifCtrl = `<small class="text-muted" title="${reglaBonificacion(r.bonif, currency)}"><i class="bi bi-gift me-1"></i>${r.bonif.nombre}</small>`;
     }
-    const bonifMonto = !r.bonif ? (disponibles.length > 1 ? '' : '<span class="text-muted">—</span>')
-      : r.califica
-        ? `<span class="text-success fw-bold">−${currency(r.bonificacion)}</span> <small class="text-muted">(${r.pct.toFixed(1)}%)</small>`
-        : `<small class="text-danger">Faltan ${currency(r.faltante)} para el mínimo</small>`;
+    const bonifMonto = !r.bonif ? (conSelect ? '' : '<span class="text-muted">—</span>')
+      : `<span><span class="text-success fw-bold">−${currency(r.bonificacion)}</span> <small class="text-muted">(${r.pct.toFixed(1)}%)</small></span>`;
+    const avisos = !r.bonif ? [] : [
+      r.califica ? '' : `Faltan ${currency(r.faltante)} para el mínimo`,
+      r.noAplica ? `No aplica a ${it.tipoPago === 'msi' ? `MSI ${it.meses || ''}m` : 'contado'}` : '',
+    ].filter(Boolean);
+    // Con tabindex el tooltip también abre al tocar en móvil (ver wirePlanes).
+    // El hueco del ícono se reserva siempre para que los montos queden alineados.
+    const avisoIcono = avisos.length
+      ? `<span class="aviso-bonif text-warning" style="width:16px" tabindex="0" role="img" aria-label="${avisos.join(' · ')}" data-bs-title="${avisos.join(' · ')}"><i class="bi bi-exclamation-triangle"></i></span>`
+      : '<span style="width:16px"></span>';
+    // Control a la izquierda y monto a la derecha: los selectores quedan en columna
+    // aunque los montos midan distinto.
+    const bonifCell = `<div class="d-flex align-items-center gap-2" style="white-space:nowrap">${bonifCtrl}
+      <div class="d-flex align-items-center gap-2 ms-auto">${bonifMonto}${avisoIcono}</div>
+    </div>`;
 
     const pagoVal = it.tipoPago === 'msi' ? `msi:${it.meses || ''}` : 'contado';
-    const pagoCtrl = `<select class="form-select form-select-sm it-pago" style="min-width:100px" title="Forma de pago">
+    const pagoCtrl = opcionDeItem(it, deseos)
+      ? `<span style="white-space:nowrap" title="Forma de pago registrada en la tab Lista">${it.tipoPago === 'msi' ? `MSI${it.meses ? ` ${it.meses}m` : ''}` : 'Contado'}</span>`
+      : `<select class="form-select form-select-sm it-pago" style="min-width:100px" title="Forma de pago">
       <option value="contado" ${pagoVal === 'contado' ? 'selected' : ''}>Contado</option>
       ${MESES_COMUNES.map(m => `<option value="msi:${m}" ${pagoVal === `msi:${m}` ? 'selected' : ''}>MSI ${m}m</option>`).join('')}
     </select>`;
 
     return `<tr data-item="${it.id}">
-      <td style="padding-left:28px">${articulo}${ORIGEN_BADGE[it.origen] || ''}</td>
+      <td style="padding-left:28px">${articulo}</td>
       <td>${tienda}</td>
       <td>${pagoCtrl}</td>
       <td><select class="form-select form-select-sm it-tarjeta" style="min-width:140px">${opcionesTarjetaHTML(tarjetas, instMap, it.tarjetaId || '')}</select></td>
       <td><input type="number" class="form-control form-control-sm text-center it-cantidad" value="${Number(it.cantidad) || 1}" min="1" step="1" style="width:64px"></td>
-      <td><input type="number" class="form-control form-control-sm text-end it-precio" value="${Number(it.precio) || 0}" min="0" step="0.01" style="width:110px"></td>
+      <td class="text-end">${opcionDeItem(it, deseos)
+        ? `<span title="Último precio registrado en la tab Lista">${currency(it.precio)}</span>`
+        : `<input type="number" class="form-control form-control-sm text-end it-precio" value="${Number(it.precio) || 0}" min="0" step="0.01" style="width:110px">`}</td>
       <td class="text-end">${currency(r.subtotal)}</td>
       <td class="text-end">${r.cupon ? `<span class="text-success">−${currency(r.cupon)}</span>` : '<span class="text-muted">—</span>'}</td>
-      <td class="text-end">${bonifCtrl}${bonifMonto}</td>
+      <td class="text-end">${bonifCell}</td>
       <td class="text-end fw-bold">${currency(r.neto)}</td>
-      <td><button class="btn-icon danger it-quitar" title="Quitar del plan"><i class="bi bi-trash3"></i></button></td>
+      <td>
+        <div class="d-flex gap-1 justify-content-end">
+          <button type="button" class="btn-icon it-enlace" title="${it.enlace ? 'Editar enlace' : 'Agregar enlace'}"><i class="bi bi-link-45deg"></i></button>
+          <button class="btn-icon danger it-quitar" title="Quitar del plan"><i class="bi bi-trash3"></i></button>
+        </div>
+      </td>
     </tr>`;
   };
 
   const filaCarrito = c => {
-    const disponibles = cupones.filter(cu => !cu.tienda || normTienda(cu.tienda) === normTienda(c.tienda) || cu.id === c.cupon?.id);
+    // Se ofrecen los de la tienda que este carrito puede usar. El ya asignado siempre
+    // se lista: si dejó de aplicar (cambió la forma de pago o se editó el cupón) se explica abajo.
+    const institucion = cardMap[c.tarjetaId]?.institucionId || null;
+    const disponibles = cupones.filter(cu => cu.id === c.cupon?.id
+      || ((!cu.tienda || normTienda(cu.tienda) === normTienda(c.tienda)) && !evaluarCupon(cu, c.items, institucion).motivo));
+    const parcial = c.aplica && c.elegibles < c.items.length ? ` <small class="text-muted">en ${c.elegibles} de ${c.items.length} artículos</small>` : '';
     const estado = !c.cupon ? ''
+      : c.motivo === 'institucion'
+        ? `<small class="text-danger">No aplica: solo con ${instMap[c.cupon.institucionId]?.nombre || 'otra institución'}</small>`
+      : c.motivo === 'pago'
+        ? `<small class="text-danger">No aplica: solo ${c.cupon.aplicaA === 'msi' ? 'a MSI' : 'de contado'}</small>`
       : c.aplica
-        ? `<span class="text-success fw-bold">−${currency(c.descuento)}</span>`
+        ? `<span class="text-success fw-bold">−${currency(c.descuento)}</span>${parcial}`
         : `<small class="text-danger">Faltan ${currency(c.faltante)} para el mínimo del cupón</small>`;
     return `<tr style="background:rgba(127,127,127,.05)">
       <td colspan="${COLS}" style="padding-left:18px">
@@ -696,8 +754,8 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
           ${disponibles.length ? `
           <select class="form-select form-select-sm sel-cupon ms-auto" data-clave="${c.clave}" style="width:auto;max-width:260px" title="Cupón para esta tienda con esta tarjeta">
             <option value="">Sin cupón</option>
-            ${disponibles.map(cu => `<option value="${cu.id}" ${cu.id === c.cupon?.id ? 'selected' : ''}>${cu.nombre} · ${reglaCupon(cu)}</option>`).join('')}
-          </select>` : '<small class="text-muted ms-auto">Sin cupones para esta tienda</small>'}
+            ${disponibles.map(cu => `<option value="${cu.id}" ${cu.id === c.cupon?.id ? 'selected' : ''}>${cu.nombre} · ${reglaCupon(cu, instMap)}</option>`).join('')}
+          </select>` : '<small class="text-muted ms-auto">Sin cupones disponibles</small>'}
           ${estado}
         </div>
       </td>
@@ -776,7 +834,38 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
     </div>`;
 }
 
+/**
+ * Enlace de un artículo del plan. Aplicar solo cambia el borrador (`onApply`): se
+ * guarda con el resto de los cambios del plan, y no toca la opción en Lista.
+ */
+function showEnlaceItemModal(item, onApply) {
+  openModal({
+    title: `${item.nombre || 'Artículo'} — Enlace`,
+    body: `
+      <form id="enlace-item-form">
+        <label class="form-label">Enlace</label>
+        <input type="url" class="form-control" name="enlace" value="${(item.enlace || '').replace(/"/g, '&quot;')}" placeholder="https://...">
+        <div class="form-text">Déjalo vacío para quitarlo. Se guarda con el botón Guardar del plan.</div>
+      </form>`,
+    footer: `
+      <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-aplicar-enlace">Aplicar</button>`,
+  });
+
+  const form = document.getElementById('enlace-item-form');
+  const aplicar = () => {
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    item.enlace = form.elements.enlace.value.trim();
+    closeModal();
+    onApply();
+  };
+  document.getElementById('btn-aplicar-enlace').addEventListener('click', aplicar);
+  form.addEventListener('submit', e => { e.preventDefault(); aplicar(); });
+}
+
 function wirePlanes(ctx, content) {
+  content.querySelectorAll('.aviso-bonif').forEach(el => new bootstrap.Tooltip(el));
+
   const { planes, deseos, tarjetas, bonificaciones, recargar } = ctx;
   const repintar = () => renderPlanes(ctx);
   const marcar = () => { sucio = true; repintar(); };
@@ -785,8 +874,8 @@ function wirePlanes(ctx, content) {
   // Con la tarjeta elegida, la bonificación: se conserva si sigue disponible; si
   // no, la única disponible o la primera de varias (se puede cambiar en su select).
   const ajustarBonif = it => {
-    const disp = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId, it.tipoPago || 'contado', it.meses);
-    if (!disp.some(b => b.id === it.bonificacionId)) it.bonificacionId = disp[0]?.id || null;
+    const disp = bonifsDeTarjeta(tarjetas, bonificaciones, it.tarjetaId, it.bonificacionId);
+    if (!disp.some(b => b.id === it.bonificacionId)) it.bonificacionId = disp.find(b => bonifAplicaAItem(b, it))?.id || null;
   };
 
   const abrirPlan = id => {
@@ -836,6 +925,8 @@ function wirePlanes(ctx, content) {
     } else return;
     marcar();
   });
+  content.querySelectorAll('.it-enlace').forEach(btn => btn.addEventListener('click', () =>
+    showEnlaceItemModal(itemDe(btn), marcar)));
   content.querySelectorAll('.it-quitar').forEach(btn => btn.addEventListener('click', () => {
     const it = itemDe(btn);
     borrador.items = borrador.items.filter(i => i !== it);
@@ -868,7 +959,7 @@ function wirePlanes(ctx, content) {
     borrador.items.push(nuevo);
     sucio = true;
     repintar();
-    if (tipo === 'pers') content.querySelector(`[data-item="${nuevo.id}"] .it-nombre`)?.focus();
+    if (tipo === 'pers') document.querySelector(`[data-item="${nuevo.id}"] .it-nombre`)?.focus();
   });
 
   // Guardar / Guardar como nuevo / Descartar / Eliminar.
@@ -928,12 +1019,15 @@ function wirePlanes(ctx, content) {
   });
 }
 
-/** Texto corto de un cupón: "20% (máx. $150) · mín. $1,000". */
-function reglaCupon(c) {
+/** Texto corto de un cupón: "20% (máx. $150) · mín. $1,000 · solo BBVA · solo MSI". */
+function reglaCupon(c, instMap = {}) {
   const partes = [c.tipo === 'porcentaje'
     ? `${c.valor}%${Number(c.montoMaximo) > 0 ? ` (máx. ${currency(c.montoMaximo)})` : ''}`
     : currency(c.valor)];
   if (Number(c.montoMinimo) > 0) partes.push(`mín. ${currency(c.montoMinimo)}`);
+  if (c.institucionId) partes.push(`solo ${instMap[c.institucionId]?.nombre || 'otra institución'}`);
+  if (c.aplicaA === 'contado') partes.push('solo de contado');
+  else if (c.aplicaA === 'msi') partes.push('solo MSI');
   return partes.join(' · ');
 }
 
@@ -947,7 +1041,8 @@ async function abrirCupones(ctx) {
 }
 
 function showCuponesModal(ctx) {
-  const { cupones, planes, tiendas, recargar } = ctx;
+  const { cupones, planes, tiendas, instituciones, recargar } = ctx;
+  const instMap = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const usos = id => planes.reduce((s, p) => s + Object.values(p.cupones || {}).filter(x => x === id).length, 0);
   // Tras crear/editar/borrar: se repinta la página (el borrador se conserva) y se vuelve a la lista.
   const alTerminar = async () => { await recargar(); abrirCupones(ctx); };
@@ -966,7 +1061,7 @@ function showCuponesModal(ctx) {
                 return `<tr>
                   <td class="fw-500">${c.nombre}</td>
                   <td>${c.tienda || '<span class="text-muted">—</span>'}</td>
-                  <td>${reglaCupon(c)}</td>
+                  <td>${reglaCupon(c, instMap)}</td>
                   <td class="text-center">${n ? `${n} carrito${n !== 1 ? 's' : ''}` : '<span class="text-muted">—</span>'}</td>
                   <td>
                     <div class="d-flex gap-1 justify-content-end">
@@ -986,9 +1081,9 @@ function showCuponesModal(ctx) {
   });
 
   const back = () => abrirCupones(ctx);
-  document.getElementById('btn-nuevo-cupon').addEventListener('click', () => showCuponModal(null, tiendas, alTerminar, back));
+  document.getElementById('btn-nuevo-cupon').addEventListener('click', () => showCuponModal(null, tiendas, instituciones, alTerminar, back));
   document.querySelectorAll('#app-modal .btn-edit-cupon').forEach(btn => btn.addEventListener('click', () =>
-    showCuponModal(cupones.find(c => c.id === btn.dataset.cupon), tiendas, alTerminar, back)));
+    showCuponModal(cupones.find(c => c.id === btn.dataset.cupon), tiendas, instituciones, alTerminar, back)));
   document.querySelectorAll('#app-modal .btn-del-cupon').forEach(btn => btn.addEventListener('click', async () => {
     const c = cupones.find(x => x.id === btn.dataset.cupon);
     if (!confirmDelete(c.nombre)) return;
@@ -1006,8 +1101,9 @@ function showCuponesModal(ctx) {
 }
 
 /** Alta / edición de un cupón. `onCancel` regresa a la lista de cupones. */
-function showCuponModal(cupon, tiendas, onSaved, onCancel) {
+function showCuponModal(cupon, tiendas, instituciones, onSaved, onCancel) {
   const isEdit = !!cupon;
+  const insts = [...instituciones].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
   openModal({
     title: isEdit ? 'Editar Cupón' : 'Nuevo Cupón',
     body: `
@@ -1042,8 +1138,23 @@ function showCuponModal(cupon, tiendas, onSaved, onCancel) {
             <input type="number" class="form-control" name="montoMaximo" id="input-cupon-max" value="${cupon?.montoMaximo || ''}" min="0" step="0.01" placeholder="Sin tope">
             <div class="form-text">Solo aplica a cupones de porcentaje.</div>
           </div>
+          <div class="col-md-6 mb-1">
+            <label class="form-label">Forma de pago</label>
+            <select class="form-select" name="aplicaA">
+              <option value="ambos"   ${!cupon?.aplicaA || cupon.aplicaA === 'ambos' ? 'selected' : ''}>Contado y MSI</option>
+              <option value="contado" ${cupon?.aplicaA === 'contado' ? 'selected' : ''}>Solo de contado</option>
+              <option value="msi"     ${cupon?.aplicaA === 'msi' ? 'selected' : ''}>Solo MSI</option>
+            </select>
+          </div>
+          <div class="col-md-6 mb-1">
+            <label class="form-label">Institución</label>
+            <select class="form-select" name="institucionId">
+              <option value="">Cualquiera</option>
+              ${insts.map(i => `<option value="${i.id}" ${cupon?.institucionId === i.id ? 'selected' : ''}>${i.nombre}</option>`).join('')}
+            </select>
+          </div>
         </div>
-        <div class="form-text">En cada plan, el cupón solo se ofrece en los carritos de su tienda; el mínimo se valida contra el subtotal de ese carrito.</div>
+        <div class="form-text">En cada plan solo se ofrece en los carritos de su tienda que cumplan estas condiciones. El mínimo se valida contra los artículos del carrito que pueden usarlo.</div>
       </form>`,
     footer: `
       <button type="button" class="btn btn-secondary btn-sm" id="btn-cancel-cupon">Cancelar</button>
@@ -1068,6 +1179,8 @@ function showCuponModal(cupon, tiendas, onSaved, onCancel) {
       valor:       Number(raw.valor) || 0,
       montoMinimo: Number(raw.montoMinimo) || 0,
       montoMaximo: raw.tipo === 'cantidad' ? 0 : Number(raw.montoMaximo) || 0,
+      institucionId: raw.institucionId || '',
+      aplicaA:     ['contado', 'msi'].includes(raw.aplicaA) ? raw.aplicaA : 'ambos',
     };
     try {
       if (isEdit) await update(COL_CUPONES, cupon.id, data);

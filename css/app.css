@@ -2306,3 +2306,22 @@ input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
   .todas-filtros .tf-tipo .form-select { flex: 1 1 auto; }
   .todas-filtros .tf-inst    { flex: 1 1 0; }
 }
+
+/* Select que cerrado muestra un texto corto y al desplegar sus opciones completas:
+   el valor del select va transparente y la etiqueta se pinta encima sin capturar
+   clics. Ancho fijo para que las opciones largas no ensanchen la columna. */
+.select-etiqueta               { position: relative; width: 130px; }
+.select-etiqueta .form-select  { color: transparent; }
+.select-etiqueta .form-select option { color: var(--text); background: var(--card-bg); }
+.select-etiqueta-texto {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 2rem 0 .5rem;
+  font-size: .875rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
