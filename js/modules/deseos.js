@@ -6,7 +6,7 @@ import {
   nuevoIdOpcion, variacionPct, registrarPrecio, historialConVariacion, ultimaVariacion, mejorOpcion,
   editarHistorial, eliminarHistorial,
 } from '../utils/deseos.js';
-import { calcularPlan, evaluarCupon, opcionDeItem, conDatosDeLista } from '../utils/planes.js';
+import { calcularPlan, evaluarCupon, opcionDeItem, conDatosDeLista, mesesPermitidos } from '../utils/planes.js';
 import { tarjetasSeleccionables } from '../utils/tarjetas.js';
 import { reglaBonificacion, estadoBonificacion, aplicaBonificacion, MESES_COMUNES } from '../utils/bonificaciones.js';
 
@@ -497,7 +497,7 @@ function nuevoPlan(ctx) {
 
 function renderPlanes(ctx) {
   const { cupones, tarjetas, instituciones, bonificaciones, deseos, tiendas, recargar } = ctx;
-  // Totales y comparativa siempre con el último precio y el pago de la tab Lista.
+  // Totales y comparativa siempre con el último precio de Lista y el pago dentro de su máximo.
   const planes   = ctx.planes.map(p => conDatosDeLista(p, deseos));
   const instMap  = Object.fromEntries(instituciones.map(i => [i.id, i]));
   const cardMap  = Object.fromEntries(tarjetas.map(t => [t.id, { ...t, inst: instMap[t.institucionId] }]));
@@ -702,11 +702,14 @@ function tablaPlan(calc, { cardMap, instMap, tarjetas, bonificaciones, deseos, c
     </div>`;
 
     const pagoVal = it.tipoPago === 'msi' ? `msi:${it.meses || ''}` : 'contado';
-    const pagoCtrl = opcionDeItem(it, deseos)
-      ? `<span style="white-space:nowrap" title="Forma de pago registrada en la tab Lista">${it.tipoPago === 'msi' ? `MSI${it.meses ? ` ${it.meses}m` : ''}` : 'Contado'}</span>`
-      : `<select class="form-select form-select-sm it-pago" style="min-width:100px" title="Forma de pago">
+    // De Lista: hasta el máximo de su opción; si es de contado no hay nada que elegir.
+    const opcionLista = opcionDeItem(it, deseos);
+    const mesesPago = opcionLista ? mesesPermitidos(opcionLista) : MESES_COMUNES;
+    const pagoCtrl = opcionLista && !mesesPago.length
+      ? `<span style="white-space:nowrap" title="De contado en la tab Lista: no admite MSI">Contado</span>`
+      : `<select class="form-select form-select-sm it-pago" style="min-width:100px" title="${opcionLista ? `Hasta MSI ${mesesPago[mesesPago.length - 1]}m, según la tab Lista` : 'Forma de pago'}">
       <option value="contado" ${pagoVal === 'contado' ? 'selected' : ''}>Contado</option>
-      ${MESES_COMUNES.map(m => `<option value="msi:${m}" ${pagoVal === `msi:${m}` ? 'selected' : ''}>MSI ${m}m</option>`).join('')}
+      ${mesesPago.map(m => `<option value="msi:${m}" ${pagoVal === `msi:${m}` ? 'selected' : ''}>MSI ${m}m</option>`).join('')}
     </select>`;
 
     return `<tr data-item="${it.id}">

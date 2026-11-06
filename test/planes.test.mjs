@@ -2,7 +2,7 @@
  * Pruebas del cálculo de Planes de compra. Sin framework: `node test/planes.test.mjs`.
  */
 import assert from 'node:assert/strict';
-import { subtotalItem, claveOrden, calcularPlan, descuentoCupon, evaluarCupon, opcionDeItem, conDatosDeLista } from '../js/utils/planes.js';
+import { subtotalItem, claveOrden, calcularPlan, descuentoCupon, evaluarCupon, opcionDeItem, conDatosDeLista, mesesPermitidos } from '../js/utils/planes.js';
 
 let pasadas = 0, fallidas = 0;
 const test = (nombre, fn) => {
@@ -259,14 +259,35 @@ test('un artículo de Lista toma el último precio de su opción', () => {
   assert.equal(p.id, 'p');
   assert.equal(deLista.precio, 100, 'no muta el original');
 });
-test('un artículo de Lista toma la forma de pago de su opción', () => {
-  const deseos = [{ id: 'd1', opciones: [{ id: 'o1', precio: 150, tipoPago: 'msi', meses: 12 }] }];
-  const msi = conDatosDeLista({ items: [{ ...deLista, tipoPago: 'contado', meses: null }] }, deseos).items[0];
-  assert.equal(msi.tipoPago, 'msi');
-  assert.equal(msi.meses, 12);
+test('una opción de contado no admite MSI en el plan', () => {
   const contado = conDatosDeLista({ items: [{ ...deLista, tipoPago: 'msi', meses: 6 }] }, DESEOS).items[0];
   assert.equal(contado.tipoPago, 'contado', 'opción sin forma de pago cuenta como contado');
   assert.equal(contado.meses, null);
+  assert.deepEqual(mesesPermitidos({ tipoPago: 'contado', meses: null }), []);
+});
+test('con MSI en Lista el plan puede elegir contado o menos meses', () => {
+  const deseos = [{ id: 'd1', opciones: [{ id: 'o1', precio: 150, tipoPago: 'msi', meses: 12 }] }];
+  const pago = extra => conDatosDeLista({ items: [{ ...deLista, ...extra }] }, deseos).items[0];
+  assert.deepEqual(mesesPermitidos(deseos[0].opciones[0]), [3, 4, 6, 9, 12]);
+  assert.equal(pago({ tipoPago: 'msi', meses: 6 }).meses, 6, 'menos meses se respetan');
+  const contado = pago({ tipoPago: 'contado', meses: null });
+  assert.equal(contado.tipoPago, 'contado', 'contado se respeta');
+  assert.equal(contado.meses, null);
+});
+test('si el plan excede el máximo de Lista baja a ese máximo', () => {
+  const deseos = [{ id: 'd1', opciones: [{ id: 'o1', precio: 150, tipoPago: 'msi', meses: 12 }] }];
+  const it = conDatosDeLista({ items: [{ ...deLista, tipoPago: 'msi', meses: 18 }] }, deseos).items[0];
+  assert.equal(it.tipoPago, 'msi');
+  assert.equal(it.meses, 12);
+});
+test('un item sin forma de pago toma el máximo de Lista', () => {
+  const deseos = [{ id: 'd1', opciones: [{ id: 'o1', precio: 150, tipoPago: 'msi', meses: 12 }] }];
+  const it = conDatosDeLista({ items: [deLista] }, deseos).items[0];
+  assert.equal(it.tipoPago, 'msi');
+  assert.equal(it.meses, 12);
+});
+test('un máximo fuera de los plazos comunes también se puede elegir', () => {
+  assert.deepEqual(mesesPermitidos({ tipoPago: 'msi', meses: 5 }), [3, 4, 5]);
 });
 test('la advertencia de "Aplica a" usa la forma de pago de la opción', () => {
   const deseos = [{ id: 'd1', opciones: [{ id: 'o1', precio: 1000, tipoPago: 'contado' }] }];

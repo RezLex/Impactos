@@ -3,7 +3,7 @@
  *
  * Un plan (colección `planesCompra`): `{ nombre, notas, items: [item] }`.
  * Un item es un registro propio del plan (no se sincroniza con otros planes, y de
- * Lista solo toma precio y forma de pago, ver `conDatosDeLista`): `{ id,
+ * Lista toma el precio y el tope de la forma de pago, ver `conDatosDeLista`): `{ id,
  * origen: 'lista'|'personalizado', deseoId?, opcionId?,
  * nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId,
  * tipoPago: 'contado'|'msi', meses }`. `tipoPago`/`meses` acotan qué
@@ -15,7 +15,7 @@
  * que el módulo Bonificaciones (mínimo, tope, IVA). Con mínimo "por compra",
  * los items de la misma tienda pagados con la misma tarjeta son una sola orden.
  */
-import { calcularDistribucion, aplicaBonificacion } from './bonificaciones.js';
+import { calcularDistribucion, aplicaBonificacion, MESES_COMUNES } from './bonificaciones.js';
 
 /** La opción de la tab Lista de la que viene un item, o null si es personalizado o ya no existe. */
 export function opcionDeItem(item, deseos) {
@@ -25,9 +25,30 @@ export function opcionDeItem(item, deseos) {
 }
 
 /**
- * El plan con el último precio y la forma de pago registrados en Lista para sus items
- * vinculados: esos datos no se editan en Planes. Si la opción ya no existe, el item
- * conserva los suyos.
+ * Plazos que puede elegir en Planes un item de esta opción de Lista: la forma de pago
+ * registrada es el máximo. Vacío si la opción es de contado (no admite MSI); con MSI,
+ * los plazos comunes hasta sus meses. Contado siempre se puede elegir.
+ */
+export function mesesPermitidos(opcion) {
+  if (opcion?.tipoPago !== 'msi') return [];
+  const tope = Number(opcion.meses) || 0;
+  if (!tope) return [...MESES_COMUNES];
+  return [...new Set([...MESES_COMUNES.filter(m => m <= tope), tope])].sort((a, b) => a - b);
+}
+
+/** Forma de pago de un item de Lista: la elegida en el plan si la opción la permite; si no, su máximo. */
+function pagoDentroDelTope(item, opcion) {
+  const meses = mesesPermitidos(opcion);
+  if (!meses.length || item.tipoPago === 'contado') return { tipoPago: 'contado', meses: null };
+  const elegidos = Number(item.meses);
+  return { tipoPago: 'msi', meses: meses.includes(elegidos) ? elegidos : meses[meses.length - 1] };
+}
+
+/**
+ * El plan con los datos de Lista aplicados a sus items vinculados: el último precio,
+ * que no se edita en Planes, y la forma de pago elegida acotada al máximo de la opción
+ * (si en Lista bajan los meses, el item baja con ellos). Si la opción ya no existe, el
+ * item conserva los suyos.
  */
 export function conDatosDeLista(plan, deseos) {
   return {
@@ -35,8 +56,7 @@ export function conDatosDeLista(plan, deseos) {
     items: (plan?.items || []).map(it => {
       const o = opcionDeItem(it, deseos);
       if (!o) return it;
-      const esMsi = o.tipoPago === 'msi';
-      return { ...it, precio: Number(o.precio) || 0, tipoPago: esMsi ? 'msi' : 'contado', meses: esMsi ? (Number(o.meses) || null) : null };
+      return { ...it, precio: Number(o.precio) || 0, ...pagoDentroDelTope(it, o) };
     }),
   };
 }

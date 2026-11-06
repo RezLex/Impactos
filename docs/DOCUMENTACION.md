@@ -52,7 +52,7 @@ IMPACTOS es una Single Page Application (SPA) que reemplaza un archivo Excel de 
 - Datos almacenados en Firebase Firestore (en la nube, accesibles desde cualquier dispositivo)
 - Sin build step — se sirve directamente como archivos estáticos desde GitHub Pages
 - Instalable como PWA (Progressive Web App) en Android, iOS y desktop; funciona offline con Service Worker
-- Versión de la app visible en el footer del sidebar (`v1.9.3-T39`)
+- Versión de la app visible en el footer del sidebar (`v1.9.3-T40`)
 - Tema claro/oscuro con tres estados (Sistema · Claro · Oscuro), conmutable desde el sidebar
 
 ---
@@ -680,7 +680,7 @@ Planes de la pestaña **Planes** de Deseos. Solo planeación: no tienen relació
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `nombre` / `notas` | string | Identificación del plan |
-| `items` | array | Registros propios del plan: `{ id, origen: lista\|personalizado, deseoId?, opcionId?, nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`. Los tomados de Lista guardan su propia copia de los datos, salvo `precio`, `tipoPago` y `meses`, que se toman en vivo de su opción (los guardados solo se usan si la opción ya no existe). Editarlos no toca el deseo |
+| `items` | array | Registros propios del plan: `{ id, origen: lista\|personalizado, deseoId?, opcionId?, nombre, tienda, enlace, precio, cantidad, tarjetaId, bonificacionId }`. Los tomados de Lista guardan su propia copia de los datos, salvo `precio`, que se toma en vivo de su opción, y `tipoPago`/`meses`, que son los elegidos en el plan acotados al máximo de la opción (si la opción ya no existe, se usan los guardados). Editarlos no toca el deseo |
 | `cupones` | object | Cupón asignado a cada carrito: `{ "<tienda en minúsculas>\|<tarjetaId>": cuponId }` |
 
 ### `cuponesPlan/{id}`
@@ -1097,11 +1097,12 @@ Lista de deseos y planeación de compras (sección **Principal** del nav). No ti
 **Planes** (colecciones [`planesCompra`](#planescompraid) y [`cuponesPlan`](#cuponesplanid))
 - Se trabaja **un plan a la vez** en una sola tabla; un **selector** cambia de plan. Arriba, si hay 2+ planes guardados con artículos, la **Comparativa** (subtotal, cupones, bonificación, total y diferencia contra el mejor, con *Más conveniente*); clic en una fila abre ese plan
 - La tabla agrupa por **tarjeta** y dentro por **tienda** (carrito, donde se elige el cupón — solo los de esa tienda). Todo se edita **en la tabla**:
-  - *Tienda*: en artículos de Lista, un select con las opciones del deseo (cambiarla actualiza precio y enlace); en personalizados, texto con autocompletado
+  - *Tienda*: en artículos de Lista, un select con las opciones del deseo (cambiarla actualiza precio y enlace, y pone el pago en el máximo de esa opción); en personalizados, texto con autocompletado
   - *Tarjeta*: select; al cambiarla se conserva la bonificación si sigue disponible, si no se asigna la de la institución (la primera si hay varias)
   - *Bonificación*: select si la institución de la tarjeta tiene más de una, o si la única no aplica a la forma de pago del artículo; con una que aplica se muestra su nombre. Lista también las que no aplican, marcadas `(no aplica)`
   - *Cantidad*; *Nombre* en personalizados
-  - *Precio* y *Pago*: en artículos de Lista son de solo lectura y siempre son los registrados en su opción (`conDatosDeLista`, `js/utils/planes.js`); los planes se recalculan solos al actualizarlos en Lista, sin marcar cambios sin guardar. Solo se editan en personalizados, o si la opción ya no existe
+  - *Precio*: en artículos de Lista es de solo lectura y siempre es el último de su opción (`conDatosDeLista`, `js/utils/planes.js`); los planes se recalculan solos al actualizarlo en Lista, sin marcar cambios sin guardar. Solo se edita en personalizados, o si la opción ya no existe
+  - *Pago*: en artículos de Lista, lo registrado en su opción es el máximo (`mesesPermitidos`): con MSI se puede elegir Contado o hasta esos meses, y de contado es de solo lectura. Si en Lista bajan los meses, el artículo baja con ellos sin marcar cambios sin guardar. En personalizados, o si la opción ya no existe, se elige sin límite
   - *Enlace*: se edita en un modal con el botón de cadena de la columna de acciones (excepción a la edición en la tabla) y queda en el borrador. Es del plan: no toca la opción en Lista, y elegir otra opción del deseo lo reemplaza por el de esa opción
 - **Agregar artículo** desde la última fila, sin modal: un deseo de Lista (entra con su opción más barata), una copia de un artículo de otro plan o un artículo personalizado. **Nuevo Plan** abre la tabla vacía
 - Los cambios son un **borrador** hasta **Guardar** (badge *Cambios sin guardar*). **Guardar como nuevo plan** crea otro plan con los artículos y los cambios sin guardar y deja el original como estaba. **Descartar** vuelve a lo guardado. Cambiar de plan con cambios pendientes pide confirmación. El borrador vive en el módulo: sobrevive a cambiar de pestaña
