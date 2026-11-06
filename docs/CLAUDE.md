@@ -28,3 +28,4 @@ Ver [DOCUMENTACION.md](DOCUMENTACION.md) para la arquitectura, el modelo de dato
   `sw.js` (offline). Un **módulo** nuevo: ruta en `js/app.js`, título en `js/router.js` y enlace en
   el nav de `index.html`.
 - Comentarios y textos de UI en español.
+
